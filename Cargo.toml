@@ -10,6 +10,6 @@ description = "Find and Replace Tool"
 askama = "0.16.1"
 axum = "0.8"
 base64 = "0.22"
-mwoauth = { git = "https://gitlab.com/mwoauth/mwoauth", features = ["axum"] }
+mwoauth = { version = "0.1.0-alpha.1", features = ["axum"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
 url = "2"
