@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }} · FindSmith</title>
+  <style>
+    :root { color-scheme: dark; --bg: #101416; --panel: #1d2324; --ink: #f5f3ed; --muted: #a9afad; --accent: #e8ff5b; --line: #3a4142; }
+    * { box-sizing: border-box; }
+    body { min-height: 100vh; margin: 0; display: grid; place-items: center; background: var(--bg); color: var(--ink); font-family: system-ui, sans-serif; }
+    main { width: min(600px, calc(100% - 32px)); border: 1px solid var(--line); background: var(--panel); padding: 32px; }
+    h1 { margin-top: 0; }
+    p { color: var(--muted); line-height: 1.6; }
+    a { display: inline-block; margin-top: 12px; background: var(--accent); color: #151800; padding: 13px 20px; font-weight: 800; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>{{ title }}</h1>
+    <p>{{ message }}</p>
+    <a href="{{ back_href }}">Go back</a>
+  </main>
+</body>
+</html>
