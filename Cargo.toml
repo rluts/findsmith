@@ -8,8 +8,10 @@ description = "Find and Replace Tool"
 
 [dependencies]
 askama = "0.16.1"
-axum = "0.8"
-base64 = "0.22"
+axum = "0.8.9"
+base64 = "0.22.1"
+mwapi = "0.8.0-rc.1"
 mwoauth = { version = "0.1.0-alpha.1", features = ["axum"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
-url = "2"
+serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+url = "2.5.8"
