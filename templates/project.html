@@ -51,6 +51,19 @@
     .diff-line code { padding: 2px 10px; font: inherit; }
     .diff-line.added { background: rgba(115, 201, 145, .16); }
     .diff-line.removed { background: rgba(255, 121, 77, .16); }
+    .inline-change { color: inherit; border-radius: 2px; padding: 0 1px; }
+    .added .inline-change { background: rgba(115, 201, 145, .55); }
+    .removed .inline-change { background: rgba(255, 121, 77, .55); }
+    .diff-mode { margin-top: 18px; }
+    .diff-mode summary { cursor: pointer; font-weight: 800; margin-bottom: 10px; }
+    .side-diff { min-width: 760px; border: 1px solid var(--line); background: var(--bg); }
+    .side-row { display: grid; grid-template-columns: 1fr 1fr; font-family: ui-monospace, monospace; }
+    .side-cell { display: grid; grid-template-columns: 3rem 2rem minmax(0, 1fr); min-height: 1.5rem; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; white-space: pre-wrap; }
+    .side-cell:first-child { border-right: 1px solid var(--line); }
+    .side-cell span { padding: 2px 7px; color: var(--muted); text-align: right; user-select: none; }
+    .side-cell code { padding: 2px 8px; font: inherit; }
+    .side-cell.added { background: rgba(115, 201, 145, .16); }
+    .side-cell.removed { background: rgba(255, 121, 77, .16); }
     .read-only { display: inline-block; margin-left: 8px; border: 1px solid var(--line); padding: 3px 7px; color: var(--muted); font-size: .72rem; text-transform: uppercase; }
     .danger-zone { border: 1px solid color-mix(in srgb, var(--danger) 55%, var(--line)); padding: 24px; }
     .danger-zone h2 { margin: 0 0 8px; font-size: 1.1rem; }
@@ -139,10 +152,12 @@
             <ul class="rule-counts">
               {% for rule in page.rules %}<li{% if rule.changed %} class="changed"{% endif %}>Rule {{ loop.index }}: {{ rule.count }}</li>{% endfor %}
             </ul>
-            <h3>Unified diff</h3>
-            <div class="diff" aria-label="Unified wikitext diff">
-              {% for line in page.diff %}<div class="diff-line {{ line.kind }}"><span>{{ line.marker }}</span><code>{{ line.text }}</code></div>{% endfor %}
-            </div>
+            <details class="diff-mode" open><summary>Unified diff</summary><div class="diff" aria-label="Unified wikitext diff">
+              {% for line in page.unified_diff %}<div class="diff-line {{ line.kind }}"><span>{{ line.marker }}</span><code>{% for fragment in line.fragments %}{% if fragment.emphasized %}<mark class="inline-change">{{ fragment.text }}</mark>{% else %}{{ fragment.text }}{% endif %}{% endfor %}</code></div>{% endfor %}
+            </div></details>
+            <details class="diff-mode"><summary>Side-by-side diff</summary><div class="diff" role="region" aria-label="Side-by-side wikitext diff" tabindex="0"><div class="side-diff">
+              {% for line in page.side_by_side_diff %}<div class="side-row"><div class="side-cell {{ line.left_kind }}"><span>{{ line.left_number }}</span><span>{{ line.left_marker }}</span><code>{% for fragment in line.left_fragments %}{% if fragment.emphasized %}<mark class="inline-change">{{ fragment.text }}</mark>{% else %}{{ fragment.text }}{% endif %}{% endfor %}</code></div><div class="side-cell {{ line.right_kind }}"><span>{{ line.right_number }}</span><span>{{ line.right_marker }}</span><code>{% for fragment in line.right_fragments %}{% if fragment.emphasized %}<mark class="inline-change">{{ fragment.text }}</mark>{% else %}{{ fragment.text }}{% endif %}{% endfor %}</code></div></div>{% endfor %}
+            </div></div></details>
           {% when None %}
         {% endmatch %}
       </section>

@@ -20,7 +20,7 @@ sea-orm = { version = "2.0.2", default-features = false, features = ["sqlx-mysql
 sea-orm-migration = { version = "2.0.2", default-features = false, features = ["sqlx-mysql", "runtime-tokio-rustls"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-similar = "2.7.0"
+similar = { version = "2.7.0", features = ["inline", "unicode"] }
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "net", "signal"] }
 tower-http = { version = "0.6.11", features = ["timeout"] }
 url = "2.5.8"

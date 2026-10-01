@@ -14,7 +14,7 @@ use serde::Deserialize;
 use crate::{
     auth::Authentication,
     csrf,
-    diff::{DiffLine, unified_lines},
+    diff::{DiffLine, SideBySideLine, side_by_side_lines, unified_lines},
     entities::project,
     jobs::{
         JobConfigV1, JobError, JobRepository, JobState, JobStatus, QueueEntry, QueueEntryStatus,
@@ -123,7 +123,8 @@ struct PagePreviewView {
     total_replacements: usize,
     changed: bool,
     rules: Vec<RulePreviewView>,
-    diff: Vec<DiffLine>,
+    unified_diff: Vec<DiffLine>,
+    side_by_side_diff: Vec<SideBySideLine>,
 }
 
 #[derive(Template)]
@@ -160,7 +161,8 @@ struct ReviewPageView {
     changed: bool,
     rules: Vec<RulePreviewView>,
     proposed_text: String,
-    diff: Vec<DiffLine>,
+    unified_diff: Vec<DiffLine>,
+    side_by_side_diff: Vec<SideBySideLine>,
 }
 
 #[derive(Template)]
@@ -1230,7 +1232,8 @@ async fn review_page_view(
         return Err("The proposed wikitext is too large.".to_owned());
     }
     let protection = protection_text(&snapshot);
-    let diff = unified_lines(&snapshot.content, &proposed_text);
+    let unified_diff = unified_lines(&snapshot.content, &proposed_text);
+    let side_by_side_diff = side_by_side_lines(&snapshot.content, &proposed_text);
     Ok(ReviewPageView {
         full_url: snapshot.full_url,
         revision_id: snapshot.revision_id,
@@ -1248,7 +1251,8 @@ async fn review_page_view(
             .map(|(count, changed)| RulePreviewView { count, changed })
             .collect(),
         proposed_text,
-        diff,
+        unified_diff,
+        side_by_side_diff,
     })
 }
 
@@ -1515,7 +1519,8 @@ fn page_preview_view(snapshot: PageSnapshot, result: TransformationResult) -> Pa
             .zip(result.changed)
             .map(|(count, changed)| RulePreviewView { count, changed })
             .collect(),
-        diff: unified_lines(&snapshot.content, &result.text),
+        unified_diff: unified_lines(&snapshot.content, &result.text),
+        side_by_side_diff: side_by_side_lines(&snapshot.content, &result.text),
     }
 }
 
