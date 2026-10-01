@@ -30,22 +30,32 @@ impl JobConfigV1 {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum JobStatus {
+    Building,
     Active,
     Stopped,
+    Cancelled,
+    Failed,
     Complete,
 }
 
 impl JobStatus {
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Building => "Building queue",
             Self::Active => "Active",
             Self::Stopped => "Stopped",
+            Self::Cancelled => "Cancelled",
+            Self::Failed => "Failed",
             Self::Complete => "Complete",
         }
     }
 
     pub fn is_active(&self) -> bool {
         matches!(self, Self::Active)
+    }
+
+    pub fn is_building(&self) -> bool {
+        matches!(self, Self::Building)
     }
 }
 
@@ -94,9 +104,14 @@ pub struct JobState {
     pub status: JobStatus,
     pub position: usize,
     pub queue: Vec<QueueEntry>,
+    #[serde(default)]
+    pub generation_message: String,
+    #[serde(default = "default_queue_limit")]
+    pub queue_limit: usize,
 }
 
 impl JobState {
+    #[cfg(test)]
     pub fn new(queue: Vec<QueueEntry>) -> Self {
         Self {
             status: if queue.is_empty() {
@@ -106,7 +121,76 @@ impl JobState {
             },
             position: 0,
             queue,
+            generation_message: String::new(),
+            queue_limit: crate::projects::MAX_QUEUE_LIMIT,
         }
+    }
+
+    pub fn building(queue_limit: usize) -> Self {
+        Self {
+            status: JobStatus::Building,
+            position: 0,
+            queue: Vec::new(),
+            generation_message: "Preparing page sources…".to_owned(),
+            queue_limit,
+        }
+    }
+
+    pub fn append_unique(&mut self, entries: Vec<QueueEntry>) {
+        let mut seen: std::collections::HashSet<String> =
+            self.queue.iter().map(|entry| entry.title.clone()).collect();
+        for entry in entries {
+            if self.queue.len() >= self.queue_limit || !seen.insert(entry.title.clone()) {
+                continue;
+            }
+            self.queue.push(entry);
+        }
+    }
+
+    pub fn finish_build(&mut self) {
+        self.generation_message = format!("Queue ready with {} page(s).", self.queue.len());
+        self.status = if self.queue.is_empty() {
+            JobStatus::Complete
+        } else {
+            JobStatus::Active
+        };
+    }
+
+    pub fn move_entry(&mut self, index: usize, direction: isize) {
+        let target = index as isize + direction;
+        if index >= self.queue.len() || target < 0 || target as usize >= self.queue.len() {
+            return;
+        }
+        let target = target as usize;
+        self.queue.swap(index, target);
+        if self.position == index {
+            self.position = target;
+        } else if self.position == target {
+            self.position = index;
+        }
+    }
+
+    pub fn remove_entry(&mut self, index: usize) {
+        if index >= self.queue.len() {
+            return;
+        }
+        self.queue.remove(index);
+        if self.position > index {
+            self.position -= 1;
+        }
+        if self.queue.is_empty() {
+            self.position = 0;
+            self.status = JobStatus::Complete;
+        } else if self.position >= self.queue.len() {
+            self.position = self.queue.len() - 1;
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.queue.clear();
+        self.position = 0;
+        self.status = JobStatus::Complete;
+        self.generation_message = "Queue cleared.".to_owned();
     }
 
     pub fn current(&self) -> Option<&QueueEntry> {
@@ -149,6 +233,10 @@ impl JobState {
             self.status = JobStatus::Complete;
         }
     }
+}
+
+fn default_queue_limit() -> usize {
+    crate::projects::MAX_QUEUE_LIMIT
 }
 
 #[derive(Default)]
@@ -314,5 +402,29 @@ mod tests {
         let mut state = JobState::new(vec![entry("A")]);
         state.previous();
         assert_eq!(state.position, 0);
+    }
+
+    #[test]
+    fn generated_entries_are_bounded_and_deduplicated() {
+        let mut state = JobState::building(2);
+        state.append_unique(vec![entry("A"), entry("A"), entry("B"), entry("C")]);
+        assert_eq!(state.queue.len(), 2);
+        assert_eq!(state.queue[0].title, "A");
+        assert_eq!(state.queue[1].title, "B");
+    }
+
+    #[test]
+    fn queue_edits_keep_current_position_valid() {
+        let mut state = JobState::new(vec![entry("A"), entry("B"), entry("C")]);
+        state.position = 1;
+        state.move_entry(1, -1);
+        assert_eq!(state.position, 0);
+        assert_eq!(state.current().unwrap().title, "B");
+        state.remove_entry(0);
+        assert_eq!(state.position, 0);
+        assert_eq!(state.current().unwrap().title, "A");
+        state.clear();
+        assert!(state.queue.is_empty());
+        assert_eq!(state.status, JobStatus::Complete);
     }
 }

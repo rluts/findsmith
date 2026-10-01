@@ -10,10 +10,35 @@ use uuid::Uuid;
 
 use crate::entities::project;
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub const DEFAULT_QUEUE_LIMIT: usize = 100;
+pub const MAX_QUEUE_LIMIT: usize = 500;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
 pub struct ProjectState {
     pub pages: Vec<String>,
+    pub categories: Vec<String>,
+    pub backlinks: Vec<String>,
+    pub transclusions: Vec<String>,
+    pub searches: Vec<String>,
+    pub namespaces: Vec<i64>,
+    pub queue_limit: usize,
     pub rules: Vec<ReplacementRule>,
+}
+
+impl Default for ProjectState {
+    fn default() -> Self {
+        Self {
+            pages: Vec::new(),
+            categories: Vec::new(),
+            backlinks: Vec::new(),
+            transclusions: Vec::new(),
+            searches: Vec::new(),
+            namespaces: Vec::new(),
+            queue_limit: DEFAULT_QUEUE_LIMIT,
+            rules: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

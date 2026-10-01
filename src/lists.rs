@@ -3,26 +3,48 @@ use std::collections::HashSet;
 use crate::{
     jobs::{QueueEntry, QueueEntryStatus},
     mediawiki::NormalizedTitle,
+    projects::MAX_QUEUE_LIMIT,
 };
 
-pub const MAX_QUEUE_ENTRIES: usize = 500;
-
-pub fn manual_titles(lines: &[String]) -> Result<Vec<String>, String> {
+pub fn source_values(lines: &[String], label: &str) -> Result<Vec<String>, String> {
     let titles: Vec<_> = lines
         .iter()
         .map(|title| title.trim())
         .filter(|title| !title.is_empty())
         .map(str::to_owned)
         .collect();
-    if titles.is_empty() {
-        return Err("Add at least one page title before starting review.".to_owned());
-    }
-    if titles.len() > MAX_QUEUE_ENTRIES {
+    if titles.len() > MAX_QUEUE_LIMIT {
         return Err(format!(
-            "A review can contain at most {MAX_QUEUE_ENTRIES} page titles."
+            "{label} can contain at most {MAX_QUEUE_LIMIT} entries."
         ));
     }
     Ok(titles)
+}
+
+pub fn validate_queue_limit(limit: usize) -> Result<usize, String> {
+    if (1..=MAX_QUEUE_LIMIT).contains(&limit) {
+        Ok(limit)
+    } else {
+        Err(format!(
+            "Queue limit must be between 1 and {MAX_QUEUE_LIMIT}."
+        ))
+    }
+}
+
+pub fn validate_namespaces(namespaces: &[i64]) -> Result<Vec<i64>, String> {
+    if namespaces.len() > 50 {
+        return Err("Select at most 50 namespaces.".to_owned());
+    }
+    let mut output = Vec::new();
+    for namespace in namespaces {
+        if !(-2..=32_767).contains(namespace) {
+            return Err(format!("Namespace {namespace} is out of range."));
+        }
+        if !output.contains(namespace) {
+            output.push(*namespace);
+        }
+    }
+    Ok(output)
 }
 
 pub fn queue_from_normalized(titles: Vec<NormalizedTitle>) -> Vec<QueueEntry> {
@@ -89,6 +111,17 @@ mod tests {
 
     #[test]
     fn empty_manual_list_is_rejected() {
-        assert!(manual_titles(&["  ".to_owned()]).is_err());
+        assert!(
+            source_values(&["  ".to_owned()], "Pages")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn queue_limit_is_bounded() {
+        assert_eq!(validate_queue_limit(100), Ok(100));
+        assert!(validate_queue_limit(0).is_err());
+        assert!(validate_queue_limit(MAX_QUEUE_LIMIT + 1).is_err());
     }
 }

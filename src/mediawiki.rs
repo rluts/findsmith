@@ -5,6 +5,14 @@ use std::collections::HashMap;
 
 use crate::AppResult;
 
+#[derive(Clone, Copy, Debug)]
+pub enum PageListKind {
+    CategoryMembers,
+    Backlinks,
+    Transclusions,
+    Search,
+}
+
 pub const UKWIKI_ID: &str = "ukwiki";
 pub const UKWIKI_API_URL: &str = "https://uk.wikipedia.org/w/api.php";
 
@@ -154,6 +162,32 @@ struct NormalizePage {
     invalid: bool,
     #[serde(default)]
     invalidreason: String,
+}
+
+#[derive(Deserialize)]
+struct PageListResponse {
+    query: PageListQuery,
+    #[serde(default, rename = "continue")]
+    continuation: HashMap<String, String>,
+}
+
+#[derive(Deserialize)]
+struct PageListQuery {
+    #[serde(default)]
+    categorymembers: Vec<PageListItem>,
+    #[serde(default)]
+    backlinks: Vec<PageListItem>,
+    #[serde(default)]
+    embeddedin: Vec<PageListItem>,
+    #[serde(default)]
+    search: Vec<PageListItem>,
+}
+
+#[derive(Deserialize)]
+struct PageListItem {
+    pageid: u64,
+    ns: i64,
+    title: String,
 }
 
 #[derive(Deserialize)]
@@ -341,6 +375,76 @@ pub async fn normalize_titles(
             .await?;
         output.extend(resolve_normalized_batch(batch, response.query));
     }
+    Ok(output)
+}
+
+pub async fn page_list(
+    wiki_url: &str,
+    user_agent: &str,
+    access_token: &str,
+    kind: PageListKind,
+    value: &str,
+    namespaces: &[i64],
+    limit: usize,
+) -> Result<Vec<NormalizedTitle>, mwapi::Error> {
+    let client = authenticated_client(wiki_url, user_agent, access_token).await?;
+    let mut output = Vec::new();
+    let mut continuation: HashMap<String, String> = HashMap::new();
+    let namespace_filter = namespaces
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join("|");
+
+    while output.len() < limit {
+        let remaining = limit - output.len();
+        let request_limit = remaining.min(500).to_string();
+        let mut params = vec![
+            ("action".to_owned(), "query".to_owned()),
+            ("formatversion".to_owned(), "2".to_owned()),
+        ];
+        let (list, value_key, namespace_key, limit_key) = match kind {
+            PageListKind::CategoryMembers => {
+                ("categorymembers", "cmtitle", "cmnamespace", "cmlimit")
+            }
+            PageListKind::Backlinks => ("backlinks", "bltitle", "blnamespace", "bllimit"),
+            PageListKind::Transclusions => ("embeddedin", "eititle", "einamespace", "eilimit"),
+            PageListKind::Search => ("search", "srsearch", "srnamespace", "srlimit"),
+        };
+        params.push(("list".to_owned(), list.to_owned()));
+        params.push((value_key.to_owned(), value.to_owned()));
+        params.push((limit_key.to_owned(), request_limit));
+        if !namespace_filter.is_empty() {
+            params.push((namespace_key.to_owned(), namespace_filter.clone()));
+        }
+        for (key, value) in &continuation {
+            params.push((key.clone(), value.clone()));
+        }
+
+        let response: PageListResponse = client.get(params).await?;
+        let items = match kind {
+            PageListKind::CategoryMembers => response.query.categorymembers,
+            PageListKind::Backlinks => response.query.backlinks,
+            PageListKind::Transclusions => response.query.embeddedin,
+            PageListKind::Search => response.query.search,
+        };
+        if items.is_empty() {
+            break;
+        }
+        output.extend(items.into_iter().map(|page| NormalizedTitle {
+            requested_title: page.title.clone(),
+            title: page.title,
+            page_id: Some(page.pageid),
+            namespace: Some(page.ns),
+            redirect: false,
+            invalid_reason: None,
+        }));
+        continuation = response.continuation;
+        if continuation.is_empty() {
+            break;
+        }
+    }
+    output.truncate(limit);
     Ok(output)
 }
 

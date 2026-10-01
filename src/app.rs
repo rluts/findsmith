@@ -12,10 +12,10 @@ use crate::{
     mediawiki::owner_identity,
     web::{
         OwnerState, WebState, healthz, owner_create_project, owner_delete_project, owner_index,
-        owner_job_action, owner_job_recompute, owner_job_review, owner_page_preview,
-        owner_preview_project, owner_project, owner_start_job, owner_update_project,
-        owner_workspace, web_create_project, web_delete_project, web_job_action, web_job_recompute,
-        web_job_review, web_oauth_index, web_page_preview, web_preview_project, web_project,
+        owner_job_action, owner_job_queue_action, owner_job_recompute, owner_job_review,
+        owner_page_preview, owner_project, owner_start_job, owner_update_project, owner_workspace,
+        web_create_project, web_delete_project, web_job_action, web_job_queue_action,
+        web_job_recompute, web_job_review, web_oauth_index, web_page_preview, web_project,
         web_start_job, web_update_project, web_workspace,
     },
 };
@@ -42,10 +42,6 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
                 .route("/projects", axum::routing::post(web_create_project))
                 .route("/projects/{id}", get(web_project).post(web_update_project))
                 .route(
-                    "/projects/{id}/preview",
-                    axum::routing::post(web_preview_project),
-                )
-                .route(
                     "/projects/{id}/page-preview",
                     axum::routing::post(web_page_preview),
                 )
@@ -62,6 +58,10 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
                 .route(
                     "/projects/{id}/jobs/{job_id}/recompute",
                     axum::routing::post(web_job_recompute),
+                )
+                .route(
+                    "/projects/{id}/jobs/{job_id}/queue",
+                    axum::routing::post(web_job_queue_action),
                 )
                 .route("/healthz", get(healthz))
                 .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
@@ -92,10 +92,6 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
                     get(owner_project).post(owner_update_project),
                 )
                 .route(
-                    "/projects/{id}/preview",
-                    axum::routing::post(owner_preview_project),
-                )
-                .route(
                     "/projects/{id}/page-preview",
                     axum::routing::post(owner_page_preview),
                 )
@@ -112,6 +108,10 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
                 .route(
                     "/projects/{id}/jobs/{job_id}/recompute",
                     axum::routing::post(owner_job_recompute),
+                )
+                .route(
+                    "/projects/{id}/jobs/{job_id}/queue",
+                    axum::routing::post(owner_job_queue_action),
                 )
                 .route("/healthz", get(healthz))
                 .layer(DefaultBodyLimit::max(16 * 1024 * 1024))

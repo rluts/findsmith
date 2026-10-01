@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  {% if status.is_building() %}<meta http-equiv="refresh" content="2">{% endif %}
   <title>Review · {{ project_name }} · FindSmith</title>
   <style>
     :root { color-scheme: dark; --bg: #101416; --panel: #1d2324; --ink: #f5f3ed; --muted: #a9afad; --accent: #e8ff5b; --danger: #ff794d; --line: #3a4142; }
@@ -34,6 +35,12 @@
     .diff-line code { padding: 2px 10px; font: inherit; }
     .diff-line.added { background: rgba(115, 201, 145, .16); }
     .diff-line.removed { background: rgba(255, 121, 77, .16); }
+    .queue { width: 100%; border-collapse: collapse; margin-top: 14px; }
+    .queue th, .queue td { border-bottom: 1px solid var(--line); padding: 9px; text-align: left; }
+    .queue-actions { display: flex; gap: 5px; }
+    .queue-actions button { padding: 6px 9px; }
+    .append { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
+    .append textarea { min-height: 80px; margin-bottom: 0; }
     @media (max-width: 760px) { header, .heading, .actions { align-items: stretch; flex-direction: column; } .stats, .metadata { grid-template-columns: 1fr 1fr; } button { width: 100%; } }
   </style>
 </head>
@@ -52,7 +59,13 @@
       </div>
     </section>
 
-    {% if status.is_active() %}
+    {% if status.is_building() %}
+      <section class="panel">
+        <h2>Building queue</h2>
+        <p>{{ generation_message }}</p>
+        <p class="muted">{{ total }} page(s) collected so far. This page refreshes automatically.</p>
+      </section>
+    {% else if status.is_active() %}
       {% match current %}
         {% when Some with (entry) %}
           <section class="panel">
@@ -101,20 +114,38 @@
       {% endmatch %}
     {% else %}
       <section class="panel">
-        {% if status.label() == "Complete" %}<h2>Review complete</h2><p>Every queue entry has a recorded result.</p>{% else %}<h2>Review stopped</h2><p>Progress is preserved. Use Previous to reopen the current entry.</p>{% endif %}
+        <h2>{{ status.label() }}</h2><p>{{ generation_message }}</p>
       </section>
     {% endif %}
 
     <form class="panel actions" action="/projects/{{ project_id }}/jobs/{{ job_id }}/action" method="post">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="state_version" value="{{ state_version }}">
-      <button class="secondary" name="action" value="previous" type="submit">Previous</button>
-      {% if status.is_active() %}
+      {% if status.is_building() %}
+        <button class="stop" name="action" value="stop" type="submit">Cancel generation</button>
+      {% else if status.is_active() %}
+        <button class="secondary" name="action" value="previous" type="submit">Previous</button>
         <button class="secondary" name="action" value="skip" type="submit">Skip</button>
         <button class="stop" name="action" value="stop" type="submit">Stop</button>
         <button class="primary" name="action" value="next" type="submit">Next</button>
       {% endif %}
     </form>
+
+    {% if !status.is_building() %}
+      <section class="panel">
+        <div class="heading"><div><h2>Queue</h2><div class="muted">Reorder or remove pages before reviewing them.</div></div></div>
+        <form class="append" action="/projects/{{ project_id }}/jobs/{{ job_id }}/queue" method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="state_version" value="{{ state_version }}"><input type="hidden" name="action" value="append">
+          <label><strong>Append page titles</strong><textarea name="titles" placeholder="One title per line"></textarea></label><button class="primary" type="submit">Append</button>
+        </form>
+        {% if !queue.is_empty() %}
+          <table class="queue"><thead><tr><th>#</th><th>Title</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+          {% for entry in queue %}<tr><td>{{ loop.index }}</td><td>{{ entry.title }}</td><td>{{ entry.status.label() }}</td><td><form class="queue-actions" action="/projects/{{ project_id }}/jobs/{{ job_id }}/queue" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="state_version" value="{{ state_version }}"><input type="hidden" name="index" value="{{ loop.index0 }}"><button class="secondary" name="action" value="move_up" aria-label="Move up">↑</button><button class="secondary" name="action" value="move_down" aria-label="Move down">↓</button><button class="secondary" name="action" value="remove">Remove</button></form></td></tr>{% endfor %}
+          </tbody></table>
+          <form action="/projects/{{ project_id }}/jobs/{{ job_id }}/queue" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="state_version" value="{{ state_version }}"><button class="stop" name="action" value="clear" type="submit">Clear queue</button></form>
+        {% endif %}
+      </section>
+    {% endif %}
   </main>
 </body>
 </html>

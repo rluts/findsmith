@@ -19,8 +19,10 @@ use crate::{
     jobs::{
         JobConfigV1, JobError, JobRepository, JobState, JobStatus, QueueEntry, QueueEntryStatus,
     },
-    lists::{manual_titles, queue_from_normalized},
-    mediawiki::{PageSnapshot, load_page, normalize_titles, wiki_api_url, wiki_id},
+    lists::{queue_from_normalized, source_values, validate_namespaces, validate_queue_limit},
+    mediawiki::{
+        PageListKind, PageSnapshot, load_page, normalize_titles, page_list, wiki_api_url, wiki_id,
+    },
     projects::{ProjectError, ProjectRepository, ProjectState, ReplacementRule},
     rules::{RuleEngine, TransformationResult},
 };
@@ -85,25 +87,20 @@ struct ProjectTemplate<'a> {
     project_name: &'a str,
     state_version: i64,
     pages: &'a str,
+    categories: &'a str,
+    backlinks: &'a str,
+    transclusions: &'a str,
+    searches: &'a str,
+    namespaces: &'a str,
+    queue_limit: usize,
     wiki_id: &'a str,
     rules: &'a [ReplacementRule],
     csrf_token: &'a str,
-    preview_text: &'a str,
-    preview: Option<&'a PreviewView>,
-    preview_error: Option<&'a str>,
     page_title: &'a str,
     page_preview: Option<&'a PagePreviewView>,
     page_preview_error: Option<&'a str>,
     latest_job_id: &'a str,
     latest_job_status: &'a str,
-}
-
-struct PreviewView {
-    output: String,
-    total_replacements: usize,
-    changed: bool,
-    rules: Vec<RulePreviewView>,
-    diff: Vec<DiffLine>,
 }
 
 struct RulePreviewView {
@@ -144,6 +141,8 @@ struct ReviewTemplate<'a> {
     reviewed: usize,
     skipped: usize,
     unavailable: usize,
+    generation_message: &'a str,
+    queue: &'a [QueueEntry],
     current: Option<&'a QueueEntry>,
     page: Option<&'a ReviewPageView>,
     page_error: Option<&'a str>,
@@ -185,6 +184,17 @@ pub struct UpdateProjectForm {
     wiki_id: String,
     pages: String,
     #[serde(default)]
+    categories: String,
+    #[serde(default)]
+    backlinks: String,
+    #[serde(default)]
+    transclusions: String,
+    #[serde(default)]
+    searches: String,
+    #[serde(default)]
+    namespaces: String,
+    queue_limit: usize,
+    #[serde(default)]
     rule_find: Vec<String>,
     #[serde(default)]
     rule_replace: Vec<String>,
@@ -200,8 +210,6 @@ pub struct UpdateProjectForm {
     rule_multiline: Vec<String>,
     #[serde(default)]
     rule_dot_newline: Vec<String>,
-    #[serde(default)]
-    preview_text: String,
     #[serde(default)]
     page_title: String,
     state_version: i64,
@@ -224,6 +232,17 @@ pub struct JobActionForm {
     csrf_token: String,
     state_version: i64,
     action: String,
+}
+
+#[derive(Deserialize)]
+pub struct QueueActionForm {
+    csrf_token: String,
+    state_version: i64,
+    action: String,
+    #[serde(default)]
+    index: usize,
+    #[serde(default)]
+    titles: String,
 }
 
 #[derive(Deserialize)]
@@ -339,31 +358,6 @@ pub async fn owner_update_project(
         return csrf_error(&format!("/projects/{id}"));
     }
     update_project_response(&state.database, &state.central_id, &id, form).await
-}
-
-pub async fn web_preview_project(
-    State(state): State<WebState>,
-    user: AxumUser,
-    Path(id): Path<String>,
-    jar: PrivateCookieJar,
-    Form(form): Form<UpdateProjectForm>,
-) -> Response {
-    if csrf::verify(&jar, &form.csrf_token).is_err() {
-        return csrf_error(&format!("/projects/{id}"));
-    }
-    preview_project_response(&state.database, user.profile().central_id(), &id, form).await
-}
-
-pub async fn owner_preview_project(
-    State(state): State<OwnerState>,
-    Path(id): Path<String>,
-    jar: PrivateCookieJar,
-    Form(form): Form<UpdateProjectForm>,
-) -> Response {
-    if csrf::verify(&jar, &form.csrf_token).is_err() {
-        return csrf_error(&format!("/projects/{id}"));
-    }
-    preview_project_response(&state.database, &state.central_id, &id, form).await
 }
 
 pub async fn web_page_preview(
@@ -571,6 +565,49 @@ pub async fn owner_job_action(
     .await
 }
 
+pub async fn web_job_queue_action(
+    State(state): State<WebState>,
+    user: AxumUser,
+    Path((id, job_id)): Path<(String, String)>,
+    jar: PrivateCookieJar,
+    Form(form): Form<QueueActionForm>,
+) -> Response {
+    if csrf::verify(&jar, &form.csrf_token).is_err() {
+        return csrf_error(&format!("/projects/{id}/jobs/{job_id}"));
+    }
+    queue_action_response(
+        &state.database,
+        user.profile().central_id(),
+        user.oauth2_token(),
+        &state.user_agent,
+        &id,
+        &job_id,
+        form,
+    )
+    .await
+}
+
+pub async fn owner_job_queue_action(
+    State(state): State<OwnerState>,
+    Path((id, job_id)): Path<(String, String)>,
+    jar: PrivateCookieJar,
+    Form(form): Form<QueueActionForm>,
+) -> Response {
+    if csrf::verify(&jar, &form.csrf_token).is_err() {
+        return csrf_error(&format!("/projects/{id}/jobs/{job_id}"));
+    }
+    queue_action_response(
+        &state.database,
+        &state.central_id,
+        &state.access_token,
+        &state.user_agent,
+        &id,
+        &job_id,
+        form,
+    )
+    .await
+}
+
 pub async fn web_delete_project(
     State(state): State<WebState>,
     user: AxumUser,
@@ -652,6 +689,16 @@ async fn project_response(
             match serde_json::from_value::<ProjectState>(project.state_json.clone()) {
                 Ok(state) => {
                     let pages = state.pages.join("\n");
+                    let categories = state.categories.join("\n");
+                    let backlinks = state.backlinks.join("\n");
+                    let transclusions = state.transclusions.join("\n");
+                    let searches = state.searches.join("\n");
+                    let namespaces = state
+                        .namespaces
+                        .iter()
+                        .map(i64::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",");
                     let latest_job = match JobRepository::new(database).latest(owner, id).await {
                         Ok(job) => job,
                         Err(error) => return job_error_response(error, &format!("/projects/{id}")),
@@ -671,12 +718,15 @@ async fn project_response(
                         project_name: &project.name,
                         state_version: project.state_version,
                         pages: &pages,
+                        categories: &categories,
+                        backlinks: &backlinks,
+                        transclusions: &transclusions,
+                        searches: &searches,
+                        namespaces: &namespaces,
+                        queue_limit: state.queue_limit,
                         wiki_id: wiki_id(&project.wiki_url).unwrap_or("ukwiki"),
                         rules: &state.rules,
                         csrf_token,
-                        preview_text: "",
-                        preview: None,
-                        preview_error: None,
                         page_title: "",
                         page_preview: None,
                         page_preview_error: None,
@@ -694,92 +744,6 @@ async fn project_response(
             "/workspace",
         ),
         Err(error) => project_error_response(error, "/workspace"),
-    }
-}
-
-async fn preview_project_response(
-    database: &DatabaseConnection,
-    owner: &str,
-    id: &str,
-    form: UpdateProjectForm,
-) -> Response {
-    let repository = ProjectRepository::new(database);
-    match repository.get(owner, id).await {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return error_page(
-                StatusCode::NOT_FOUND,
-                "Project not found",
-                "This project does not exist or you do not have access to it.",
-                "/workspace",
-            );
-        }
-        Err(error) => return project_error_response(error, "/workspace"),
-    };
-    let rules = match replacement_rules(&form) {
-        Ok(rules) => rules,
-        Err(message) => {
-            return render_project(ProjectTemplate {
-                project_id: id,
-                project_name: &form.name,
-                state_version: form.state_version,
-                pages: &form.pages,
-                wiki_id: &form.wiki_id,
-                rules: &[],
-                csrf_token: &form.csrf_token,
-                preview_text: &form.preview_text,
-                preview: None,
-                preview_error: Some(&message),
-                page_title: &form.page_title,
-                page_preview: None,
-                page_preview_error: None,
-                latest_job_id: "",
-                latest_job_status: "",
-            });
-        }
-    };
-    let result = RuleEngine::compile(&rules).and_then(|engine| engine.apply(&form.preview_text));
-    match result {
-        Ok(result) => {
-            let preview = preview_view(&form.preview_text, result);
-            render_project(ProjectTemplate {
-                project_id: id,
-                project_name: &form.name,
-                state_version: form.state_version,
-                pages: &form.pages,
-                wiki_id: &form.wiki_id,
-                rules: &rules,
-                csrf_token: &form.csrf_token,
-                preview_text: &form.preview_text,
-                preview: Some(&preview),
-                preview_error: None,
-                page_title: &form.page_title,
-                page_preview: None,
-                page_preview_error: None,
-                latest_job_id: "",
-                latest_job_status: "",
-            })
-        }
-        Err(error) => {
-            let message = error.to_string();
-            render_project(ProjectTemplate {
-                project_id: id,
-                project_name: &form.name,
-                state_version: form.state_version,
-                pages: &form.pages,
-                wiki_id: &form.wiki_id,
-                rules: &rules,
-                csrf_token: &form.csrf_token,
-                preview_text: &form.preview_text,
-                preview: None,
-                preview_error: Some(&message),
-                page_title: &form.page_title,
-                page_preview: None,
-                page_preview_error: None,
-                latest_job_id: "",
-                latest_job_status: "",
-            })
-        }
     }
 }
 
@@ -831,12 +795,15 @@ async fn page_preview_response(
         project_name: &form.name,
         state_version: form.state_version,
         pages: &form.pages,
+        categories: &form.categories,
+        backlinks: &form.backlinks,
+        transclusions: &form.transclusions,
+        searches: &form.searches,
+        namespaces: &form.namespaces,
+        queue_limit: form.queue_limit,
         wiki_id: &form.wiki_id,
         rules: &rules,
         csrf_token: &form.csrf_token,
-        preview_text: &form.preview_text,
-        preview: None,
-        preview_error: None,
         page_title: &form.page_title,
         page_preview: Some(&page_preview),
         page_preview_error: None,
@@ -880,8 +847,29 @@ async fn start_job_response(
             &back_href,
         );
     }
-    let titles = match manual_titles(&state.pages) {
-        Ok(titles) => titles,
+    if let Err(message) = validate_project_sources(&state) {
+        return error_page(
+            StatusCode::BAD_REQUEST,
+            "Cannot start review",
+            &message,
+            &back_href,
+        );
+    }
+    if state.pages.is_empty()
+        && state.categories.is_empty()
+        && state.backlinks.is_empty()
+        && state.transclusions.is_empty()
+        && state.searches.is_empty()
+    {
+        return error_page(
+            StatusCode::BAD_REQUEST,
+            "Cannot start review",
+            "Add at least one page source.",
+            &back_href,
+        );
+    }
+    let queue_limit = match validate_queue_limit(state.queue_limit) {
+        Ok(limit) => limit,
         Err(message) => {
             return error_page(
                 StatusCode::BAD_REQUEST,
@@ -891,27 +879,252 @@ async fn start_job_response(
             );
         }
     };
-    let normalized =
-        match normalize_titles(&project.wiki_url, user_agent, access_token, &titles).await {
-            Ok(titles) => titles,
-            Err(error) => {
-                return error_page(
-                    StatusCode::BAD_GATEWAY,
-                    "Could not build page queue",
-                    &format!("MediaWiki request failed: {error}"),
-                    &back_href,
-                );
-            }
-        };
-    let config = JobConfigV1::new(state.rules);
-    let job_state = JobState::new(queue_from_normalized(normalized));
+    let config = JobConfigV1::new(state.rules.clone());
+    let job_state = JobState::building(queue_limit);
     match JobRepository::new(database)
         .create(owner, project_id, &project.wiki_url, config, job_state)
         .await
     {
-        Ok(job) => Redirect::to(&format!("/projects/{project_id}/jobs/{}", job.id)).into_response(),
+        Ok(job) => {
+            let redirect = format!("/projects/{project_id}/jobs/{}", job.id);
+            let database = database.clone();
+            let owner = owner.to_owned();
+            let project_id = project_id.to_owned();
+            let wiki_url = project.wiki_url;
+            let job_id = job.id.clone();
+            let access_token = access_token.to_owned();
+            let user_agent = user_agent.to_owned();
+            tokio::spawn(async move {
+                build_job_queue(
+                    database,
+                    owner,
+                    project_id,
+                    job_id,
+                    wiki_url,
+                    access_token,
+                    user_agent,
+                    state,
+                )
+                .await;
+            });
+            Redirect::to(&redirect).into_response()
+        }
         Err(error) => job_error_response(error, &back_href),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn build_job_queue(
+    database: DatabaseConnection,
+    owner: String,
+    project_id: String,
+    job_id: String,
+    wiki_url: String,
+    access_token: String,
+    user_agent: String,
+    state: ProjectState,
+) {
+    let manual = state.pages.clone();
+    if !manual.is_empty() {
+        match normalize_titles(&wiki_url, &user_agent, &access_token, &manual).await {
+            Ok(mut pages) => {
+                filter_namespaces(&mut pages, &state.namespaces);
+                if update_generation(
+                    &database,
+                    &owner,
+                    &project_id,
+                    &job_id,
+                    queue_from_normalized(pages),
+                    "Manual titles loaded.",
+                    false,
+                    false,
+                )
+                .await
+                .ok()
+                .flatten()
+                .is_none()
+                {
+                    return;
+                }
+            }
+            Err(error) => {
+                fail_generation(
+                    &database,
+                    &owner,
+                    &project_id,
+                    &job_id,
+                    &format!("Manual title lookup failed: {error}"),
+                )
+                .await;
+                return;
+            }
+        }
+    }
+
+    let sources = [
+        (
+            PageListKind::CategoryMembers,
+            &state.categories,
+            "category members",
+        ),
+        (PageListKind::Backlinks, &state.backlinks, "backlinks"),
+        (
+            PageListKind::Transclusions,
+            &state.transclusions,
+            "transclusions",
+        ),
+        (PageListKind::Search, &state.searches, "search results"),
+    ];
+    for (kind, values, label) in sources {
+        for value in values {
+            let current =
+                match current_generation_size(&database, &owner, &project_id, &job_id).await {
+                    Some(size) => size,
+                    None => return,
+                };
+            if current >= state.queue_limit {
+                break;
+            }
+            match page_list(
+                &wiki_url,
+                &user_agent,
+                &access_token,
+                kind,
+                value,
+                &state.namespaces,
+                state.queue_limit - current,
+            )
+            .await
+            {
+                Ok(pages) => {
+                    let message = format!("Loaded {label} for “{value}”.");
+                    if update_generation(
+                        &database,
+                        &owner,
+                        &project_id,
+                        &job_id,
+                        queue_from_normalized(pages),
+                        &message,
+                        false,
+                        false,
+                    )
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_none()
+                    {
+                        return;
+                    }
+                }
+                Err(error) => {
+                    fail_generation(
+                        &database,
+                        &owner,
+                        &project_id,
+                        &job_id,
+                        &format!("Could not load {label}: {error}"),
+                    )
+                    .await;
+                    return;
+                }
+            }
+        }
+    }
+    let _ = update_generation(
+        &database,
+        &owner,
+        &project_id,
+        &job_id,
+        Vec::new(),
+        "Queue ready.",
+        true,
+        false,
+    )
+    .await;
+}
+
+fn filter_namespaces(pages: &mut Vec<crate::mediawiki::NormalizedTitle>, namespaces: &[i64]) {
+    if !namespaces.is_empty() {
+        pages.retain(|page| {
+            page.namespace
+                .is_some_and(|namespace| namespaces.contains(&namespace))
+        });
+    }
+}
+
+async fn current_generation_size(
+    database: &DatabaseConnection,
+    owner: &str,
+    project_id: &str,
+    job_id: &str,
+) -> Option<usize> {
+    let job = JobRepository::new(database)
+        .get(owner, project_id, job_id)
+        .await
+        .ok()??;
+    let state: JobState = serde_json::from_value(job.state_json).ok()?;
+    (state.status == JobStatus::Building).then_some(state.queue.len())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn update_generation(
+    database: &DatabaseConnection,
+    owner: &str,
+    project_id: &str,
+    job_id: &str,
+    entries: Vec<QueueEntry>,
+    message: &str,
+    finish: bool,
+    failed: bool,
+) -> Result<Option<usize>, JobError> {
+    for _ in 0..4 {
+        let repository = JobRepository::new(database);
+        let Some(job) = repository.get(owner, project_id, job_id).await? else {
+            return Ok(None);
+        };
+        let mut state: JobState = serde_json::from_value(job.state_json)?;
+        if state.status != JobStatus::Building {
+            return Ok(None);
+        }
+        state.append_unique(entries.clone());
+        state.generation_message = message.to_owned();
+        if failed {
+            state.status = JobStatus::Failed;
+        }
+        if finish {
+            state.finish_build();
+        }
+        let size = state.queue.len();
+        match repository
+            .update_state(owner, project_id, job_id, &state, job.state_version)
+            .await
+        {
+            Ok(()) => return Ok(Some(size)),
+            Err(JobError::Conflict) => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(JobError::Conflict)
+}
+
+async fn fail_generation(
+    database: &DatabaseConnection,
+    owner: &str,
+    project_id: &str,
+    job_id: &str,
+    message: &str,
+) {
+    let _ = update_generation(
+        database,
+        owner,
+        project_id,
+        job_id,
+        Vec::new(),
+        message,
+        false,
+        true,
+    )
+    .await;
 }
 
 async fn review_response(
@@ -990,6 +1203,8 @@ async fn review_response(
         reviewed: counters.reviewed,
         skipped: counters.skipped,
         unavailable: counters.unavailable,
+        generation_message: &state.generation_message,
+        queue: &state.queue,
         current,
         page: page.as_ref(),
         page_error: page_error.as_deref(),
@@ -1066,7 +1281,16 @@ async fn job_action_response(
     };
     match form.action.as_str() {
         "previous" => state.previous(),
-        "stop" => state.status = JobStatus::Stopped,
+        "stop" => {
+            state.status = if state.status == JobStatus::Building {
+                JobStatus::Cancelled
+            } else {
+                JobStatus::Stopped
+            };
+            if state.status == JobStatus::Cancelled {
+                state.generation_message = "Queue generation cancelled.".to_owned();
+            }
+        }
         "skip" => state.advance(
             QueueEntryStatus::Skipped,
             Some("Skipped during manual review.".to_owned()),
@@ -1119,6 +1343,106 @@ async fn job_action_response(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn queue_action_response(
+    database: &DatabaseConnection,
+    owner: &str,
+    access_token: &str,
+    user_agent: &str,
+    project_id: &str,
+    job_id: &str,
+    form: QueueActionForm,
+) -> Response {
+    let back_href = format!("/projects/{project_id}/jobs/{job_id}");
+    let repository = JobRepository::new(database);
+    let job = match repository.get(owner, project_id, job_id).await {
+        Ok(Some(job)) => job,
+        Ok(None) => return job_not_found(project_id),
+        Err(error) => return job_error_response(error, &back_href),
+    };
+    if job.state_version != form.state_version {
+        return job_error_response(JobError::Conflict, &back_href);
+    }
+    let mut state: JobState = match serde_json::from_value(job.state_json) {
+        Ok(state) => state,
+        Err(error) => return internal_error(error),
+    };
+    if state.status == JobStatus::Building {
+        return error_page(
+            StatusCode::CONFLICT,
+            "Queue is still building",
+            "Cancel generation or wait for it to finish before changing the queue.",
+            &back_href,
+        );
+    }
+    match form.action.as_str() {
+        "move_up" => state.move_entry(form.index, -1),
+        "move_down" => state.move_entry(form.index, 1),
+        "remove" => state.remove_entry(form.index),
+        "clear" => state.clear(),
+        "append" => {
+            let titles = match source_values(&split_lines(&form.titles), "Appended pages") {
+                Ok(titles) if !titles.is_empty() => titles,
+                Ok(_) => {
+                    return error_page(
+                        StatusCode::BAD_REQUEST,
+                        "No pages to append",
+                        "Enter at least one page title.",
+                        &back_href,
+                    );
+                }
+                Err(message) => {
+                    return error_page(
+                        StatusCode::BAD_REQUEST,
+                        "Cannot append pages",
+                        &message,
+                        &back_href,
+                    );
+                }
+            };
+            let pages =
+                match normalize_titles(&job.wiki_url, user_agent, access_token, &titles).await {
+                    Ok(pages) => pages,
+                    Err(error) => {
+                        return error_page(
+                            StatusCode::BAD_GATEWAY,
+                            "Could not append pages",
+                            &format!("MediaWiki request failed: {error}"),
+                            &back_href,
+                        );
+                    }
+                };
+            state.append_unique(queue_from_normalized(pages));
+            if !state.queue.is_empty()
+                && matches!(
+                    state.status,
+                    JobStatus::Complete
+                        | JobStatus::Stopped
+                        | JobStatus::Cancelled
+                        | JobStatus::Failed
+                )
+            {
+                state.status = JobStatus::Active;
+            }
+        }
+        _ => {
+            return error_page(
+                StatusCode::BAD_REQUEST,
+                "Invalid queue action",
+                "Choose append, move, remove, or clear.",
+                &back_href,
+            );
+        }
+    }
+    match repository
+        .update_state(owner, project_id, job_id, &state, form.state_version)
+        .await
+    {
+        Ok(()) => Redirect::to(&back_href).into_response(),
+        Err(error) => job_error_response(error, &back_href),
+    }
+}
+
 fn job_not_found(project_id: &str) -> Response {
     error_page(
         StatusCode::NOT_FOUND,
@@ -1152,12 +1476,15 @@ fn render_page_preview_error(
         project_name: &form.name,
         state_version: form.state_version,
         pages: &form.pages,
+        categories: &form.categories,
+        backlinks: &form.backlinks,
+        transclusions: &form.transclusions,
+        searches: &form.searches,
+        namespaces: &form.namespaces,
+        queue_limit: form.queue_limit,
         wiki_id: &form.wiki_id,
         rules,
         csrf_token: &form.csrf_token,
-        preview_text: &form.preview_text,
-        preview: None,
-        preview_error: None,
         page_title: &form.page_title,
         page_preview: None,
         page_preview_error: Some(message),
@@ -1205,22 +1532,6 @@ fn protection_text(snapshot: &PageSnapshot) -> String {
     }
 }
 
-fn preview_view(input: &str, result: TransformationResult) -> PreviewView {
-    let diff = unified_lines(input, &result.text);
-    PreviewView {
-        output: result.text,
-        total_replacements: result.total_replacements,
-        changed: result.total_replacements > 0,
-        rules: result
-            .counts
-            .into_iter()
-            .zip(result.changed)
-            .map(|(count, changed)| RulePreviewView { count, changed })
-            .collect(),
-        diff,
-    }
-}
-
 fn render_project(template: ProjectTemplate<'_>) -> Response {
     render(template)
 }
@@ -1259,16 +1570,52 @@ async fn update_project_response(
             &back_href,
         );
     };
+    let queue_limit = match validate_queue_limit(form.queue_limit) {
+        Ok(limit) => limit,
+        Err(message) => {
+            return error_page(
+                StatusCode::BAD_REQUEST,
+                "Invalid queue limit",
+                &message,
+                &back_href,
+            );
+        }
+    };
+    let namespaces =
+        match parse_namespaces(&form.namespaces).and_then(|items| validate_namespaces(&items)) {
+            Ok(namespaces) => namespaces,
+            Err(message) => {
+                return error_page(
+                    StatusCode::BAD_REQUEST,
+                    "Invalid namespaces",
+                    &message,
+                    &back_href,
+                );
+            }
+        };
+    let pages = split_lines(&form.pages);
+    let categories = split_lines(&form.categories);
+    let backlinks = split_lines(&form.backlinks);
+    let transclusions = split_lines(&form.transclusions);
+    let searches = split_lines(&form.searches);
     let state = ProjectState {
-        pages: form
-            .pages
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .map(str::to_owned)
-            .collect(),
+        pages,
+        categories,
+        backlinks,
+        transclusions,
+        searches,
+        namespaces,
+        queue_limit,
         rules,
     };
+    if let Err(message) = validate_project_sources(&state) {
+        return error_page(
+            StatusCode::BAD_REQUEST,
+            "Invalid page sources",
+            &message,
+            &back_href,
+        );
+    }
     let repository = ProjectRepository::new(database);
     match repository
         .update(
@@ -1290,6 +1637,35 @@ async fn update_project_response(
         ),
         Err(error) => project_error_response(error, &back_href),
     }
+}
+
+fn split_lines(value: &str) -> Vec<String> {
+    value
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn validate_project_sources(state: &ProjectState) -> Result<(), String> {
+    source_values(&state.pages, "Manual pages")?;
+    source_values(&state.categories, "Categories")?;
+    source_values(&state.backlinks, "Backlinks")?;
+    source_values(&state.transclusions, "Transclusions")?;
+    source_values(&state.searches, "Searches")?;
+    Ok(())
+}
+
+fn parse_namespaces(value: &str) -> Result<Vec<i64>, String> {
+    value
+        .split([',', ' ', '\n', '\t'])
+        .filter(|item| !item.is_empty())
+        .map(|item| {
+            item.parse::<i64>()
+                .map_err(|_| format!("“{item}” is not a namespace ID."))
+        })
+        .collect()
 }
 
 fn replacement_rules(form: &UpdateProjectForm) -> Result<Vec<ReplacementRule>, String> {
