@@ -21,7 +21,8 @@ use crate::{
     },
     lists::{queue_from_normalized, source_values, validate_namespaces, validate_queue_limit},
     mediawiki::{
-        PageListKind, PageSnapshot, load_page, normalize_titles, page_list, wiki_api_url, wiki_id,
+        PageListKind, PageSnapshot, load_page, normalize_titles, page_list, page_list_bot,
+        wiki_api_url, wiki_id,
     },
     projects::{ProjectError, ProjectRepository, ProjectState, ReplacementRule},
     rules::{RuleEngine, TransformationResult},
@@ -416,6 +417,7 @@ pub async fn web_start_job(
     start_job_response(
         &state.database,
         user.profile().central_id(),
+        user.profile().username(),
         user.oauth2_token(),
         &state.user_agent,
         &id,
@@ -435,6 +437,7 @@ pub async fn owner_start_job(
     start_job_response(
         &state.database,
         &state.central_id,
+        &state.username,
         &state.access_token,
         &state.user_agent,
         &id,
@@ -817,6 +820,7 @@ async fn page_preview_response(
 async fn start_job_response(
     database: &DatabaseConnection,
     owner: &str,
+    username: &str,
     access_token: &str,
     user_agent: &str,
     project_id: &str,
@@ -891,6 +895,7 @@ async fn start_job_response(
             let redirect = format!("/projects/{project_id}/jobs/{}", job.id);
             let database = database.clone();
             let owner = owner.to_owned();
+            let username = username.to_owned();
             let project_id = project_id.to_owned();
             let wiki_url = project.wiki_url;
             let job_id = job.id.clone();
@@ -900,6 +905,7 @@ async fn start_job_response(
                 build_job_queue(
                     database,
                     owner,
+                    username,
                     project_id,
                     job_id,
                     wiki_url,
@@ -919,6 +925,7 @@ async fn start_job_response(
 async fn build_job_queue(
     database: DatabaseConnection,
     owner: String,
+    username: String,
     project_id: String,
     job_id: String,
     wiki_url: String,
@@ -926,6 +933,20 @@ async fn build_job_queue(
     user_agent: String,
     state: ProjectState,
 ) {
+    let bot = match page_list_bot(&wiki_url, &username, &access_token, &user_agent).await {
+        Ok(bot) => bot,
+        Err(error) => {
+            fail_generation(
+                &database,
+                &owner,
+                &project_id,
+                &job_id,
+                &format!("Could not initialize the MediaWiki page generator: {error}"),
+            )
+            .await;
+            return;
+        }
+    };
     let manual = state.pages.clone();
     if !manual.is_empty() {
         match normalize_titles(&wiki_url, &user_agent, &access_token, &manual).await {
@@ -988,9 +1009,7 @@ async fn build_job_queue(
                 break;
             }
             match page_list(
-                &wiki_url,
-                &user_agent,
-                &access_token,
+                &bot,
                 kind,
                 value,
                 &state.namespaces,

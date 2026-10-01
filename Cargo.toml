@@ -13,7 +13,8 @@ axum-extra = { version = "0.12.6", features = ["cookie-private", "form"] }
 base64 = "0.22.1"
 chrono = { version = "0.4.42", features = ["serde"] }
 configparser = "3.2.0"
-mwapi = "0.8.0-rc.1"
+mwapi = "0.7.0"
+mwbot = { version = "0.7.1", default-features = false, features = ["generators"] }
 mwoauth = { version = "0.1.0-alpha.1", features = ["axum"] }
 regex = "1.12.3"
 sea-orm = { version = "2.0.2", default-features = false, features = ["sqlx-mysql", "runtime-tokio-rustls", "macros", "with-json", "with-chrono"] }

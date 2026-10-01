@@ -1,5 +1,11 @@
 use std::{error::Error, fmt};
 
+use mwbot::{
+    Bot,
+    generators::{
+        EmbeddedIn, Generator, categories::CategoryMembers, link::LinksHere, search::Search,
+    },
+};
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -162,32 +168,6 @@ struct NormalizePage {
     invalid: bool,
     #[serde(default)]
     invalidreason: String,
-}
-
-#[derive(Deserialize)]
-struct PageListResponse {
-    query: PageListQuery,
-    #[serde(default, rename = "continue")]
-    continuation: HashMap<String, serde_json::Value>,
-}
-
-#[derive(Deserialize)]
-struct PageListQuery {
-    #[serde(default)]
-    categorymembers: Vec<PageListItem>,
-    #[serde(default)]
-    backlinks: Vec<PageListItem>,
-    #[serde(default)]
-    embeddedin: Vec<PageListItem>,
-    #[serde(default)]
-    search: Vec<PageListItem>,
-}
-
-#[derive(Deserialize)]
-struct PageListItem {
-    pageid: u64,
-    ns: i64,
-    title: String,
 }
 
 #[derive(Deserialize)]
@@ -379,88 +359,82 @@ pub async fn normalize_titles(
 }
 
 pub async fn page_list(
-    wiki_url: &str,
-    user_agent: &str,
-    access_token: &str,
+    bot: &Bot,
     kind: PageListKind,
     value: &str,
     namespaces: &[i64],
     limit: usize,
-) -> Result<Vec<NormalizedTitle>, mwapi::Error> {
-    let client = authenticated_client(wiki_url, user_agent, access_token).await?;
-    let mut output = Vec::new();
-    let mut continuation: HashMap<String, String> = HashMap::new();
-    let namespace_filter = namespaces
+) -> Result<Vec<NormalizedTitle>, mwbot::Error> {
+    let namespaces: Vec<u32> = namespaces
         .iter()
-        .map(i64::to_string)
-        .collect::<Vec<_>>()
-        .join("|");
-
-    while output.len() < limit {
-        let remaining = limit - output.len();
-        let request_limit = remaining.min(500).to_string();
-        let mut params = vec![
-            ("action".to_owned(), "query".to_owned()),
-            ("formatversion".to_owned(), "2".to_owned()),
-        ];
-        let (list, value_key, namespace_key, limit_key) = match kind {
-            PageListKind::CategoryMembers => {
-                ("categorymembers", "cmtitle", "cmnamespace", "cmlimit")
+        .filter_map(|namespace| u32::try_from(*namespace).ok())
+        .collect();
+    let mut pages = match kind {
+        PageListKind::CategoryMembers => {
+            let generator = CategoryMembers::new(value.to_owned());
+            if namespaces.is_empty() {
+                generator.generate(bot)
+            } else {
+                generator.namespace(namespaces).generate(bot)
             }
-            PageListKind::Backlinks => ("backlinks", "bltitle", "blnamespace", "bllimit"),
-            PageListKind::Transclusions => ("embeddedin", "eititle", "einamespace", "eilimit"),
-            PageListKind::Search => ("search", "srsearch", "srnamespace", "srlimit"),
-        };
-        params.push(("list".to_owned(), list.to_owned()));
-        params.push((value_key.to_owned(), value.to_owned()));
-        params.push((limit_key.to_owned(), request_limit));
-        if !namespace_filter.is_empty() {
-            params.push((namespace_key.to_owned(), namespace_filter.clone()));
         }
-        for (key, value) in &continuation {
-            params.push((key.clone(), value.clone()));
+        PageListKind::Backlinks => {
+            let generator = LinksHere::new(vec![value.to_owned()]);
+            if namespaces.is_empty() {
+                generator.generate(bot)
+            } else {
+                generator.namespaces(namespaces).generate(bot)
+            }
         }
-
-        let response: PageListResponse = client.get(params).await?;
-        let items = match kind {
-            PageListKind::CategoryMembers => response.query.categorymembers,
-            PageListKind::Backlinks => response.query.backlinks,
-            PageListKind::Transclusions => response.query.embeddedin,
-            PageListKind::Search => response.query.search,
-        };
-        if items.is_empty() {
-            break;
+        PageListKind::Transclusions => {
+            let generator = EmbeddedIn::new(value.to_owned());
+            if namespaces.is_empty() {
+                generator.generate(bot)
+            } else {
+                generator.namespace(namespaces).generate(bot)
+            }
         }
-        output.extend(items.into_iter().map(|page| NormalizedTitle {
-            requested_title: page.title.clone(),
-            title: page.title,
-            page_id: Some(page.pageid),
-            namespace: Some(page.ns),
-            redirect: false,
+        PageListKind::Search => {
+            let generator = Search::new(value.to_owned());
+            if namespaces.is_empty() {
+                generator.generate(bot)
+            } else {
+                generator.namespace(namespaces).generate(bot)
+            }
+        }
+    };
+    let mut output = Vec::new();
+    while output.len() < limit
+        && let Some(page) = pages.recv().await
+    {
+        let page = page?;
+        let title = page.title().to_owned();
+        output.push(NormalizedTitle {
+            requested_title: title.clone(),
+            title,
+            page_id: page.id().await?.map(u64::from),
+            namespace: Some(i64::from(page.namespace())),
+            redirect: page.is_redirect().await?,
             invalid_reason: None,
-        }));
-        continuation = response
-            .continuation
-            .into_iter()
-            .filter_map(|(key, value)| continuation_value(value).map(|value| (key, value)))
-            .collect();
-        if continuation.is_empty() {
-            break;
-        }
+        });
     }
-    output.truncate(limit);
     Ok(output)
 }
 
-fn continuation_value(value: serde_json::Value) -> Option<String> {
-    match value {
-        serde_json::Value::String(value) => Some(value),
-        serde_json::Value::Number(value) => Some(value.to_string()),
-        serde_json::Value::Bool(value) => Some(value.to_string()),
-        serde_json::Value::Null | serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
-            None
-        }
-    }
+pub async fn page_list_bot(
+    wiki_url: &str,
+    username: &str,
+    access_token: &str,
+    user_agent: &str,
+) -> Result<Bot, mwbot::ConfigError> {
+    let script_path = wiki_url.strip_suffix("api.php").unwrap_or(wiki_url);
+    Bot::builder(script_path.to_owned())
+        .set_oauth2_token(username.to_owned(), access_token.to_owned())
+        .set_user_agent(user_agent.to_owned())
+        .set_mark_as_bot(false)
+        .set_respect_nobots(true)
+        .build()
+        .await
 }
 
 fn resolve_normalized_batch(batch: &[String], query: NormalizeQuery) -> Vec<NormalizedTitle> {
@@ -587,27 +561,6 @@ mod tests {
         assert_eq!(
             results[0].invalid_reason.as_deref(),
             Some("The page title is invalid.")
-        );
-    }
-
-    #[test]
-    fn numeric_search_continuation_is_accepted() {
-        let response: PageListResponse = serde_json::from_str(
-            r#"{"continue":{"continue":"-||","sroffset":100},"query":{"search":[]}}"#,
-        )
-        .unwrap();
-        let continuation: HashMap<_, _> = response
-            .continuation
-            .into_iter()
-            .filter_map(|(key, value)| continuation_value(value).map(|value| (key, value)))
-            .collect();
-        assert_eq!(
-            continuation.get("continue").map(String::as_str),
-            Some("-||")
-        );
-        assert_eq!(
-            continuation.get("sroffset").map(String::as_str),
-            Some("100")
         );
     }
 }

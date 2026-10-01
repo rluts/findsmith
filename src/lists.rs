@@ -37,7 +37,7 @@ pub fn validate_namespaces(namespaces: &[i64]) -> Result<Vec<i64>, String> {
     }
     let mut output = Vec::new();
     for namespace in namespaces {
-        if !(-2..=32_767).contains(namespace) {
+        if !(0..=32_767).contains(namespace) {
             return Err(format!("Namespace {namespace} is out of range."));
         }
         if !output.contains(namespace) {
@@ -123,5 +123,11 @@ mod tests {
         assert_eq!(validate_queue_limit(100), Ok(100));
         assert!(validate_queue_limit(0).is_err());
         assert!(validate_queue_limit(MAX_QUEUE_LIMIT + 1).is_err());
+    }
+
+    #[test]
+    fn generator_namespaces_must_be_non_negative() {
+        assert_eq!(validate_namespaces(&[0, 10, 14]), Ok(vec![0, 10, 14]));
+        assert!(validate_namespaces(&[-1]).is_err());
     }
 }
