@@ -168,7 +168,7 @@ struct NormalizePage {
 struct PageListResponse {
     query: PageListQuery,
     #[serde(default, rename = "continue")]
-    continuation: HashMap<String, String>,
+    continuation: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -439,13 +439,28 @@ pub async fn page_list(
             redirect: false,
             invalid_reason: None,
         }));
-        continuation = response.continuation;
+        continuation = response
+            .continuation
+            .into_iter()
+            .filter_map(|(key, value)| continuation_value(value).map(|value| (key, value)))
+            .collect();
         if continuation.is_empty() {
             break;
         }
     }
     output.truncate(limit);
     Ok(output)
+}
+
+fn continuation_value(value: serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(value) => Some(value),
+        serde_json::Value::Number(value) => Some(value.to_string()),
+        serde_json::Value::Bool(value) => Some(value.to_string()),
+        serde_json::Value::Null | serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            None
+        }
+    }
 }
 
 fn resolve_normalized_batch(batch: &[String], query: NormalizeQuery) -> Vec<NormalizedTitle> {
@@ -572,6 +587,27 @@ mod tests {
         assert_eq!(
             results[0].invalid_reason.as_deref(),
             Some("The page title is invalid.")
+        );
+    }
+
+    #[test]
+    fn numeric_search_continuation_is_accepted() {
+        let response: PageListResponse = serde_json::from_str(
+            r#"{"continue":{"continue":"-||","sroffset":100},"query":{"search":[]}}"#,
+        )
+        .unwrap();
+        let continuation: HashMap<_, _> = response
+            .continuation
+            .into_iter()
+            .filter_map(|(key, value)| continuation_value(value).map(|value| (key, value)))
+            .collect();
+        assert_eq!(
+            continuation.get("continue").map(String::as_str),
+            Some("-||")
+        );
+        assert_eq!(
+            continuation.get("sroffset").map(String::as_str),
+            Some("100")
         );
     }
 }
