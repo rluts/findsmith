@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Review · {{ project_name }} · FindSmith</title>
+  <style>
+    :root { color-scheme: dark; --bg: #101416; --panel: #1d2324; --ink: #f5f3ed; --muted: #a9afad; --accent: #e8ff5b; --danger: #ff794d; --line: #3a4142; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font-family: system-ui, sans-serif; }
+    main { width: min(1120px, calc(100% - 32px)); margin: 0 auto; padding: 40px 0; }
+    header, .heading, .actions { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+    header { margin-bottom: 24px; }
+    h1, h2, h3, p { margin-top: 0; }
+    a { color: inherit; text-underline-offset: 4px; }
+    .muted { color: var(--muted); }
+    .panel { border: 1px solid var(--line); background: var(--panel); padding: 22px; margin-bottom: 20px; }
+    .stats, .metadata { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .stats div, .metadata div { border: 1px solid var(--line); background: var(--bg); padding: 11px; overflow-wrap: anywhere; }
+    .stats strong, .metadata strong { display: block; color: var(--muted); font-size: .76rem; text-transform: uppercase; margin-bottom: 4px; }
+    .status { color: var(--accent); font-weight: 800; }
+    .error { color: var(--danger); font-weight: 700; }
+    .rule-counts { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; padding: 0; list-style: none; }
+    .rule-counts li { border: 1px solid var(--line); padding: 7px 10px; color: var(--muted); }
+    .rule-counts .changed { color: var(--ink); border-color: var(--accent); }
+    textarea { width: 100%; min-height: 280px; resize: vertical; margin: 8px 0 14px; background: var(--bg); color: var(--ink); border: 1px solid var(--line); padding: 13px; font: 14px/1.45 ui-monospace, monospace; }
+    button { border: 0; padding: 12px 18px; cursor: pointer; font-weight: 800; }
+    .primary { background: var(--accent); color: #151800; }
+    .secondary { border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+    .stop { background: var(--danger); color: #210700; }
+    .diff { border: 1px solid var(--line); background: var(--bg); overflow-x: auto; margin-top: 14px; }
+    .diff-line { display: grid; grid-template-columns: 2rem 1fr; min-height: 1.5rem; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: ui-monospace, monospace; }
+    .diff-line span { padding: 2px 8px; user-select: none; color: var(--muted); text-align: center; }
+    .diff-line code { padding: 2px 10px; font: inherit; }
+    .diff-line.added { background: rgba(115, 201, 145, .16); }
+    .diff-line.removed { background: rgba(255, 121, 77, .16); }
+    @media (max-width: 760px) { header, .heading, .actions { align-items: stretch; flex-direction: column; } .stats, .metadata { grid-template-columns: 1fr 1fr; } button { width: 100%; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div><h1>{{ project_name }}</h1><div class="muted">Read-only queue review · {{ status.label() }}</div></div>
+      <a href="/projects/{{ project_id }}">Project settings</a>
+    </header>
+    <section class="panel">
+      <div class="stats">
+        <div><strong>Position</strong>{{ position }} / {{ total }}</div>
+        <div><strong>Pending</strong>{{ pending }}</div>
+        <div><strong>Reviewed</strong>{{ reviewed }}</div>
+        <div><strong>Skipped / unavailable</strong>{{ skipped }} / {{ unavailable }}</div>
+      </div>
+    </section>
+
+    {% if status.is_active() %}
+      {% match current %}
+        {% when Some with (entry) %}
+          <section class="panel">
+            <div class="heading">
+              <div><h2>{{ entry.title }}</h2><div class="muted">Requested as {{ entry.requested_title }}</div></div>
+              <div class="status">{{ entry.status.label() }}</div>
+            </div>
+            <div class="metadata">
+              <div><strong>Page ID</strong>{% match entry.page_id %}{% when Some with (id) %}{{ id }}{% when None %}—{% endmatch %}</div>
+              <div><strong>Namespace</strong>{% match entry.namespace %}{% when Some with (ns) %}{{ ns }}{% when None %}—{% endmatch %}</div>
+              <div><strong>Redirect resolved</strong>{% if entry.redirect %}Yes{% else %}No{% endif %}</div>
+              <div><strong>Queue result</strong>{{ entry.status.label() }}</div>
+            </div>
+            {% match entry.reason %}{% when Some with (reason) %}<p class="error">{{ reason }}</p>{% when None %}{% endmatch %}
+          </section>
+
+          {% match page_error %}{% when Some with (message) %}<section class="panel"><p class="error">{{ message }}</p><p class="muted">You can retry by reloading, skip this entry, or stop the review.</p></section>{% when None %}{% endmatch %}
+
+          {% match page %}
+            {% when Some with (view) %}
+              <section class="panel">
+                <div class="heading"><h2><a href="{{ view.full_url }}" target="_blank" rel="noopener noreferrer">Current revision</a></h2>{% if view.changed %}<span class="status">Changed</span>{% else %}<span class="muted">No changes</span>{% endif %}</div>
+                <div class="metadata">
+                  <div><strong>Revision</strong>{{ view.revision_id }}</div>
+                  <div><strong>Revision time</strong>{{ view.revision_timestamp }}</div>
+                  <div><strong>Server time</strong>{{ view.server_timestamp }}</div>
+                  <div><strong>Editable</strong>{% if view.editable %}Yes{% else %}No{% endif %}</div>
+                  <div><strong>Content model</strong>{{ view.content_model }}</div>
+                  <div><strong>Protection</strong>{{ view.protection }}</div>
+                  <div><strong>Rule replacements</strong>{{ view.total_replacements }}</div>
+                  <div><strong>Mode</strong>Read only</div>
+                </div>
+                <ul class="rule-counts">{% for rule in view.rules %}<li{% if rule.changed %} class="changed"{% endif %}>Rule {{ loop.index }}: {{ rule.count }}</li>{% endfor %}</ul>
+                <form action="/projects/{{ project_id }}/jobs/{{ job_id }}/recompute" method="post">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <label><strong>Proposed wikitext</strong><textarea name="proposed_text" maxlength="4194304">{{ view.proposed_text }}</textarea></label>
+                  <button class="primary" type="submit">Recompute diff</button>
+                </form>
+                <h3>Unified diff</h3>
+                <div class="diff" aria-label="Unified wikitext diff">{% for line in view.diff %}<div class="diff-line {{ line.kind }}"><span>{{ line.marker }}</span><code>{{ line.text }}</code></div>{% endfor %}</div>
+              </section>
+            {% when None %}
+          {% endmatch %}
+        {% when None %}
+          <section class="panel"><p>No queue entry is available.</p></section>
+      {% endmatch %}
+    {% else %}
+      <section class="panel">
+        {% if status.label() == "Complete" %}<h2>Review complete</h2><p>Every queue entry has a recorded result.</p>{% else %}<h2>Review stopped</h2><p>Progress is preserved. Use Previous to reopen the current entry.</p>{% endif %}
+      </section>
+    {% endif %}
+
+    <form class="panel actions" action="/projects/{{ project_id }}/jobs/{{ job_id }}/action" method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="state_version" value="{{ state_version }}">
+      <button class="secondary" name="action" value="previous" type="submit">Previous</button>
+      {% if status.is_active() %}
+        <button class="secondary" name="action" value="skip" type="submit">Skip</button>
+        <button class="stop" name="action" value="stop" type="submit">Stop</button>
+        <button class="primary" name="action" value="next" type="submit">Next</button>
+      {% endif %}
+    </form>
+  </main>
+</body>
+</html>

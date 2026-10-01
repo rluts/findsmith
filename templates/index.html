@@ -51,6 +51,8 @@
 
 
     .lede { max-width: 610px; margin: 0; color: var(--muted); font-size: clamp(1.05rem, 2vw, 1.28rem); line-height: 1.65; }
+    .development-notice { max-width: 610px; margin: 28px 0 0; padding: 18px 20px; border: 1px solid var(--orange); background: rgba(255, 121, 77, .08); color: var(--ink); line-height: 1.55; }
+    .development-notice strong { display: block; margin-bottom: 4px; color: var(--orange); font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; }
     .card { position: relative; padding: clamp(26px, 4vw, 42px); border: 1px solid var(--line); background: var(--panel); backdrop-filter: blur(18px); box-shadow: 0 28px 80px rgba(0, 0, 0, .3); }
     .card::before { content: ""; position: absolute; width: 14px; height: 14px; top: -1px; right: -1px; border-top: 2px solid var(--accent); border-right: 2px solid var(--accent); }
     .number { color: var(--orange); font: 700 .72rem ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; }
@@ -91,9 +93,13 @@
     <main>
       <section>
         <p class="lede">Find and Replace Tool</p>
+        <div class="development-notice" role="status">
+          <strong>Under development</strong>
+          FindSmith is not ready for use yet.
+        </div>
       </section>
       <aside class="card">
-        <div class="number">ACCESS / 01</div>
+        <div class="number">ACCESS</div>
         {% match username %}
           {% when Some with (username) %}
             <div class="status">Authenticated</div>
@@ -103,7 +109,7 @@
               {% when None %}
             {% endmatch %}
             <p>Your Wikimedia identity is connected. You’re ready to start searching.</p>
-            <a class="button" href="#workspace">Open workspace <span aria-hidden="true">→</span></a>
+            <a class="button" href="/workspace">Open workspace <span aria-hidden="true">→</span></a>
             {% if can_logout %}<p class="logout"><a class="text-link" href="/oauth/logout">Log out</a></p>{% endif %}
           {% when None %}
             <h2>Connect your account</h2>

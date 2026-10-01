@@ -3,3 +3,5 @@ target/
 .idea/
 .vscode/
 .env
+rust-buildpack
+.DS_Store

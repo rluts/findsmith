@@ -56,6 +56,7 @@ impl Authentication {
 
 pub fn oauth_state(
     config: WebOAuthConfig,
+    cookie_key: &[u8],
     wiki_url: &str,
     user_agent: &str,
     debug: bool,
@@ -73,5 +74,5 @@ pub fn oauth_state(
         ..CookieConfig::default()
     };
 
-    Ok(AxumOAuthState::new(client, Key::from(&config.cookie_key)).with_cookie_config(cookies))
+    Ok(AxumOAuthState::new(client, Key::from(cookie_key)).with_cookie_config(cookies))
 }
