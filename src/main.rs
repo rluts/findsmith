@@ -7,6 +7,8 @@ mod csrf;
 mod database;
 mod diff;
 mod entities;
+mod jobs;
+mod lists;
 mod mediawiki;
 mod migration;
 mod projects;

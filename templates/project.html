@@ -169,6 +169,16 @@
         <button class="preview-button" type="submit" formaction="/projects/{{ project_id }}/preview">Run local preview</button>
       </div>
     </form>
+    <section class="panel">
+      <div class="section-heading">
+        <div><h2>Queue review</h2><div class="muted">Uses the saved page list and rules. Save this project before starting a new review.</div></div>
+        <form action="/projects/{{ project_id }}/jobs" method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="preview-button" type="submit">Start read-only review</button>
+        </form>
+      </div>
+      {% if !latest_job_id.is_empty() %}<p><a href="/projects/{{ project_id }}/jobs/{{ latest_job_id }}">Resume latest review</a> <span class="muted">({{ latest_job_status }})</span></p>{% endif %}
+    </section>
     <section class="danger-zone">
       <h2>Delete project</h2>
       <p class="muted">This action cannot be undone.</p>

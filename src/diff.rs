@@ -23,3 +23,23 @@ pub fn unified_lines(original: &str, proposed: &str) -> Vec<DiffLine> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unified_diff_marks_removed_and_added_lines() {
+        let lines = unified_lines("one\ntwo\n", "one\nthree\n");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.kind == "removed" && line.text == "two")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.kind == "added" && line.text == "three")
+        );
+    }
+}

@@ -1,6 +1,7 @@
 use std::{error::Error, fmt};
 
 use serde::Deserialize;
+use std::collections::HashMap;
 
 use crate::AppResult;
 
@@ -45,6 +46,16 @@ pub struct PageProtection {
     pub kind: String,
     pub level: String,
     pub expiry: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct NormalizedTitle {
+    pub requested_title: String,
+    pub title: String,
+    pub page_id: Option<u64>,
+    pub namespace: Option<i64>,
+    pub redirect: bool,
+    pub invalid_reason: Option<String>,
 }
 
 #[derive(Debug)]
@@ -108,6 +119,41 @@ struct GlobalUserInfo {
 struct PageResponse {
     curtimestamp: String,
     query: PageQuery,
+}
+
+#[derive(Deserialize)]
+struct NormalizeResponse {
+    query: NormalizeQuery,
+}
+
+#[derive(Deserialize)]
+struct NormalizeQuery {
+    #[serde(default)]
+    normalized: Vec<TitleMapping>,
+    #[serde(default)]
+    redirects: Vec<TitleMapping>,
+    pages: Vec<NormalizePage>,
+}
+
+#[derive(Deserialize)]
+struct TitleMapping {
+    from: String,
+    to: String,
+}
+
+#[derive(Deserialize)]
+struct NormalizePage {
+    #[serde(default)]
+    pageid: u64,
+    #[serde(default)]
+    ns: i64,
+    title: String,
+    #[serde(default)]
+    missing: bool,
+    #[serde(default)]
+    invalid: bool,
+    #[serde(default)]
+    invalidreason: String,
 }
 
 #[derive(Deserialize)]
@@ -274,6 +320,88 @@ pub async fn load_page(
     })
 }
 
+pub async fn normalize_titles(
+    wiki_url: &str,
+    user_agent: &str,
+    access_token: &str,
+    titles: &[String],
+) -> Result<Vec<NormalizedTitle>, mwapi::Error> {
+    const BATCH_SIZE: usize = 50;
+    let client = authenticated_client(wiki_url, user_agent, access_token).await?;
+    let mut output = Vec::with_capacity(titles.len());
+
+    for batch in titles.chunks(BATCH_SIZE) {
+        let response: NormalizeResponse = client
+            .get([
+                ("action", "query"),
+                ("titles", &batch.join("|")),
+                ("redirects", "1"),
+                ("formatversion", "2"),
+            ])
+            .await?;
+        output.extend(resolve_normalized_batch(batch, response.query));
+    }
+    Ok(output)
+}
+
+fn resolve_normalized_batch(batch: &[String], query: NormalizeQuery) -> Vec<NormalizedTitle> {
+    let normalized: HashMap<_, _> = query
+        .normalized
+        .into_iter()
+        .map(|mapping| (mapping.from, mapping.to))
+        .collect();
+    let redirects: HashMap<_, _> = query
+        .redirects
+        .into_iter()
+        .map(|mapping| (mapping.from, mapping.to))
+        .collect();
+    let pages: HashMap<_, _> = query
+        .pages
+        .into_iter()
+        .map(|page| (page.title.clone(), page))
+        .collect();
+
+    batch
+        .iter()
+        .map(|requested| {
+            let normalized_title = normalized
+                .get(requested)
+                .cloned()
+                .unwrap_or_else(|| requested.clone());
+            let title = redirects
+                .get(&normalized_title)
+                .cloned()
+                .unwrap_or_else(|| normalized_title.clone());
+            let redirected = title != normalized_title;
+            let page = pages.get(&title).or_else(|| pages.get(&normalized_title));
+            match page {
+                Some(page) => NormalizedTitle {
+                    requested_title: requested.clone(),
+                    title: page.title.clone(),
+                    page_id: (!page.missing && !page.invalid).then_some(page.pageid),
+                    namespace: (!page.invalid).then_some(page.ns),
+                    redirect: redirected,
+                    invalid_reason: page.invalid.then(|| {
+                        if page.invalidreason.is_empty() {
+                            "The page title is invalid.".to_owned()
+                        } else {
+                            page.invalidreason.clone()
+                        }
+                    }),
+                },
+                None => NormalizedTitle {
+                    requested_title: requested.clone(),
+                    title,
+                    page_id: None,
+                    namespace: None,
+                    redirect: redirected,
+                    invalid_reason: Some("MediaWiki did not return this title.".to_owned()),
+                },
+            }
+        })
+        .collect()
+}
+
 async fn authenticated_client(
     wiki_url: &str,
     user_agent: &str,
@@ -285,4 +413,61 @@ async fn authenticated_client(
         .set_assert(mwapi::Assert::User)
         .build()
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalized_titles_follow_redirects_and_preserve_requested_value() {
+        let results = resolve_normalized_batch(
+            &["foo_bar".to_owned()],
+            NormalizeQuery {
+                normalized: vec![TitleMapping {
+                    from: "foo_bar".to_owned(),
+                    to: "Foo bar".to_owned(),
+                }],
+                redirects: vec![TitleMapping {
+                    from: "Foo bar".to_owned(),
+                    to: "Target".to_owned(),
+                }],
+                pages: vec![NormalizePage {
+                    pageid: 42,
+                    ns: 0,
+                    title: "Target".to_owned(),
+                    missing: false,
+                    invalid: false,
+                    invalidreason: String::new(),
+                }],
+            },
+        );
+        assert_eq!(results[0].requested_title, "foo_bar");
+        assert_eq!(results[0].title, "Target");
+        assert_eq!(results[0].page_id, Some(42));
+        assert!(results[0].redirect);
+    }
+
+    #[test]
+    fn invalid_title_without_api_reason_is_still_invalid() {
+        let results = resolve_normalized_batch(
+            &["Bad".to_owned()],
+            NormalizeQuery {
+                normalized: vec![],
+                redirects: vec![],
+                pages: vec![NormalizePage {
+                    pageid: 0,
+                    ns: 0,
+                    title: "Bad".to_owned(),
+                    missing: false,
+                    invalid: true,
+                    invalidreason: String::new(),
+                }],
+            },
+        );
+        assert_eq!(
+            results[0].invalid_reason.as_deref(),
+            Some("The page title is invalid.")
+        );
+    }
 }

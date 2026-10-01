@@ -1,6 +1,9 @@
-use axum::{Router, routing::get};
+use std::time::Duration;
+
+use axum::{Router, extract::DefaultBodyLimit, http::StatusCode, routing::get};
 use mwoauth::axum::routes as oauth_routes;
 use sea_orm::DatabaseConnection;
+use tower_http::timeout::TimeoutLayer;
 
 use crate::{
     AppResult,
@@ -9,9 +12,11 @@ use crate::{
     mediawiki::owner_identity,
     web::{
         OwnerState, WebState, healthz, owner_create_project, owner_delete_project, owner_index,
-        owner_page_preview, owner_preview_project, owner_project, owner_update_project,
-        owner_workspace, web_create_project, web_delete_project, web_oauth_index, web_page_preview,
-        web_preview_project, web_project, web_update_project, web_workspace,
+        owner_job_action, owner_job_recompute, owner_job_review, owner_page_preview,
+        owner_preview_project, owner_project, owner_start_job, owner_update_project,
+        owner_workspace, web_create_project, web_delete_project, web_job_action, web_job_recompute,
+        web_job_review, web_oauth_index, web_page_preview, web_preview_project, web_project,
+        web_start_job, web_update_project, web_workspace,
     },
 };
 
@@ -48,7 +53,22 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
                     "/projects/{id}/delete",
                     axum::routing::post(web_delete_project),
                 )
+                .route("/projects/{id}/jobs", axum::routing::post(web_start_job))
+                .route("/projects/{id}/jobs/{job_id}", get(web_job_review))
+                .route(
+                    "/projects/{id}/jobs/{job_id}/action",
+                    axum::routing::post(web_job_action),
+                )
+                .route(
+                    "/projects/{id}/jobs/{job_id}/recompute",
+                    axum::routing::post(web_job_recompute),
+                )
                 .route("/healthz", get(healthz))
+                .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
+                .layer(TimeoutLayer::with_status_code(
+                    StatusCode::REQUEST_TIMEOUT,
+                    Duration::from_secs(60),
+                ))
                 .with_state(state))
         }
         AuthenticationConfig::OwnerToken(access_token) => {
@@ -83,7 +103,22 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
                     "/projects/{id}/delete",
                     axum::routing::post(owner_delete_project),
                 )
+                .route("/projects/{id}/jobs", axum::routing::post(owner_start_job))
+                .route("/projects/{id}/jobs/{job_id}", get(owner_job_review))
+                .route(
+                    "/projects/{id}/jobs/{job_id}/action",
+                    axum::routing::post(owner_job_action),
+                )
+                .route(
+                    "/projects/{id}/jobs/{job_id}/recompute",
+                    axum::routing::post(owner_job_recompute),
+                )
                 .route("/healthz", get(healthz))
+                .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
+                .layer(TimeoutLayer::with_status_code(
+                    StatusCode::REQUEST_TIMEOUT,
+                    Duration::from_secs(60),
+                ))
                 .with_state(state))
         }
     }

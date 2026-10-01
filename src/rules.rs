@@ -216,3 +216,39 @@ fn compile_rule(index: usize, rule: &ReplacementRule) -> Result<CompiledRule, Ru
         matcher,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plain(find: &str, replace: &str) -> ReplacementRule {
+        ReplacementRule {
+            find: find.to_owned(),
+            replace: replace.to_owned(),
+            ..ReplacementRule::default()
+        }
+    }
+
+    #[test]
+    fn rules_run_in_visible_order() {
+        let engine = RuleEngine::compile(&[plain("a", "b"), plain("b", "c")]).unwrap();
+        let result = engine.apply("a").unwrap();
+        assert_eq!(result.text, "c");
+        assert_eq!(result.counts, vec![1, 1]);
+    }
+
+    #[test]
+    fn plain_replacement_treats_dollar_as_literal() {
+        let engine = RuleEngine::compile(&[plain("price", "$5")]).unwrap();
+        assert_eq!(engine.apply("price").unwrap().text, "$5");
+    }
+
+    #[test]
+    fn disabled_rule_does_not_change_text() {
+        let mut rule = plain("a", "b");
+        rule.enabled = false;
+        let result = RuleEngine::compile(&[rule]).unwrap().apply("a").unwrap();
+        assert_eq!(result.text, "a");
+        assert_eq!(result.counts, vec![0]);
+    }
+}
