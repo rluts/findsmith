@@ -116,8 +116,8 @@ fn database_config() -> AppResult<DatabaseConfig> {
             .unwrap_or_else(|_| "tools.db.svc.wikimedia.cloud".to_owned()),
         port,
         name: required_env("DATABASE_NAME")?,
-        user: env::var("DATABASE_USER").ok(),
-        password: env::var("DATABASE_PASSWORD").ok(),
+        user: env::var("TOOL_TOOLSDB_USER").ok(),
+        password: env::var("TOOL_TOOLSDB_PASSWORD").ok(),
         credentials_file: env::var("DATABASE_CREDENTIALS_FILE").ok(),
     })
 }

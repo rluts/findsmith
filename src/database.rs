@@ -8,6 +8,7 @@ use crate::{AppResult, config::DatabaseConfig, migration::Migrator};
 
 pub async fn connect(config: DatabaseConfig) -> AppResult<DatabaseConnection> {
     let (user, password) = credentials(&config)?;
+    validate_database_name(&config.name, &user)?;
     let url = format!(
         "mysql://{}:{}@{}:{}/{}",
         encode(&user),
@@ -28,11 +29,22 @@ pub async fn connect(config: DatabaseConfig) -> AppResult<DatabaseConnection> {
     Ok(database)
 }
 
+fn validate_database_name(name: &str, user: &str) -> AppResult<()> {
+    let required_prefix = format!("{user}__");
+    if !name.starts_with(&required_prefix) || name.len() == required_prefix.len() {
+        return Err(
+            "DATABASE_NAME must start with the ToolsDB credential user followed by two underscores and a database suffix"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 fn credentials(config: &DatabaseConfig) -> AppResult<(String, String)> {
     match (&config.user, &config.password) {
         (Some(user), Some(password)) => return Ok((user.clone(), password.clone())),
         (Some(_), None) | (None, Some(_)) => {
-            return Err("DATABASE_USER and DATABASE_PASSWORD must be set together".into());
+            return Err("TOOL_TOOLSDB_USER and TOOL_TOOLSDB_PASSWORD must be set together".into());
         }
         (None, None) => {}
     }
@@ -63,4 +75,20 @@ fn default_credentials_path() -> PathBuf {
 
 fn encode(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_toolsdb_name_with_credential_prefix() {
+        assert!(validate_database_name("s12345__findsmith", "s12345").is_ok());
+    }
+
+    #[test]
+    fn rejects_missing_or_empty_database_suffix() {
+        assert!(validate_database_name("findsmith", "s12345").is_err());
+        assert!(validate_database_name("s12345__", "s12345").is_err());
+    }
 }
