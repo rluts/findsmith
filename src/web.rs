@@ -24,7 +24,9 @@ use crate::{
         PageListKind, PageSnapshot, load_page, normalize_titles, page_list, page_list_bot,
         wiki_api_url, wiki_id,
     },
-    projects::{ProjectError, ProjectRepository, ProjectState, ReplacementRule},
+    projects::{
+        PageSource, PageSourceKind, ProjectError, ProjectRepository, ProjectState, ReplacementRule,
+    },
     rules::{RuleEngine, TransformationResult},
 };
 
@@ -87,12 +89,8 @@ struct ProjectTemplate<'a> {
     project_id: &'a str,
     project_name: &'a str,
     state_version: i64,
-    pages: &'a str,
-    categories: &'a str,
-    backlinks: &'a str,
-    transclusions: &'a str,
-    searches: &'a str,
-    namespaces: &'a str,
+    sources: &'a [PageSourceView],
+    namespace_options: &'a [NamespaceOption],
     queue_limit: usize,
     wiki_id: &'a str,
     rules: &'a [ReplacementRule],
@@ -102,6 +100,34 @@ struct ProjectTemplate<'a> {
     page_preview_error: Option<&'a str>,
     latest_job_id: &'a str,
     latest_job_status: &'a str,
+    latest_job_message: &'a str,
+    latest_job_total: usize,
+    latest_job_found: usize,
+    latest_job_duplicates: usize,
+    latest_job_limit_reached: bool,
+    latest_job_building: bool,
+    latest_queue_preview: &'a [QueueEntry],
+}
+
+struct PageSourceView {
+    kind: &'static str,
+    label: &'static str,
+    value: String,
+    summary: String,
+}
+
+struct NamespaceOption {
+    id: i64,
+    label: &'static str,
+    selected: bool,
+}
+
+struct LegacySourceLists {
+    pages: Vec<String>,
+    categories: Vec<String>,
+    backlinks: Vec<String>,
+    transclusions: Vec<String>,
+    searches: Vec<String>,
 }
 
 struct RulePreviewView {
@@ -185,17 +211,12 @@ pub struct CreateProjectForm {
 pub struct UpdateProjectForm {
     name: String,
     wiki_id: String,
-    pages: String,
     #[serde(default)]
-    categories: String,
+    source_kind: Vec<String>,
     #[serde(default)]
-    backlinks: String,
+    source_value: Vec<String>,
     #[serde(default)]
-    transclusions: String,
-    #[serde(default)]
-    searches: String,
-    #[serde(default)]
-    namespaces: String,
+    namespaces: Vec<String>,
     queue_limit: usize,
     #[serde(default)]
     rule_find: Vec<String>,
@@ -363,6 +384,57 @@ pub async fn owner_update_project(
     update_project_response(&state.database, &state.central_id, &id, form).await
 }
 
+pub async fn web_build_project(
+    State(state): State<WebState>,
+    user: AxumUser,
+    Path(id): Path<String>,
+    jar: PrivateCookieJar,
+    Form(form): Form<UpdateProjectForm>,
+) -> Response {
+    if csrf::verify(&jar, &form.csrf_token).is_err() {
+        return csrf_error(&format!("/projects/{id}"));
+    }
+    if let Err(response) =
+        save_project(&state.database, user.profile().central_id(), &id, &form).await
+    {
+        return *response;
+    }
+    start_job_response(
+        &state.database,
+        user.profile().central_id(),
+        user.profile().username(),
+        user.oauth2_token(),
+        &state.user_agent,
+        &id,
+        true,
+    )
+    .await
+}
+
+pub async fn owner_build_project(
+    State(state): State<OwnerState>,
+    Path(id): Path<String>,
+    jar: PrivateCookieJar,
+    Form(form): Form<UpdateProjectForm>,
+) -> Response {
+    if csrf::verify(&jar, &form.csrf_token).is_err() {
+        return csrf_error(&format!("/projects/{id}"));
+    }
+    if let Err(response) = save_project(&state.database, &state.central_id, &id, &form).await {
+        return *response;
+    }
+    start_job_response(
+        &state.database,
+        &state.central_id,
+        &state.username,
+        &state.access_token,
+        &state.user_agent,
+        &id,
+        true,
+    )
+    .await
+}
+
 pub async fn web_page_preview(
     State(state): State<WebState>,
     user: AxumUser,
@@ -421,6 +493,7 @@ pub async fn web_start_job(
         user.oauth2_token(),
         &state.user_agent,
         &id,
+        false,
     )
     .await
 }
@@ -441,6 +514,7 @@ pub async fn owner_start_job(
         &state.access_token,
         &state.user_agent,
         &id,
+        false,
     )
     .await
 }
@@ -693,41 +767,59 @@ async fn project_response(
         Ok(Some(project)) => {
             match serde_json::from_value::<ProjectState>(project.state_json.clone()) {
                 Ok(state) => {
-                    let pages = state.pages.join("\n");
-                    let categories = state.categories.join("\n");
-                    let backlinks = state.backlinks.join("\n");
-                    let transclusions = state.transclusions.join("\n");
-                    let searches = state.searches.join("\n");
-                    let namespaces = state
-                        .namespaces
-                        .iter()
-                        .map(i64::to_string)
-                        .collect::<Vec<_>>()
-                        .join(",");
+                    let sources = page_source_views(&state.ordered_sources());
+                    let namespace_options = namespace_options(&state.namespaces);
                     let latest_job = match JobRepository::new(database).latest(owner, id).await {
                         Ok(job) => job,
                         Err(error) => return job_error_response(error, &format!("/projects/{id}")),
                     };
-                    let (latest_job_id, latest_job_status) = match latest_job {
+                    let (
+                        latest_job_id,
+                        latest_job_status,
+                        latest_job_message,
+                        latest_job_total,
+                        latest_job_found,
+                        latest_job_duplicates,
+                        latest_job_limit_reached,
+                        latest_job_building,
+                        latest_queue_preview,
+                    ) = match latest_job {
                         Some(job) => {
                             let job_state: JobState = match serde_json::from_value(job.state_json) {
                                 Ok(state) => state,
                                 Err(error) => return internal_error(error),
                             };
-                            (job.id, job_state.status.label().to_owned())
+                            let preview = job_state.queue.iter().take(10).cloned().collect();
+                            (
+                                job.id,
+                                job_state.status.label().to_owned(),
+                                job_state.generation_message,
+                                job_state.queue.len(),
+                                job_state.generation_found,
+                                job_state.generation_duplicates,
+                                job_state.generation_limit_reached,
+                                job_state.status.is_building(),
+                                preview,
+                            )
                         }
-                        None => (String::new(), String::new()),
+                        None => (
+                            String::new(),
+                            String::new(),
+                            String::new(),
+                            0,
+                            0,
+                            0,
+                            false,
+                            false,
+                            Vec::new(),
+                        ),
                     };
                     render_project(ProjectTemplate {
                         project_id: &project.id,
                         project_name: &project.name,
                         state_version: project.state_version,
-                        pages: &pages,
-                        categories: &categories,
-                        backlinks: &backlinks,
-                        transclusions: &transclusions,
-                        searches: &searches,
-                        namespaces: &namespaces,
+                        sources: &sources,
+                        namespace_options: &namespace_options,
                         queue_limit: state.queue_limit,
                         wiki_id: wiki_id(&project.wiki_url).unwrap_or("ukwiki"),
                         rules: &state.rules,
@@ -737,6 +829,13 @@ async fn project_response(
                         page_preview_error: None,
                         latest_job_id: &latest_job_id,
                         latest_job_status: &latest_job_status,
+                        latest_job_message: &latest_job_message,
+                        latest_job_total,
+                        latest_job_found,
+                        latest_job_duplicates,
+                        latest_job_limit_reached,
+                        latest_job_building,
+                        latest_queue_preview: &latest_queue_preview,
                     })
                 }
                 Err(error) => internal_error(error),
@@ -795,16 +894,16 @@ async fn page_preview_response(
         Err(error) => return render_page_preview_error(id, &form, &rules, &error.to_string()),
     };
     let page_preview = page_preview_view(snapshot, result);
+    let sources = page_sources_from_form(&form).unwrap_or_default();
+    let source_views = page_source_views(&sources);
+    let selected_namespaces = parse_namespaces(&form.namespaces).unwrap_or_default();
+    let namespace_options = namespace_options(&selected_namespaces);
     render_project(ProjectTemplate {
         project_id: id,
         project_name: &form.name,
         state_version: form.state_version,
-        pages: &form.pages,
-        categories: &form.categories,
-        backlinks: &form.backlinks,
-        transclusions: &form.transclusions,
-        searches: &form.searches,
-        namespaces: &form.namespaces,
+        sources: &source_views,
+        namespace_options: &namespace_options,
         queue_limit: form.queue_limit,
         wiki_id: &form.wiki_id,
         rules: &rules,
@@ -814,6 +913,13 @@ async fn page_preview_response(
         page_preview_error: None,
         latest_job_id: "",
         latest_job_status: "",
+        latest_job_message: "",
+        latest_job_total: 0,
+        latest_job_found: 0,
+        latest_job_duplicates: 0,
+        latest_job_limit_reached: false,
+        latest_job_building: false,
+        latest_queue_preview: &[],
     })
 }
 
@@ -824,6 +930,7 @@ async fn start_job_response(
     access_token: &str,
     user_agent: &str,
     project_id: &str,
+    return_to_project: bool,
 ) -> Response {
     let back_href = format!("/projects/{project_id}");
     let project = match ProjectRepository::new(database)
@@ -861,12 +968,7 @@ async fn start_job_response(
             &back_href,
         );
     }
-    if state.pages.is_empty()
-        && state.categories.is_empty()
-        && state.backlinks.is_empty()
-        && state.transclusions.is_empty()
-        && state.searches.is_empty()
-    {
+    if !state.has_sources() {
         return error_page(
             StatusCode::BAD_REQUEST,
             "Cannot start review",
@@ -892,7 +994,11 @@ async fn start_job_response(
         .await
     {
         Ok(job) => {
-            let redirect = format!("/projects/{project_id}/jobs/{}", job.id);
+            let redirect = if return_to_project {
+                format!("/projects/{project_id}")
+            } else {
+                format!("/projects/{project_id}/jobs/{}", job.id)
+            };
             let database = database.clone();
             let owner = owner.to_owned();
             let username = username.to_owned();
@@ -947,59 +1053,70 @@ async fn build_job_queue(
             return;
         }
     };
-    let manual = state.pages.clone();
-    if !manual.is_empty() {
-        match normalize_titles(&wiki_url, &user_agent, &access_token, &manual).await {
-            Ok(mut pages) => {
-                filter_namespaces(&mut pages, &state.namespaces);
-                if update_generation(
-                    &database,
-                    &owner,
-                    &project_id,
-                    &job_id,
-                    queue_from_normalized(pages),
-                    "Manual titles loaded.",
-                    false,
-                    false,
-                )
-                .await
-                .ok()
-                .flatten()
-                .is_none()
-                {
+    for source in state.ordered_sources() {
+        if source.kind == PageSourceKind::Manual {
+            if update_generation(
+                &database,
+                &owner,
+                &project_id,
+                &job_id,
+                Vec::new(),
+                "Loading manual titles…",
+                false,
+                false,
+            )
+            .await
+            .ok()
+            .flatten()
+            .is_none()
+            {
+                return;
+            }
+            match normalize_titles(&wiki_url, &user_agent, &access_token, &source.values).await {
+                Ok(mut pages) => {
+                    filter_namespaces(&mut pages, &state.namespaces);
+                    let message = format!("Loaded {} manual title(s).", pages.len());
+                    if update_generation(
+                        &database,
+                        &owner,
+                        &project_id,
+                        &job_id,
+                        queue_from_normalized(pages),
+                        &message,
+                        false,
+                        false,
+                    )
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_none()
+                    {
+                        return;
+                    }
+                }
+                Err(error) => {
+                    fail_generation(
+                        &database,
+                        &owner,
+                        &project_id,
+                        &job_id,
+                        &format!("Manual title lookup failed: {error}"),
+                    )
+                    .await;
                     return;
                 }
             }
-            Err(error) => {
-                fail_generation(
-                    &database,
-                    &owner,
-                    &project_id,
-                    &job_id,
-                    &format!("Manual title lookup failed: {error}"),
-                )
-                .await;
-                return;
-            }
+            continue;
         }
-    }
 
-    let sources = [
-        (
-            PageListKind::CategoryMembers,
-            &state.categories,
-            "category members",
-        ),
-        (PageListKind::Backlinks, &state.backlinks, "backlinks"),
-        (
-            PageListKind::Transclusions,
-            &state.transclusions,
-            "transclusions",
-        ),
-        (PageListKind::Search, &state.searches, "search results"),
-    ];
-    for (kind, values, label) in sources {
-        for value in values {
+        let (kind, label) = match source.kind {
+            PageSourceKind::Category => (PageListKind::CategoryMembers, "category members"),
+            PageSourceKind::Backlinks => (PageListKind::Backlinks, "backlinks"),
+            PageSourceKind::Transclusions => (PageListKind::Transclusions, "transclusions"),
+            PageSourceKind::Search => (PageListKind::Search, "search results"),
+            PageSourceKind::Manual => unreachable!(),
+        };
+        for value in &source.values {
             let current =
                 match current_generation_size(&database, &owner, &project_id, &job_id).await {
                     Some(size) => size,
@@ -1007,6 +1124,24 @@ async fn build_job_queue(
                 };
             if current >= state.queue_limit {
                 break;
+            }
+            let loading_message = format!("Loading {label} for “{value}”…");
+            if update_generation(
+                &database,
+                &owner,
+                &project_id,
+                &job_id,
+                Vec::new(),
+                &loading_message,
+                false,
+                false,
+            )
+            .await
+            .ok()
+            .flatten()
+            .is_none()
+            {
+                return;
             }
             match page_list(
                 &bot,
@@ -1494,16 +1629,16 @@ fn render_page_preview_error(
     rules: &[ReplacementRule],
     message: &str,
 ) -> Response {
+    let sources = page_sources_from_form(form).unwrap_or_default();
+    let source_views = page_source_views(&sources);
+    let selected_namespaces = parse_namespaces(&form.namespaces).unwrap_or_default();
+    let namespace_options = namespace_options(&selected_namespaces);
     render_project(ProjectTemplate {
         project_id: id,
         project_name: &form.name,
         state_version: form.state_version,
-        pages: &form.pages,
-        categories: &form.categories,
-        backlinks: &form.backlinks,
-        transclusions: &form.transclusions,
-        searches: &form.searches,
-        namespaces: &form.namespaces,
+        sources: &source_views,
+        namespace_options: &namespace_options,
         queue_limit: form.queue_limit,
         wiki_id: &form.wiki_id,
         rules,
@@ -1513,6 +1648,13 @@ fn render_page_preview_error(
         page_preview_error: Some(message),
         latest_job_id: "",
         latest_job_status: "",
+        latest_job_message: "",
+        latest_job_total: 0,
+        latest_job_found: 0,
+        latest_job_duplicates: 0,
+        latest_job_limit_reached: false,
+        latest_job_building: false,
+        latest_queue_preview: &[],
     })
 }
 
@@ -1566,100 +1708,120 @@ async fn update_project_response(
     id: &str,
     form: UpdateProjectForm,
 ) -> Response {
+    match save_project(database, owner, id, &form).await {
+        Ok(_) => Redirect::to(&format!("/projects/{id}")).into_response(),
+        Err(response) => *response,
+    }
+}
+
+async fn save_project(
+    database: &DatabaseConnection,
+    owner: &str,
+    id: &str,
+    form: &UpdateProjectForm,
+) -> Result<project::Model, Box<Response>> {
     let back_href = format!("/projects/{id}");
-    let rules = match replacement_rules(&form) {
+    let rules = match replacement_rules(form) {
         Ok(rules) => rules,
         Err(message) => {
-            return error_page(
+            return Err(Box::new(error_page(
                 StatusCode::BAD_REQUEST,
                 "Invalid replacement rules",
                 &message,
                 &back_href,
-            );
+            )));
         }
     };
     if let Err(error) = RuleEngine::compile(&rules).and_then(|engine| engine.apply("")) {
-        return error_page(
+        return Err(Box::new(error_page(
             StatusCode::BAD_REQUEST,
             "Invalid replacement rules",
             &error.to_string(),
             &back_href,
-        );
+        )));
     }
     let Some(wiki_url) = wiki_api_url(&form.wiki_id) else {
-        return error_page(
+        return Err(Box::new(error_page(
             StatusCode::BAD_REQUEST,
             "Unsupported wiki",
             "Select one of the available wikis.",
             &back_href,
-        );
+        )));
     };
     let queue_limit = match validate_queue_limit(form.queue_limit) {
         Ok(limit) => limit,
         Err(message) => {
-            return error_page(
+            return Err(Box::new(error_page(
                 StatusCode::BAD_REQUEST,
                 "Invalid queue limit",
                 &message,
                 &back_href,
-            );
+            )));
         }
     };
     let namespaces =
         match parse_namespaces(&form.namespaces).and_then(|items| validate_namespaces(&items)) {
             Ok(namespaces) => namespaces,
             Err(message) => {
-                return error_page(
+                return Err(Box::new(error_page(
                     StatusCode::BAD_REQUEST,
                     "Invalid namespaces",
                     &message,
                     &back_href,
-                );
+                )));
             }
         };
-    let pages = split_lines(&form.pages);
-    let categories = split_lines(&form.categories);
-    let backlinks = split_lines(&form.backlinks);
-    let transclusions = split_lines(&form.transclusions);
-    let searches = split_lines(&form.searches);
+    let sources = match page_sources_from_form(form) {
+        Ok(sources) => sources,
+        Err(message) => {
+            return Err(Box::new(error_page(
+                StatusCode::BAD_REQUEST,
+                "Invalid page sources",
+                &message,
+                &back_href,
+            )));
+        }
+    };
+    let legacy = legacy_sources(&sources);
     let state = ProjectState {
-        pages,
-        categories,
-        backlinks,
-        transclusions,
-        searches,
+        sources,
+        pages: legacy.pages,
+        categories: legacy.categories,
+        backlinks: legacy.backlinks,
+        transclusions: legacy.transclusions,
+        searches: legacy.searches,
         namespaces,
         queue_limit,
         rules,
     };
     if let Err(message) = validate_project_sources(&state) {
-        return error_page(
+        return Err(Box::new(error_page(
             StatusCode::BAD_REQUEST,
             "Invalid page sources",
             &message,
             &back_href,
-        );
+        )));
     }
     let repository = ProjectRepository::new(database);
     match repository
         .update(
             owner,
             id,
-            form.name,
+            form.name.clone(),
             wiki_url.to_owned(),
             state,
             form.state_version,
         )
         .await
     {
-        Ok(Some(_)) => Redirect::to(&back_href).into_response(),
-        Ok(None) => error_page(
+        Ok(Some(project)) => Ok(project),
+        Ok(None) => Err(Box::new(error_page(
             StatusCode::NOT_FOUND,
             "Project not found",
             "This project does not exist or you do not have access to it.",
             "/workspace",
-        ),
-        Err(error) => project_error_response(error, &back_href),
+        ))),
+        Err(error) => Err(Box::new(project_error_response(error, &back_href))),
     }
 }
 
@@ -1672,19 +1834,143 @@ fn split_lines(value: &str) -> Vec<String> {
         .collect()
 }
 
+fn page_sources_from_form(form: &UpdateProjectForm) -> Result<Vec<PageSource>, String> {
+    if form.source_kind.len() != form.source_value.len() {
+        return Err("The submitted page sources are incomplete. Reload and try again.".to_owned());
+    }
+    if form.source_kind.len() > 100 {
+        return Err("A project can contain at most 100 page sources.".to_owned());
+    }
+
+    form.source_kind
+        .iter()
+        .zip(&form.source_value)
+        .filter_map(|(kind, value)| {
+            let values = split_lines(value);
+            if values.is_empty() {
+                return None;
+            }
+            Some(parse_page_source(kind, values))
+        })
+        .collect()
+}
+
+fn parse_page_source(kind: &str, mut values: Vec<String>) -> Result<PageSource, String> {
+    let kind = match kind {
+        "manual" => PageSourceKind::Manual,
+        "category" => PageSourceKind::Category,
+        "backlinks" => PageSourceKind::Backlinks,
+        "transclusions" => PageSourceKind::Transclusions,
+        "search" => PageSourceKind::Search,
+        _ => return Err("A page source has an unsupported type.".to_owned()),
+    };
+    if matches!(
+        kind,
+        PageSourceKind::Category | PageSourceKind::Transclusions
+    ) {
+        let prefix = if kind == PageSourceKind::Category {
+            "Category:"
+        } else {
+            "Template:"
+        };
+        for value in &mut values {
+            if !value.contains(':') {
+                *value = format!("{prefix}{value}");
+            }
+        }
+    }
+    source_values(&values, kind.label())?;
+    Ok(PageSource { kind, values })
+}
+
+fn legacy_sources(sources: &[PageSource]) -> LegacySourceLists {
+    let (mut pages, mut categories, mut backlinks, mut transclusions, mut searches) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for source in sources {
+        match source.kind {
+            PageSourceKind::Manual => pages.extend(source.values.clone()),
+            PageSourceKind::Category => categories.extend(source.values.clone()),
+            PageSourceKind::Backlinks => backlinks.extend(source.values.clone()),
+            PageSourceKind::Transclusions => transclusions.extend(source.values.clone()),
+            PageSourceKind::Search => searches.extend(source.values.clone()),
+        }
+    }
+    LegacySourceLists {
+        pages,
+        categories,
+        backlinks,
+        transclusions,
+        searches,
+    }
+}
+
+fn page_source_views(sources: &[PageSource]) -> Vec<PageSourceView> {
+    sources
+        .iter()
+        .map(|source| {
+            let first = source
+                .values
+                .first()
+                .map(String::as_str)
+                .unwrap_or_default();
+            let summary = if source.values.len() > 1 {
+                format!("{first} and {} more", source.values.len() - 1)
+            } else {
+                first.to_owned()
+            };
+            PageSourceView {
+                kind: source.kind.form_value(),
+                label: source.kind.label(),
+                value: source.values.join("\n"),
+                summary,
+            }
+        })
+        .collect()
+}
+
+fn namespace_options(selected: &[i64]) -> Vec<NamespaceOption> {
+    [
+        (0, "Article"),
+        (1, "Talk"),
+        (2, "User"),
+        (3, "User talk"),
+        (4, "Wikipedia"),
+        (5, "Wikipedia talk"),
+        (6, "File"),
+        (7, "File talk"),
+        (8, "MediaWiki"),
+        (9, "MediaWiki talk"),
+        (10, "Template"),
+        (11, "Template talk"),
+        (12, "Help"),
+        (13, "Help talk"),
+        (14, "Category"),
+        (15, "Category talk"),
+        (100, "Portal"),
+        (101, "Portal talk"),
+        (828, "Module"),
+        (829, "Module talk"),
+    ]
+    .into_iter()
+    .map(|(id, label)| NamespaceOption {
+        id,
+        label,
+        selected: selected.contains(&id),
+    })
+    .collect()
+}
+
 fn validate_project_sources(state: &ProjectState) -> Result<(), String> {
-    source_values(&state.pages, "Manual pages")?;
-    source_values(&state.categories, "Categories")?;
-    source_values(&state.backlinks, "Backlinks")?;
-    source_values(&state.transclusions, "Transclusions")?;
-    source_values(&state.searches, "Searches")?;
+    for source in state.ordered_sources() {
+        source_values(&source.values, source.kind.label())?;
+    }
     Ok(())
 }
 
-fn parse_namespaces(value: &str) -> Result<Vec<i64>, String> {
-    value
-        .split([',', ' ', '\n', '\t'])
-        .filter(|item| !item.is_empty())
+fn parse_namespaces(values: &[String]) -> Result<Vec<i64>, String> {
+    values
+        .iter()
+        .map(String::as_str)
         .map(|item| {
             item.parse::<i64>()
                 .map_err(|_| format!("“{item}” is not a namespace ID."))
@@ -1881,4 +2167,26 @@ fn error_page_without_rendering() -> Response {
         "An unexpected error occurred.",
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_parser_adds_missing_mediawiki_prefixes() {
+        let category = parse_page_source("category", vec!["Scientists".to_owned()]).unwrap();
+        let template =
+            parse_page_source("transclusions", vec!["Infobox person".to_owned()]).unwrap();
+
+        assert_eq!(category.values, ["Category:Scientists"]);
+        assert_eq!(template.values, ["Template:Infobox person"]);
+    }
+
+    #[test]
+    fn source_parser_keeps_localized_prefixes() {
+        let category =
+            parse_page_source("category", vec!["Категорія:Науковиці".to_owned()]).unwrap();
+        assert_eq!(category.values, ["Категорія:Науковиці"]);
+    }
 }

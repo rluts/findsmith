@@ -108,6 +108,12 @@ pub struct JobState {
     pub generation_message: String,
     #[serde(default = "default_queue_limit")]
     pub queue_limit: usize,
+    #[serde(default)]
+    pub generation_found: usize,
+    #[serde(default)]
+    pub generation_duplicates: usize,
+    #[serde(default)]
+    pub generation_limit_reached: bool,
 }
 
 impl JobState {
@@ -123,6 +129,9 @@ impl JobState {
             queue,
             generation_message: String::new(),
             queue_limit: crate::projects::MAX_QUEUE_LIMIT,
+            generation_found: 0,
+            generation_duplicates: 0,
+            generation_limit_reached: false,
         }
     }
 
@@ -133,17 +142,36 @@ impl JobState {
             queue: Vec::new(),
             generation_message: "Preparing page sources…".to_owned(),
             queue_limit,
+            generation_found: 0,
+            generation_duplicates: 0,
+            generation_limit_reached: false,
         }
     }
 
     pub fn append_unique(&mut self, entries: Vec<QueueEntry>) {
+        let track_generation = self.status == JobStatus::Building;
+        if track_generation {
+            self.generation_found += entries.len();
+        }
         let mut seen: std::collections::HashSet<String> =
             self.queue.iter().map(|entry| entry.title.clone()).collect();
         for entry in entries {
-            if self.queue.len() >= self.queue_limit || !seen.insert(entry.title.clone()) {
+            if !seen.insert(entry.title.clone()) {
+                if track_generation {
+                    self.generation_duplicates += 1;
+                }
                 continue;
             }
+            if self.queue.len() >= self.queue_limit {
+                if track_generation {
+                    self.generation_limit_reached = true;
+                }
+                break;
+            }
             self.queue.push(entry);
+        }
+        if track_generation && self.queue.len() >= self.queue_limit {
+            self.generation_limit_reached = true;
         }
     }
 
@@ -411,6 +439,9 @@ mod tests {
         assert_eq!(state.queue.len(), 2);
         assert_eq!(state.queue[0].title, "A");
         assert_eq!(state.queue[1].title, "B");
+        assert_eq!(state.generation_found, 4);
+        assert_eq!(state.generation_duplicates, 1);
+        assert!(state.generation_limit_reached);
     }
 
     #[test]

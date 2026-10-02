@@ -16,6 +16,7 @@ pub const MAX_QUEUE_LIMIT: usize = 500;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ProjectState {
+    pub sources: Vec<PageSource>,
     pub pages: Vec<String>,
     pub categories: Vec<String>,
     pub backlinks: Vec<String>,
@@ -29,6 +30,7 @@ pub struct ProjectState {
 impl Default for ProjectState {
     fn default() -> Self {
         Self {
+            sources: Vec::new(),
             pages: Vec::new(),
             categories: Vec::new(),
             backlinks: Vec::new(),
@@ -39,6 +41,71 @@ impl Default for ProjectState {
             rules: Vec::new(),
         }
     }
+}
+
+impl ProjectState {
+    pub fn ordered_sources(&self) -> Vec<PageSource> {
+        if !self.sources.is_empty() {
+            return self.sources.clone();
+        }
+
+        [
+            (PageSourceKind::Manual, &self.pages),
+            (PageSourceKind::Category, &self.categories),
+            (PageSourceKind::Backlinks, &self.backlinks),
+            (PageSourceKind::Transclusions, &self.transclusions),
+            (PageSourceKind::Search, &self.searches),
+        ]
+        .into_iter()
+        .filter(|(_, values)| !values.is_empty())
+        .map(|(kind, values)| PageSource {
+            kind,
+            values: values.clone(),
+        })
+        .collect()
+    }
+
+    pub fn has_sources(&self) -> bool {
+        !self.ordered_sources().is_empty()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PageSourceKind {
+    Manual,
+    Category,
+    Backlinks,
+    Transclusions,
+    Search,
+}
+
+impl PageSourceKind {
+    pub fn form_value(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Category => "category",
+            Self::Backlinks => "backlinks",
+            Self::Transclusions => "transclusions",
+            Self::Search => "search",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Manual => "Manual titles",
+            Self::Category => "Category",
+            Self::Backlinks => "Backlinks",
+            Self::Transclusions => "Template transclusions",
+            Self::Search => "Wiki search",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PageSource {
+    pub kind: PageSourceKind,
+    pub values: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -208,4 +275,49 @@ fn validate_name(name: String) -> Result<String, ProjectError> {
         return Err(ProjectError::InvalidName);
     }
     Ok(name.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_page_lists_become_ordered_sources() {
+        let state: ProjectState = serde_json::from_value(serde_json::json!({
+            "pages": ["One", "Two"],
+            "categories": ["Category:Examples"],
+            "backlinks": [],
+            "transclusions": [],
+            "searches": []
+        }))
+        .unwrap();
+
+        let sources = state.ordered_sources();
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].kind, PageSourceKind::Manual);
+        assert_eq!(sources[0].values, ["One", "Two"]);
+        assert_eq!(sources[1].kind, PageSourceKind::Category);
+    }
+
+    #[test]
+    fn explicit_source_order_takes_precedence() {
+        let state = ProjectState {
+            sources: vec![
+                PageSource {
+                    kind: PageSourceKind::Search,
+                    values: vec!["first".to_owned()],
+                },
+                PageSource {
+                    kind: PageSourceKind::Manual,
+                    values: vec!["second".to_owned()],
+                },
+            ],
+            pages: vec!["legacy".to_owned()],
+            ..ProjectState::default()
+        };
+
+        let sources = state.ordered_sources();
+        assert_eq!(sources[0].kind, PageSourceKind::Search);
+        assert_eq!(sources[1].kind, PageSourceKind::Manual);
+    }
 }

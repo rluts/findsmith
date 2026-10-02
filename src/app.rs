@@ -11,12 +11,13 @@ use crate::{
     config::{AuthenticationConfig, Config},
     mediawiki::owner_identity,
     web::{
-        OwnerState, WebState, healthz, owner_create_project, owner_delete_project, owner_index,
-        owner_job_action, owner_job_queue_action, owner_job_recompute, owner_job_review,
-        owner_page_preview, owner_project, owner_start_job, owner_update_project, owner_workspace,
-        web_create_project, web_delete_project, web_job_action, web_job_queue_action,
-        web_job_recompute, web_job_review, web_oauth_index, web_page_preview, web_project,
-        web_start_job, web_update_project, web_workspace,
+        OwnerState, WebState, healthz, owner_build_project, owner_create_project,
+        owner_delete_project, owner_index, owner_job_action, owner_job_queue_action,
+        owner_job_recompute, owner_job_review, owner_page_preview, owner_project, owner_start_job,
+        owner_update_project, owner_workspace, web_build_project, web_create_project,
+        web_delete_project, web_job_action, web_job_queue_action, web_job_recompute,
+        web_job_review, web_oauth_index, web_page_preview, web_project, web_start_job,
+        web_update_project, web_workspace,
     },
 };
 
@@ -41,6 +42,10 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
                 .route("/workspace", get(web_workspace))
                 .route("/projects", axum::routing::post(web_create_project))
                 .route("/projects/{id}", get(web_project).post(web_update_project))
+                .route(
+                    "/projects/{id}/build",
+                    axum::routing::post(web_build_project),
+                )
                 .route(
                     "/projects/{id}/page-preview",
                     axum::routing::post(web_page_preview),
@@ -90,6 +95,10 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
                 .route(
                     "/projects/{id}",
                     get(owner_project).post(owner_update_project),
+                )
+                .route(
+                    "/projects/{id}/build",
+                    axum::routing::post(owner_build_project),
                 )
                 .route(
                     "/projects/{id}/page-preview",
