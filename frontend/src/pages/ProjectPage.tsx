@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { Busy, ErrorBox, Shell } from './App'
-import { getJson, postForm } from './api'
-import { SideDiff, UnifiedDiff } from './DiffView'
-import type { ActionResult, Project, Rule, Source } from './types'
+import { Busy, ErrorBox, Shell } from '../components/Shell'
+import { getJson, postForm } from '../lib/api'
+import { SideDiff, UnifiedDiff } from '../components/DiffView'
+import type { ActionResult, Project, Rule, Source } from '../types/api'
+import { navigate } from '../lib/router'
 
 const sourceNames: Record<string, string> = { manual: 'Manual titles', category: 'Category members', backlinks: 'Backlinks', transclusions: 'Template transclusions', search: 'Wiki search' }
 const blankRule = (): Rule => ({ enabled: true, find: '', replace: '', regex: false, case_sensitive: true, replace_all: true, multiline: false, dot_matches_new_line: false })
@@ -39,13 +40,12 @@ export function ProjectPage({ projectId }: { projectId: string }) {
 
   function update(patch: Partial<Project>) { setProject(current => current ? { ...current, ...patch } : current) }
   function move<T>(items: T[], index: number, direction: number) { const copy = [...items]; const target = index + direction; if (target < 0 || target >= copy.length) return copy; [copy[index], copy[target]] = [copy[target], copy[index]]; return copy }
-  async function submit(path: string, label: string, navigate = false) {
+  async function submit(path: string, label: string) {
     if (!project) return
     setBusy(label); setError('')
     try {
       const result = await postForm<ActionResult | Project>(path, projectForm(project))
-      if (navigate && 'redirect' in result) window.location.assign(result.redirect)
-      else if ('page_preview' in result) update({ page_preview: result.page_preview, page_preview_error: result.page_preview_error })
+      if ('page_preview' in result) update({ page_preview: result.page_preview, page_preview_error: result.page_preview_error })
       else await load()
     } catch (error) { setError(error instanceof Error ? error.message : 'Request failed.') }
     finally { setBusy('') }
@@ -53,7 +53,7 @@ export function ProjectPage({ projectId }: { projectId: string }) {
   async function removeProject() {
     if (!project || !window.confirm(`Delete “${project.project_name}” permanently?`)) return
     setBusy('Deleting…')
-    try { const result = await postForm<ActionResult>(`/api/projects/${projectId}/delete`, new URLSearchParams({ csrf_token: project.csrf_token, confirmation: 'delete' })); window.location.assign(result.redirect) }
+    try { const result = await postForm<ActionResult>(`/api/projects/${projectId}/delete`, new URLSearchParams({ csrf_token: project.csrf_token, confirmation: 'delete' })); navigate(result.redirect) }
     catch (error) { setError(error instanceof Error ? error.message : 'Could not delete project.'); setBusy('') }
   }
   if (!project) return <Shell title="Project"><main><Busy label={error || 'Loading project…'} /></main></Shell>
@@ -91,7 +91,7 @@ export function ProjectPage({ projectId }: { projectId: string }) {
           </article>)}
         </div>
         <button onClick={() => update({rules: [...project.rules, blankRule()]})}>Add replacement rule</button>
-        <div className="command-stack"><button className="primary" disabled={!!busy} onClick={() => submit(`/api/projects/${projectId}/build`, 'Building…', true)}>Build page list</button><button disabled={!!busy} onClick={() => submit(`/api/projects/${projectId}`, 'Saving…')}>Save configuration</button><button className="danger" onClick={removeProject}>Delete project</button></div>
+        <div className="command-stack"><button className="primary" disabled={!!busy} onClick={() => submit(`/api/projects/${projectId}/build`, 'Building…')}>Build page list</button><button disabled={!!busy} onClick={() => submit(`/api/projects/${projectId}`, 'Saving…')}>Save configuration</button><button className="danger" onClick={removeProject}>Delete project</button></div>
         {busy && <p className="busy">{busy}</p>}
         {project.latest_job_id && <div className="job-summary"><strong>{project.latest_job_status}</strong><p>{project.latest_job_message}</p><p>{project.latest_job_total} queued · {project.latest_job_duplicates} duplicates{project.latest_job_limit_reached ? ' · limit reached' : ''}</p>{project.latest_queue_preview.length > 0 && <ol>{project.latest_queue_preview.map((entry, index) => <li key={`${entry.title}-${index}`}>{entry.title}</li>)}</ol>}<a className="button primary" href={`/projects/${projectId}/jobs/${project.latest_job_id}`}>Open review</a></div>}
       </section>

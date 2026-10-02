@@ -1,4 +1,4 @@
-import type { SideLine, UnifiedLine } from './types'
+import type { SideLine, UnifiedLine } from '../types/api'
 
 const Fragments = ({ items }: { items: {text: string; emphasized: boolean}[] }) => <>{items.map((item, index) => item.emphasized ? <mark key={index}>{item.text}</mark> : <span key={index}>{item.text}</span>)}</>
 

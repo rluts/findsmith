@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Busy, ErrorBox, Shell } from './App'
-import { getJson, postForm } from './api'
-import { SideDiff, UnifiedDiff } from './DiffView'
-import type { ActionResult, Review } from './types'
+import { Busy, ErrorBox, Shell } from '../components/Shell'
+import { getJson, postForm } from '../lib/api'
+import { SideDiff, UnifiedDiff } from '../components/DiffView'
+import type { ActionResult, Review } from '../types/api'
 
 export function ReviewPage({ projectId, jobId }: { projectId: string; jobId: string }) {
   const [review, setReview] = useState<Review | null>(null)

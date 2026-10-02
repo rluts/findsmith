@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Shell, Busy, ErrorBox } from './App'
-import { getJson, postForm } from './api'
-import type { ActionResult, Workspace } from './types'
+import { Shell, Busy, ErrorBox } from '../components/Shell'
+import { getJson, postForm } from '../lib/api'
+import type { ActionResult, Workspace } from '../types/api'
+import { navigate } from '../lib/router'
 
 export function WorkspacePage() {
   const [data, setData] = useState<Workspace | null>(null)
@@ -12,7 +13,7 @@ export function WorkspacePage() {
     event.preventDefault(); if (!data) return
     setError('')
     const values = new URLSearchParams({ name, wiki_id: 'ukwiki', csrf_token: data.csrf_token })
-    try { const result = await postForm<ActionResult>('/api/projects', values); window.location.assign(result.redirect) }
+    try { const result = await postForm<ActionResult>('/api/projects', values); navigate(result.redirect) }
     catch (error) { setError(error instanceof Error ? error.message : 'Could not create project.') }
   }
   return <Shell title="Projects" subtitle={data ? `Signed in as ${data.username}` : 'Loading projects'}>
