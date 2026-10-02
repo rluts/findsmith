@@ -1,9 +1,17 @@
 use std::time::Duration;
 
-use axum::{Router, extract::DefaultBodyLimit, http::StatusCode, routing::get};
+use axum::{
+    Router,
+    extract::DefaultBodyLimit,
+    http::StatusCode,
+    routing::{any, get, get_service},
+};
 use mwoauth::axum::{refresh_session, routes as oauth_routes};
 use sea_orm::DatabaseConnection;
-use tower_http::timeout::TimeoutLayer;
+use tower_http::{
+    services::{ServeDir, ServeFile},
+    timeout::TimeoutLayer,
+};
 
 use crate::{
     AppResult,
@@ -37,38 +45,51 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
                 user_agent: config.user_agent,
                 csrf_secure: !config.debug,
             };
+            let frontend = get_service(ServeFile::new("frontend/dist/index.html"));
             Ok(oauth_routes()
-                .route("/", get(web_oauth_index))
-                .route("/workspace", get(web_workspace))
-                .route("/projects", axum::routing::post(web_create_project))
-                .route("/projects/{id}", get(web_project).post(web_update_project))
+                .route("/api/session", get(web_oauth_index))
+                .route("/api/workspace", get(web_workspace))
+                .route("/api/projects", axum::routing::post(web_create_project))
                 .route(
-                    "/projects/{id}/build",
+                    "/api/projects/{id}",
+                    get(web_project).post(web_update_project),
+                )
+                .route(
+                    "/api/projects/{id}/build",
                     axum::routing::post(web_build_project),
                 )
                 .route(
-                    "/projects/{id}/page-preview",
+                    "/api/projects/{id}/page-preview",
                     axum::routing::post(web_page_preview),
                 )
                 .route(
-                    "/projects/{id}/delete",
+                    "/api/projects/{id}/delete",
                     axum::routing::post(web_delete_project),
                 )
-                .route("/projects/{id}/jobs", axum::routing::post(web_start_job))
-                .route("/projects/{id}/jobs/{job_id}", get(web_job_review))
                 .route(
-                    "/projects/{id}/jobs/{job_id}/action",
+                    "/api/projects/{id}/jobs",
+                    axum::routing::post(web_start_job),
+                )
+                .route("/api/projects/{id}/jobs/{job_id}", get(web_job_review))
+                .route(
+                    "/api/projects/{id}/jobs/{job_id}/action",
                     axum::routing::post(web_job_action),
                 )
                 .route(
-                    "/projects/{id}/jobs/{job_id}/recompute",
+                    "/api/projects/{id}/jobs/{job_id}/recompute",
                     axum::routing::post(web_job_recompute),
                 )
                 .route(
-                    "/projects/{id}/jobs/{job_id}/queue",
+                    "/api/projects/{id}/jobs/{job_id}/queue",
                     axum::routing::post(web_job_queue_action),
                 )
                 .route("/healthz", get(healthz))
+                .route("/api/{*path}", any(api_not_found))
+                .nest_service("/assets", ServeDir::new("frontend/dist/assets"))
+                .route_service("/", frontend.clone())
+                .route_service("/workspace", frontend.clone())
+                .route_service("/projects/{id}", frontend.clone())
+                .route_service("/projects/{id}/jobs/{job_id}", frontend)
                 .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
                 .layer(axum::middleware::from_fn_with_state(
                     state.oauth.clone(),
@@ -92,41 +113,51 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
                 cookie_key: mwoauth::axum::Key::from(&config.cookie_key),
                 csrf_secure: !config.debug,
             };
+            let frontend = get_service(ServeFile::new("frontend/dist/index.html"));
             Ok(Router::new()
-                .route("/", get(owner_index))
-                .route("/workspace", get(owner_workspace))
-                .route("/projects", axum::routing::post(owner_create_project))
+                .route("/api/session", get(owner_index))
+                .route("/api/workspace", get(owner_workspace))
+                .route("/api/projects", axum::routing::post(owner_create_project))
                 .route(
-                    "/projects/{id}",
+                    "/api/projects/{id}",
                     get(owner_project).post(owner_update_project),
                 )
                 .route(
-                    "/projects/{id}/build",
+                    "/api/projects/{id}/build",
                     axum::routing::post(owner_build_project),
                 )
                 .route(
-                    "/projects/{id}/page-preview",
+                    "/api/projects/{id}/page-preview",
                     axum::routing::post(owner_page_preview),
                 )
                 .route(
-                    "/projects/{id}/delete",
+                    "/api/projects/{id}/delete",
                     axum::routing::post(owner_delete_project),
                 )
-                .route("/projects/{id}/jobs", axum::routing::post(owner_start_job))
-                .route("/projects/{id}/jobs/{job_id}", get(owner_job_review))
                 .route(
-                    "/projects/{id}/jobs/{job_id}/action",
+                    "/api/projects/{id}/jobs",
+                    axum::routing::post(owner_start_job),
+                )
+                .route("/api/projects/{id}/jobs/{job_id}", get(owner_job_review))
+                .route(
+                    "/api/projects/{id}/jobs/{job_id}/action",
                     axum::routing::post(owner_job_action),
                 )
                 .route(
-                    "/projects/{id}/jobs/{job_id}/recompute",
+                    "/api/projects/{id}/jobs/{job_id}/recompute",
                     axum::routing::post(owner_job_recompute),
                 )
                 .route(
-                    "/projects/{id}/jobs/{job_id}/queue",
+                    "/api/projects/{id}/jobs/{job_id}/queue",
                     axum::routing::post(owner_job_queue_action),
                 )
                 .route("/healthz", get(healthz))
+                .route("/api/{*path}", any(api_not_found))
+                .nest_service("/assets", ServeDir::new("frontend/dist/assets"))
+                .route_service("/", frontend.clone())
+                .route_service("/workspace", frontend.clone())
+                .route_service("/projects/{id}", frontend.clone())
+                .route_service("/projects/{id}/jobs/{job_id}", frontend)
                 .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
                 .layer(TimeoutLayer::with_status_code(
                     StatusCode::REQUEST_TIMEOUT,
@@ -135,4 +166,14 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
                 .with_state(state))
         }
     }
+}
+
+async fn api_not_found() -> (StatusCode, axum::Json<serde_json::Value>) {
+    (
+        StatusCode::NOT_FOUND,
+        axum::Json(serde_json::json!({
+            "title": "API endpoint not found",
+            "message": "The requested API endpoint does not exist."
+        })),
+    )
 }

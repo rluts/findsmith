@@ -70,16 +70,6 @@ pub enum QueueEntryStatus {
 }
 
 impl QueueEntryStatus {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Pending => "Pending",
-            Self::Reviewed => "Reviewed",
-            Self::Skipped => "Skipped",
-            Self::Missing => "Missing",
-            Self::Invalid => "Invalid",
-        }
-    }
-
     pub fn is_pending(&self) -> bool {
         matches!(self, Self::Pending)
     }

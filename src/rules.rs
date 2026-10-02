@@ -244,6 +244,17 @@ mod tests {
     }
 
     #[test]
+    fn empty_replacement_deletes_matches() {
+        let result = RuleEngine::compile(&[plain(" obsolete", "")])
+            .unwrap()
+            .apply("keep obsolete text")
+            .unwrap();
+        assert_eq!(result.text, "keep text");
+        assert_eq!(result.counts, vec![1]);
+        assert_eq!(result.total_replacements, 1);
+    }
+
+    #[test]
     fn disabled_rule_does_not_change_text() {
         let mut rule = plain("a", "b");
         rule.enabled = false;

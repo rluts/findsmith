@@ -1,4 +1,7 @@
 target/
+node_modules/
+frontend/dist/
+*.tsbuildinfo
 .zed/
 .idea/
 .vscode/
