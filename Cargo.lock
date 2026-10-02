@@ -2303,9 +2303,9 @@ dependencies = [
 
 [[package]]
 name = "mwoauth"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80ff8053e67bc1a30cf037527f9ed963a208f688a2773b1e726fcf2d1c2db1de"
+checksum = "9b527713d4c1772cfd1d35cf920aa82d2d144a9f33acb79bff6063a1c5a69b3b"
 dependencies = [
  "axum",
  "axum-extra",

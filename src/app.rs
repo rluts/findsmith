@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use axum::{Router, extract::DefaultBodyLimit, http::StatusCode, routing::get};
-use mwoauth::axum::routes as oauth_routes;
+use mwoauth::axum::{refresh_session, routes as oauth_routes};
 use sea_orm::DatabaseConnection;
 use tower_http::timeout::TimeoutLayer;
 
@@ -70,6 +70,10 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
                 )
                 .route("/healthz", get(healthz))
                 .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
+                .layer(axum::middleware::from_fn_with_state(
+                    state.oauth.clone(),
+                    refresh_session,
+                ))
                 .layer(TimeoutLayer::with_status_code(
                     StatusCode::REQUEST_TIMEOUT,
                     Duration::from_secs(60),
