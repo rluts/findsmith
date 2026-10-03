@@ -1,4 +1,4 @@
-export type Session = { username: string | null; role: string | null; can_logout: boolean }
+export type Session = { username: string | null; groups: string[]; can_logout: boolean }
 export type ProjectSummary = { id: string; name: string; state_version: number; updated_at: string }
 export type Workspace = { username: string; projects: ProjectSummary[]; csrf_token: string }
 export type Source = { kind: string; label: string; value: string; summary: string }

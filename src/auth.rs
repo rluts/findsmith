@@ -4,21 +4,6 @@ use url::Url;
 
 use crate::{AppResult, config::WebOAuthConfig};
 
-#[derive(Clone, Copy)]
-pub enum Role {
-    User,
-    Admin,
-}
-
-impl Role {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::User => "user",
-            Self::Admin => "admin",
-        }
-    }
-}
-
 pub enum Authentication {
     WebOAuth(Box<AxumUser>),
     OwnerToken {
@@ -35,10 +20,10 @@ impl Authentication {
         }
     }
 
-    pub fn role(&self) -> Role {
+    pub fn groups(&self) -> Vec<String> {
         match self {
-            Self::WebOAuth(_) => Role::User,
-            Self::OwnerToken { .. } => Role::Admin,
+            Self::WebOAuth(user) => user.profile().groups().to_vec(),
+            Self::OwnerToken { .. } => vec!["owner token".to_owned()],
         }
     }
 

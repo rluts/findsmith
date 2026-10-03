@@ -7,7 +7,7 @@ export function HomePage() {
   const [session, setSession] = useState<Session | null>(null)
   const [error, setError] = useState('')
   useEffect(() => { getJson<Session>('/api/session').then(setSession).catch(error => setError(error.message)) }, [])
-  return <Shell title="MediaWiki find and replace">
+  return <Shell title="MediaWiki find and replace" authenticated={Boolean(session?.username)}>
     <main className="home">
       <section className="welcome panel">
         <h1>FindSmith</h1>
@@ -19,7 +19,7 @@ export function HomePage() {
         {error && <p className="error">{error}</p>}
         {!session ? <p>Checking session…</p> : session.username ? <>
           <p className="online">● Signed in as <strong>{session.username}</strong></p>
-          <p>Role: {session.role}</p>
+          <p>Wikimedia groups: {session.groups.length ? session.groups.join(', ') : 'none reported'}</p>
           <a className="button primary" href="/workspace">Open workspace</a>
           {session.can_logout && <a className="button" href="/oauth/logout">Log out</a>}
         </> : <>

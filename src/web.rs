@@ -70,7 +70,7 @@ impl FromRef<OwnerState> for Key {
 #[derive(Serialize)]
 struct SessionResponse<'a> {
     username: Option<&'a str>,
-    role: Option<&'a str>,
+    groups: Vec<String>,
     can_logout: bool,
 }
 
@@ -2116,7 +2116,9 @@ fn render_index(authentication: Option<&Authentication>) -> Response {
     }
     render(SessionResponse {
         username: authentication.map(Authentication::username),
-        role: authentication.map(|authentication| authentication.role().as_str()),
+        groups: authentication
+            .map(Authentication::groups)
+            .unwrap_or_default(),
         can_logout: authentication.is_some_and(Authentication::can_logout),
     })
 }
