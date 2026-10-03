@@ -1,0 +1,15 @@
+export type Session = { username: string | null; groups: string[]; can_logout: boolean }
+export type ProjectSummary = { id: string; name: string; state_version: number; updated_at: string }
+export type Workspace = { username: string; projects: ProjectSummary[]; csrf_token: string }
+export type Source = { kind: string; label: string; value: string; summary: string }
+export type Rule = { enabled: boolean; find: string; replace: string; regex: boolean; case_sensitive: boolean; replace_all: boolean; multiline: boolean; dot_matches_new_line: boolean }
+export type Fragment = { text: string; emphasized: boolean }
+export type UnifiedLine = { kind: string; marker: string; fragments: Fragment[] }
+export type SideLine = { left_number: string; left_kind: string; left_marker: string; left_fragments: Fragment[]; right_number: string; right_kind: string; right_marker: string; right_fragments: Fragment[] }
+export type RuleCount = { count: number; changed: boolean }
+export type Preview = { title: string; full_url: string; page_id: number; namespace: number; revision_id: number; revision_timestamp: string; server_timestamp: string; content_model: string; redirect: boolean; editable: boolean; protection: string; total_replacements: number; changed: boolean; rules: RuleCount[]; unified_diff: UnifiedLine[]; side_by_side_diff: SideLine[] }
+export type QueueEntry = { requested_title: string; title: string; page_id: number | null; namespace: number | null; redirect: boolean; status: string; reason: string | null; revision_id: number | null; revision_timestamp: string | null; replacement_count: number | null }
+export type Project = { project_id: string; project_name: string; state_version: number; sources: Source[]; namespace_options: {id: number; label: string; selected: boolean}[]; queue_limit: number; wiki_id: string; rules: Rule[]; csrf_token: string; page_title: string; page_preview: Preview | null; page_preview_error: string | null; latest_job_id: string; latest_job_status: string; latest_job_message: string; latest_job_total: number; latest_job_found: number; latest_job_duplicates: number; latest_job_limit_reached: boolean; latest_job_building: boolean; latest_queue_preview: QueueEntry[] }
+export type ReviewPage = Omit<Preview, 'title' | 'page_id' | 'namespace' | 'redirect'> & { proposed_text: string }
+export type Review = { project_id: string; project_name: string; job_id: string; state_version: number; csrf_token: string; status: string; position: number; total: number; pending: number; reviewed: number; skipped: number; unavailable: number; generation_message: string; queue: QueueEntry[]; current: QueueEntry | null; page: ReviewPage | null; page_error: string | null }
+export type ActionResult = { ok: true; redirect: string; id: string | null }

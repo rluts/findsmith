@@ -1,17 +1,20 @@
+use serde::Serialize;
 use similar::{ChangeTag, DiffOp, InlineChange, TextDiff};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct DiffFragment {
     pub text: String,
     pub emphasized: bool,
 }
 
+#[derive(Serialize)]
 pub struct DiffLine {
     pub kind: &'static str,
     pub marker: char,
     pub fragments: Vec<DiffFragment>,
 }
 
+#[derive(Serialize)]
 pub struct SideBySideLine {
     pub left_number: String,
     pub left_kind: &'static str,

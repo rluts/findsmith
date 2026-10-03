@@ -1,0 +1,19 @@
+export function Shell({ children, title, subtitle, authenticated = true }: { children: React.ReactNode; title?: string; subtitle?: string; authenticated?: boolean }) {
+  return <div className="app-shell">
+    <header className="titlebar"><span className="app-icon">◆</span><strong>FindSmith</strong>{title && <span> — {title}</span>}</header>
+    <nav className="menubar" aria-label="Main menu">
+      <a href="/">Home</a>{authenticated ? <a href="/workspace">Projects</a> : <span className="inactive" aria-disabled="true">Projects</span>}<span className="inactive" aria-disabled="true">Help</span>
+    </nav>
+    {subtitle && <div className="contextbar">{subtitle}</div>}
+    {children}
+    <footer className="statusbar"><span>FindSmith is under development</span><span>Read-only review mode</span></footer>
+  </div>
+}
+
+export function Busy({ label = 'Loading…' }: { label?: string }) {
+  return <div className="center panel">{label}</div>
+}
+
+export function ErrorBox({ message }: { message: string }) {
+  return <div className="error-box" role="alert">{message}</div>
+}

@@ -1,15 +1,15 @@
 use std::collections::HashSet;
 
-use askama::Template;
 use axum::{
+    Json,
     extract::{FromRef, Path, State},
     http::{StatusCode, header},
-    response::{Html, IntoResponse, Redirect, Response},
+    response::{IntoResponse, Response},
 };
 use axum_extra::extract::{Form, cookie::PrivateCookieJar};
 use mwoauth::axum::{AxumOAuthState, AxumUser, Key};
 use sea_orm::DatabaseConnection;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     auth::Authentication,
@@ -67,25 +67,30 @@ impl FromRef<OwnerState> for Key {
     }
 }
 
-#[derive(Template)]
-#[template(path = "index.html")]
-struct IndexTemplate<'a> {
+#[derive(Serialize)]
+struct SessionResponse<'a> {
     username: Option<&'a str>,
-    role: Option<&'a str>,
+    groups: Vec<String>,
     can_logout: bool,
 }
 
-#[derive(Template)]
-#[template(path = "workspace.html")]
-struct WorkspaceTemplate<'a> {
+#[derive(Serialize)]
+struct WorkspaceResponse<'a> {
     username: &'a str,
-    projects: &'a [project::Model],
+    projects: Vec<WorkspaceProjectView>,
     csrf_token: &'a str,
 }
 
-#[derive(Template)]
-#[template(path = "project.html")]
-struct ProjectTemplate<'a> {
+#[derive(Serialize)]
+struct WorkspaceProjectView {
+    id: String,
+    name: String,
+    state_version: i64,
+    updated_at: String,
+}
+
+#[derive(Serialize)]
+struct ProjectResponse<'a> {
     project_id: &'a str,
     project_name: &'a str,
     state_version: i64,
@@ -109,6 +114,7 @@ struct ProjectTemplate<'a> {
     latest_queue_preview: &'a [QueueEntry],
 }
 
+#[derive(Serialize)]
 struct PageSourceView {
     kind: &'static str,
     label: &'static str,
@@ -116,6 +122,7 @@ struct PageSourceView {
     summary: String,
 }
 
+#[derive(Serialize)]
 struct NamespaceOption {
     id: i64,
     label: &'static str,
@@ -130,11 +137,13 @@ struct LegacySourceLists {
     searches: Vec<String>,
 }
 
+#[derive(Serialize)]
 struct RulePreviewView {
     count: usize,
     changed: bool,
 }
 
+#[derive(Serialize)]
 struct PagePreviewView {
     title: String,
     full_url: String,
@@ -154,9 +163,8 @@ struct PagePreviewView {
     side_by_side_diff: Vec<SideBySideLine>,
 }
 
-#[derive(Template)]
-#[template(path = "review.html")]
-struct ReviewTemplate<'a> {
+#[derive(Serialize)]
+struct ReviewResponse<'a> {
     project_id: &'a str,
     project_name: &'a str,
     job_id: &'a str,
@@ -176,6 +184,7 @@ struct ReviewTemplate<'a> {
     page_error: Option<&'a str>,
 }
 
+#[derive(Serialize)]
 struct ReviewPageView {
     full_url: String,
     revision_id: u64,
@@ -192,12 +201,27 @@ struct ReviewPageView {
     side_by_side_diff: Vec<SideBySideLine>,
 }
 
-#[derive(Template)]
-#[template(path = "error.html")]
-struct ErrorTemplate<'a> {
+#[derive(Serialize)]
+struct ErrorResponse<'a> {
     title: &'a str,
     message: &'a str,
     back_href: &'a str,
+}
+
+#[derive(Serialize)]
+struct ActionResponse {
+    ok: bool,
+    redirect: String,
+    id: Option<String>,
+}
+
+fn action_response(redirect: String, id: Option<String>) -> Response {
+    Json(ActionResponse {
+        ok: true,
+        redirect,
+        id,
+    })
+    .into_response()
 }
 
 #[derive(Deserialize)]
@@ -724,9 +748,17 @@ async fn workspace_response(
 ) -> Response {
     let repository = ProjectRepository::new(database);
     match repository.list(owner).await {
-        Ok(projects) => render(WorkspaceTemplate {
+        Ok(projects) => render(WorkspaceResponse {
             username,
-            projects: &projects,
+            projects: projects
+                .into_iter()
+                .map(|project| WorkspaceProjectView {
+                    id: project.id,
+                    name: project.name,
+                    state_version: project.state_version,
+                    updated_at: project.updated_at.to_rfc3339(),
+                })
+                .collect(),
             csrf_token,
         }),
         Err(error) => project_error_response(error, "/workspace"),
@@ -751,7 +783,7 @@ async fn create_project_response(
         .create(owner, form.name, wiki_url.to_owned())
         .await
     {
-        Ok(project) => Redirect::to(&format!("/projects/{}", project.id)).into_response(),
+        Ok(project) => action_response(format!("/projects/{}", project.id), Some(project.id)),
         Err(error) => project_error_response(error, "/workspace"),
     }
 }
@@ -814,7 +846,7 @@ async fn project_response(
                             Vec::new(),
                         ),
                     };
-                    render_project(ProjectTemplate {
+                    render_project(ProjectResponse {
                         project_id: &project.id,
                         project_name: &project.name,
                         state_version: project.state_version,
@@ -898,7 +930,7 @@ async fn page_preview_response(
     let source_views = page_source_views(&sources);
     let selected_namespaces = parse_namespaces(&form.namespaces).unwrap_or_default();
     let namespace_options = namespace_options(&selected_namespaces);
-    render_project(ProjectTemplate {
+    render_project(ProjectResponse {
         project_id: id,
         project_name: &form.name,
         state_version: form.state_version,
@@ -1021,7 +1053,7 @@ async fn start_job_response(
                 )
                 .await;
             });
-            Redirect::to(&redirect).into_response()
+            action_response(redirect, Some(job.id))
         }
         Err(error) => job_error_response(error, &back_href),
     }
@@ -1346,7 +1378,7 @@ async fn review_response(
             Err(error) => page_error = Some(error),
         }
     }
-    render(ReviewTemplate {
+    render(ReviewResponse {
         project_id,
         project_name: &project.name,
         job_id,
@@ -1496,7 +1528,7 @@ async fn job_action_response(
         .update_state(owner, project_id, job_id, &state, form.state_version)
         .await
     {
-        Ok(()) => Redirect::to(&back_href).into_response(),
+        Ok(()) => action_response(back_href, Some(job_id.to_owned())),
         Err(error) => job_error_response(error, &back_href),
     }
 }
@@ -1596,7 +1628,7 @@ async fn queue_action_response(
         .update_state(owner, project_id, job_id, &state, form.state_version)
         .await
     {
-        Ok(()) => Redirect::to(&back_href).into_response(),
+        Ok(()) => action_response(back_href, Some(job_id.to_owned())),
         Err(error) => job_error_response(error, &back_href),
     }
 }
@@ -1633,7 +1665,7 @@ fn render_page_preview_error(
     let source_views = page_source_views(&sources);
     let selected_namespaces = parse_namespaces(&form.namespaces).unwrap_or_default();
     let namespace_options = namespace_options(&selected_namespaces);
-    render_project(ProjectTemplate {
+    render_project(ProjectResponse {
         project_id: id,
         project_name: &form.name,
         state_version: form.state_version,
@@ -1698,8 +1730,8 @@ fn protection_text(snapshot: &PageSnapshot) -> String {
     }
 }
 
-fn render_project(template: ProjectTemplate<'_>) -> Response {
-    render(template)
+fn render_project(response: ProjectResponse<'_>) -> Response {
+    render(response)
 }
 
 async fn update_project_response(
@@ -1709,7 +1741,7 @@ async fn update_project_response(
     form: UpdateProjectForm,
 ) -> Response {
     match save_project(database, owner, id, &form).await {
-        Ok(_) => Redirect::to(&format!("/projects/{id}")).into_response(),
+        Ok(project) => action_response(format!("/projects/{id}"), Some(project.id)),
         Err(response) => *response,
     }
 }
@@ -2067,7 +2099,7 @@ async fn delete_project_response(
     }
     let repository = ProjectRepository::new(database);
     match repository.delete(owner, id).await {
-        Ok(true) => Redirect::to("/workspace").into_response(),
+        Ok(true) => action_response("/workspace".to_owned(), Some(id.to_owned())),
         Ok(false) => error_page(
             StatusCode::NOT_FOUND,
             "Project not found",
@@ -2082,9 +2114,11 @@ fn render_index(authentication: Option<&Authentication>) -> Response {
     if let Some(authentication) = authentication {
         debug_assert!(!authentication.access_token().is_empty());
     }
-    render(IndexTemplate {
+    render(SessionResponse {
         username: authentication.map(Authentication::username),
-        role: authentication.map(|authentication| authentication.role().as_str()),
+        groups: authentication
+            .map(Authentication::groups)
+            .unwrap_or_default(),
         can_logout: authentication.is_some_and(Authentication::can_logout),
     })
 }
@@ -2126,7 +2160,7 @@ fn csrf_error(back_href: &str) -> Response {
 fn error_page(status: StatusCode, title: &str, message: &str, back_href: &str) -> Response {
     render_with_status(
         status,
-        ErrorTemplate {
+        ErrorResponse {
             title,
             message,
             back_href,
@@ -2134,25 +2168,21 @@ fn error_page(status: StatusCode, title: &str, message: &str, back_href: &str) -
     )
 }
 
-fn render(template: impl Template) -> Response {
+fn render(template: impl Serialize) -> Response {
     render_with_status(StatusCode::OK, template)
 }
 
-fn render_with_status(status: StatusCode, template: impl Template) -> Response {
-    match template.render() {
-        Ok(page) => (
-            status,
-            [
-                (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-                (header::CACHE_CONTROL, "no-store"),
-                (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
-                (header::REFERRER_POLICY, "same-origin"),
-            ],
-            Html(page),
-        )
-            .into_response(),
-        Err(error) => internal_error(error),
-    }
+fn render_with_status(status: StatusCode, template: impl Serialize) -> Response {
+    (
+        status,
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::REFERRER_POLICY, "same-origin"),
+        ],
+        Json(template),
+    )
+        .into_response()
 }
 
 fn internal_error(error: impl std::error::Error) -> Response {
@@ -2161,12 +2191,14 @@ fn internal_error(error: impl std::error::Error) -> Response {
 }
 
 fn error_page_without_rendering() -> Response {
-    (
+    render_with_status(
         StatusCode::INTERNAL_SERVER_ERROR,
-        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-        "An unexpected error occurred.",
+        ErrorResponse {
+            title: "Unexpected error",
+            message: "An unexpected error occurred.",
+            back_href: "/",
+        },
     )
-        .into_response()
 }
 
 #[cfg(test)]
@@ -2188,5 +2220,34 @@ mod tests {
         let category =
             parse_page_source("category", vec!["Категорія:Науковиці".to_owned()]).unwrap();
         assert_eq!(category.values, ["Категорія:Науковиці"]);
+    }
+
+    #[test]
+    fn submitted_rule_keeps_empty_replacement() {
+        let form = UpdateProjectForm {
+            name: "Example".to_owned(),
+            wiki_id: "ukwiki".to_owned(),
+            source_kind: Vec::new(),
+            source_value: Vec::new(),
+            namespaces: Vec::new(),
+            queue_limit: 100,
+            rule_find: vec!["obsolete".to_owned()],
+            rule_replace: vec![String::new()],
+            rule_enabled: vec!["0".to_owned()],
+            rule_type: vec!["plain".to_owned()],
+            rule_case: vec!["sensitive".to_owned()],
+            rule_scope: vec!["all".to_owned()],
+            rule_multiline: Vec::new(),
+            rule_dot_newline: Vec::new(),
+            page_title: String::new(),
+            state_version: 1,
+            csrf_token: "test".to_owned(),
+        };
+
+        let rules = replacement_rules(&form).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert!(rules[0].enabled);
+        assert_eq!(rules[0].find, "obsolete");
+        assert_eq!(rules[0].replace, "");
     }
 }

@@ -1,0 +1,14 @@
+{
+  "name": "findsmith",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["frontend"],
+  "scripts": {
+    "build": "npm run build --workspace findsmith-frontend",
+    "heroku-postbuild": "npm run build"
+  },
+  "engines": {
+    "node": ">=22.12 <27",
+    "npm": ">=10 <12"
+  }
+}
