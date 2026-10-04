@@ -2,10 +2,11 @@ import { useEffect, useState } from 'react'
 import { Busy, ErrorBox, Shell } from '../components/Shell'
 import { getJson, postForm } from '../lib/api'
 import { SideDiff, UnifiedDiff } from '../components/DiffView'
-import type { ActionResult, Project, Rule, Source } from '../types/api'
+import type { ActionResult, Project, Rule, Session, Source } from '../types/api'
 import { navigate } from '../lib/router'
 
 const sourceNames: Record<string, string> = { manual: 'Manual titles', category: 'Category members', backlinks: 'Backlinks', transclusions: 'Template transclusions', search: 'Wiki search' }
+const wikiNames: Record<string, string> = { ukwiki: 'Ukrainian Wikipedia' }
 const blankRule = (): Rule => ({ enabled: true, find: '', replace: '', regex: false, case_sensitive: true, replace_all: true, multiline: false, dot_matches_new_line: false })
 const blankSource = (kind = 'manual'): Source => ({ kind, label: sourceNames[kind], value: '', summary: '' })
 
@@ -29,10 +30,21 @@ function projectForm(project: Project) {
 
 export function ProjectPage({ projectId }: { projectId: string }) {
   const [project, setProject] = useState<Project | null>(null)
+  const [session, setSession] = useState<Session | null>(null)
+  const [groupsError, setGroupsError] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState('')
   const load = () => getJson<Project>(`/api/projects/${projectId}`).then(setProject).catch(error => setError(error.message))
-  useEffect(() => { void load() }, [projectId])
+  useEffect(() => {
+    void load()
+  }, [projectId])
+  useEffect(() => {
+    if (!project?.wiki_id) return
+    setSession(null); setGroupsError('')
+    void getJson<Session>(`/api/session?include_groups=true&wiki_id=${encodeURIComponent(project.wiki_id)}`)
+      .then(setSession)
+      .catch(error => setGroupsError(error instanceof Error ? error.message : 'Could not load Wikimedia groups.'))
+  }, [project?.wiki_id])
   useEffect(() => {
     if (!project?.latest_job_building) return
     const timer = window.setInterval(load, 2000); return () => window.clearInterval(timer)
@@ -89,6 +101,11 @@ export function ProjectPage({ projectId }: { projectId: string }) {
       <section className="pane rules-pane">
         <div className="tabs"><span className="active">Rules</span><span>Options</span><span>Skip</span><span>Logs</span></div>
         <label>Project name<input value={project.project_name} maxLength={255} onChange={event => update({project_name: event.target.value})} /></label>
+        <fieldset><legend>Wikimedia account</legend>
+          <p>{wikiNames[project.wiki_id] ?? project.wiki_id} groups: {session ? (session.groups.length ? session.groups.join(', ') : 'none reported') : (groupsError ? 'unavailable' : 'loading…')}</p>
+          {session?.groups_error && <p className="error">{session.groups_error}</p>}
+          {groupsError && <p className="error">{groupsError}</p>}
+        </fieldset>
         <div className="rule-list">
           {project.rules.map((rule, index) => <article className="rule-card" key={index}>
             <div className="rule-head"><label><input type="checkbox" checked={rule.enabled} onChange={event => { const rules = [...project.rules]; rules[index] = {...rule, enabled: event.target.checked}; update({rules}) }} /> Rule {index + 1}</label><span className="row-actions"><button disabled={index === 0} onClick={() => update({rules: move(project.rules, index, -1)})}>↑</button><button disabled={index === project.rules.length - 1} onClick={() => update({rules: move(project.rules, index, 1)})}>↓</button><button onClick={() => update({rules: project.rules.filter((_, item) => item !== index)})}>×</button></span></div>

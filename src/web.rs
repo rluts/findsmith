@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use axum::{
     Json,
-    extract::{FromRef, Path, State},
+    extract::{FromRef, Path, Query, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -73,6 +73,13 @@ struct SessionResponse<'a> {
     groups: Vec<String>,
     groups_error: Option<String>,
     can_logout: bool,
+}
+
+#[derive(Default, Deserialize)]
+pub struct SessionQuery {
+    #[serde(default)]
+    include_groups: bool,
+    wiki_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -301,25 +308,34 @@ pub struct RecomputeForm {
     proposed_text: String,
 }
 
-pub async fn web_oauth_index(State(state): State<WebState>, user: Option<AxumUser>) -> Response {
+pub async fn web_oauth_index(
+    State(state): State<WebState>,
+    user: Option<AxumUser>,
+    Query(query): Query<SessionQuery>,
+) -> Response {
     let authentication = user.map(|user| Authentication::WebOAuth(Box::new(user)));
     render_index(
         authentication.as_ref(),
-        crate::mediawiki::UKWIKI_API_URL,
         &state.user_agent,
+        query.include_groups,
+        query.wiki_id.as_deref(),
     )
     .await
 }
 
-pub async fn owner_index(State(state): State<OwnerState>) -> Response {
+pub async fn owner_index(
+    State(state): State<OwnerState>,
+    Query(query): Query<SessionQuery>,
+) -> Response {
     let authentication = Authentication::OwnerToken {
         username: state.username.clone(),
         access_token: state.access_token.clone(),
     };
     render_index(
         Some(&authentication),
-        crate::mediawiki::UKWIKI_API_URL,
         &state.user_agent,
+        query.include_groups,
+        query.wiki_id.as_deref(),
     )
     .await
 }
@@ -2140,14 +2156,25 @@ async fn delete_project_response(
 
 async fn render_index(
     authentication: Option<&Authentication>,
-    wiki_url: &str,
     user_agent: &str,
+    include_groups: bool,
+    requested_wiki_id: Option<&str>,
 ) -> Response {
     if let Some(authentication) = authentication {
         debug_assert!(!authentication.access_token().is_empty());
     }
-    let (groups, groups_error) = match authentication {
-        Some(authentication) => {
+    let (groups, groups_error) = match (authentication, include_groups, requested_wiki_id) {
+        (Some(authentication), true, Some(requested_wiki_id)) => {
+            let Some(wiki_url) = wiki_api_url(requested_wiki_id) else {
+                return render(SessionResponse {
+                    username: Some(authentication.username()),
+                    groups: Vec::new(),
+                    groups_error: Some(format!(
+                        "Could not load groups: unsupported wiki {requested_wiki_id}."
+                    )),
+                    can_logout: authentication.can_logout(),
+                });
+            };
             match crate::mediawiki::user_groups(wiki_url, user_agent, authentication.access_token())
                 .await
             {
@@ -2155,12 +2182,12 @@ async fn render_index(
                 Err(error) => (
                     Vec::new(),
                     Some(format!(
-                        "Could not load Ukrainian Wikipedia groups: {error}"
+                        "Could not load groups for {requested_wiki_id}: {error}"
                     )),
                 ),
             }
         }
-        None => (Vec::new(), None),
+        _ => (Vec::new(), None),
     };
     render(SessionResponse {
         username: authentication.map(Authentication::username),
