@@ -55,6 +55,7 @@ export function ReviewPage({ projectId, jobId }: { projectId: string; jobId: str
       <section className="pane control-pane">
         <div className="tabs"><span className="active">Options</span><span>More…</span><span>Skip</span><span>Start</span></div>
         <fieldset><legend>Page statistics</legend><dl><dt>Status</dt><dd>{review.status}</dd><dt>Pending</dt><dd>{review.pending}</dd><dt>Reviewed</dt><dd>{review.reviewed}</dd><dt>Unavailable</dt><dd>{review.unavailable}</dd></dl></fieldset>
+        <p className="snapshot-note">This review uses {review.rule_count} rule(s) from the saved project configuration.</p>
         {review.current && <fieldset><legend>Current page</legend><strong>{review.current.title}</strong><p>Namespace: {review.current.namespace ?? '—'}</p><p>{review.current.reason}</p></fieldset>}
         <div className="review-buttons"><button disabled={!active || !!busy} onClick={() => action('previous')}>Previous</button><button disabled={!active || !!busy} onClick={() => action('skip')}>Skip</button><button className="danger" disabled={!active || !!busy} onClick={() => action('stop')}>Stop</button><button className="primary" disabled={!active || !!busy} onClick={() => action('next')}>Next</button></div>
         <p className="read-only">Review only: “Next” records the result but does not edit Wikimedia.</p>

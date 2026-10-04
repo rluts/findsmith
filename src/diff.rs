@@ -291,4 +291,24 @@ mod tests {
             1
         );
     }
+
+    #[test]
+    fn side_by_side_diff_keeps_three_distant_replacements() {
+        let lines = side_by_side_lines(
+            "first old\ncontext a\ncontext b\nsecond old\ncontext c\ncontext d\nthird old\n",
+            "first new\ncontext a\ncontext b\nsecond new\ncontext c\ncontext d\nthird new\n",
+        );
+        let removed: Vec<_> = lines
+            .iter()
+            .filter(|line| line.left_kind == "removed")
+            .map(|line| text(&line.left_fragments))
+            .collect();
+        let added: Vec<_> = lines
+            .iter()
+            .filter(|line| line.right_kind == "added")
+            .map(|line| text(&line.right_fragments))
+            .collect();
+        assert_eq!(removed, ["first old", "second old", "third old"]);
+        assert_eq!(added, ["first new", "second new", "third new"]);
+    }
 }

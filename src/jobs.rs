@@ -356,6 +356,31 @@ impl<'a> JobRepository<'a> {
             .await?)
     }
 
+    pub async fn update_config(
+        &self,
+        owner: &str,
+        project_id: &str,
+        id: &str,
+        config: &JobConfigV1,
+    ) -> Result<(), JobError> {
+        let result = job::Entity::update_many()
+            .col_expr(
+                job::Column::ConfigJson,
+                Expr::value(serde_json::to_value(config)?),
+            )
+            .col_expr(job::Column::UpdatedAt, Expr::value(Utc::now()))
+            .filter(job::Column::Id.eq(id))
+            .filter(job::Column::Owner.eq(owner))
+            .filter(job::Column::ProjectId.eq(project_id))
+            .exec(self.database)
+            .await?;
+        if result.rows_affected == 1 {
+            Ok(())
+        } else {
+            Err(JobError::Conflict)
+        }
+    }
+
     pub async fn update_state(
         &self,
         owner: &str,

@@ -56,6 +56,14 @@ export function ProjectPage({ projectId }: { projectId: string }) {
     try { const result = await postForm<ActionResult>(`/api/projects/${projectId}/delete`, new URLSearchParams({ csrf_token: project.csrf_token, confirmation: 'delete' })); navigate(result.redirect) }
     catch (error) { setError(error instanceof Error ? error.message : 'Could not delete project.'); setBusy('') }
   }
+  async function openReview() {
+    if (!project?.latest_job_id) return
+    setBusy('Saving rules…'); setError('')
+    try {
+      await postForm<ActionResult>(`/api/projects/${projectId}`, projectForm(project))
+      navigate(`/projects/${projectId}/jobs/${project.latest_job_id}`)
+    } catch (error) { setError(error instanceof Error ? error.message : 'Could not save the project.'); setBusy('') }
+  }
   if (!project) return <Shell title="Project"><main><Busy label={error || 'Loading project…'} /></main></Shell>
   return <Shell title={project.project_name} subtitle={`Project · ${project.wiki_id} · configuration version ${project.state_version}`}>
     {error && <ErrorBox message={error} />}
@@ -93,7 +101,7 @@ export function ProjectPage({ projectId }: { projectId: string }) {
         <button onClick={() => update({rules: [...project.rules, blankRule()]})}>Add replacement rule</button>
         <div className="command-stack"><button className="primary" disabled={!!busy} onClick={() => submit(`/api/projects/${projectId}/build`, 'Building…')}>Build page list</button><button disabled={!!busy} onClick={() => submit(`/api/projects/${projectId}`, 'Saving…')}>Save configuration</button><button className="danger" onClick={removeProject}>Delete project</button></div>
         {busy && <p className="busy">{busy}</p>}
-        {project.latest_job_id && <div className="job-summary"><strong>{project.latest_job_status}</strong><p>{project.latest_job_message}</p><p>{project.latest_job_total} queued · {project.latest_job_duplicates} duplicates{project.latest_job_limit_reached ? ' · limit reached' : ''}</p>{project.latest_queue_preview.length > 0 && <ol>{project.latest_queue_preview.map((entry, index) => <li key={`${entry.title}-${index}`}>{entry.title}</li>)}</ol>}<a className="button primary" href={`/projects/${projectId}/jobs/${project.latest_job_id}`}>Open review</a></div>}
+        {project.latest_job_id && <div className="job-summary"><strong>{project.latest_job_status}</strong><p>{project.latest_job_message}</p><p>{project.latest_job_total} queued · {project.latest_job_duplicates} duplicates{project.latest_job_limit_reached ? ' · limit reached' : ''}</p>{project.latest_queue_preview.length > 0 && <ol>{project.latest_queue_preview.map((entry, index) => <li key={`${entry.title}-${index}`}>{entry.title}</li>)}</ol>}<button className="primary" disabled={!!busy} onClick={openReview}>Open review</button></div>}
       </section>
 
       <section className="pane preview-pane">

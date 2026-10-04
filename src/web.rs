@@ -178,6 +178,7 @@ struct ReviewResponse<'a> {
     reviewed: usize,
     skipped: usize,
     unavailable: usize,
+    rule_count: usize,
     generation_message: &'a str,
     queue: &'a [QueueEntry],
     current: Option<&'a QueueEntry>,
@@ -1402,6 +1403,7 @@ async fn review_response(
         reviewed: counters.reviewed,
         skipped: counters.skipped,
         unavailable: counters.unavailable,
+        rule_count: config.rules.len(),
         generation_message: &state.generation_message,
         queue: &state.queue,
         current,
@@ -1752,7 +1754,21 @@ async fn update_project_response(
     form: UpdateProjectForm,
 ) -> Response {
     match save_project(database, owner, id, &form).await {
-        Ok(project) => action_response(format!("/projects/{id}"), Some(project.id)),
+        Ok((project, rules)) => {
+            let jobs = JobRepository::new(database);
+            let latest_job = match jobs.latest(owner, id).await {
+                Ok(job) => job,
+                Err(error) => return job_error_response(error, &format!("/projects/{id}")),
+            };
+            if let Some(job) = latest_job
+                && let Err(error) = jobs
+                    .update_config(owner, id, &job.id, &JobConfigV1::new(rules))
+                    .await
+            {
+                return job_error_response(error, &format!("/projects/{id}"));
+            }
+            action_response(format!("/projects/{id}"), Some(project.id))
+        }
         Err(response) => *response,
     }
 }
@@ -1762,7 +1778,7 @@ async fn save_project(
     owner: &str,
     id: &str,
     form: &UpdateProjectForm,
-) -> Result<project::Model, Box<Response>> {
+) -> Result<(project::Model, Vec<ReplacementRule>), Box<Response>> {
     let back_href = format!("/projects/{id}");
     let rules = match replacement_rules(form) {
         Ok(rules) => rules,
@@ -1845,6 +1861,7 @@ async fn save_project(
             &back_href,
         )));
     }
+    let saved_rules = state.rules.clone();
     let repository = ProjectRepository::new(database);
     match repository
         .update(
@@ -1857,7 +1874,7 @@ async fn save_project(
         )
         .await
     {
-        Ok(Some(project)) => Ok(project),
+        Ok(Some(project)) => Ok((project, saved_rules)),
         Ok(None) => Err(Box::new(error_page(
             StatusCode::NOT_FOUND,
             "Project not found",

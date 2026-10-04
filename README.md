@@ -39,7 +39,6 @@ Start a new build from the Toolforge bastion:
 ```sh
 become findsmith
 toolforge build start https://gitlab.wikimedia.org/toolforge-repos/findsmith
-toolforge build show
 ```
 
 After the build succeeds, deploy the new image:
