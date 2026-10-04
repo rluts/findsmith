@@ -99,7 +99,7 @@ export function ProjectPage({ projectId }: { projectId: string }) {
       </section>
 
       <section className="pane rules-pane">
-        <div className="tabs"><span className="active">Rules</span><span>Options</span><span>Skip</span><span>Logs</span></div>
+        <div className="tabs"><span className="active">Rules</span><span className="inactive" aria-disabled="true">Options</span></div>
         <label>Project name<input value={project.project_name} maxLength={255} onChange={event => update({project_name: event.target.value})} /></label>
         <fieldset><legend>Wikimedia account</legend>
           <p>{wikiNames[project.wiki_id] ?? project.wiki_id} groups: {session ? (session.groups.length ? session.groups.join(', ') : 'none reported') : (groupsError ? 'unavailable' : 'loading…')}</p>
@@ -122,7 +122,7 @@ export function ProjectPage({ projectId }: { projectId: string }) {
       </section>
 
       <section className="pane preview-pane">
-        <div className="tabs"><span className="active">Preview</span><span>History</span><span>Links</span><span>Page logs</span></div>
+        <div className="tabs"><span className="active">Preview</span></div>
         <div className="preview-tools"><label>Page title<input value={project.page_title} onChange={event => update({page_title: event.target.value})} placeholder="Example page" /></label><button disabled={!!busy || !project.page_title.trim()} onClick={() => submit(`/api/projects/${projectId}/page-preview`, 'Loading preview…')}>Preview</button></div>
         {project.page_preview_error && <ErrorBox message={project.page_preview_error} />}
         {project.page_preview ? <>

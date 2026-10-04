@@ -53,7 +53,7 @@ export function ReviewPage({ projectId, jobId }: { projectId: string; jobId: str
       </section>
 
       <section className="pane control-pane">
-        <div className="tabs"><span className="active">Options</span><span>More…</span><span>Skip</span><span>Start</span></div>
+        <div className="tabs"><span className="active">Options</span></div>
         <fieldset><legend>Page statistics</legend><dl><dt>Status</dt><dd>{review.status}</dd><dt>Pending</dt><dd>{review.pending}</dd><dt>Reviewed</dt><dd>{review.reviewed}</dd><dt>Unavailable</dt><dd>{review.unavailable}</dd></dl></fieldset>
         <p className="snapshot-note">This review uses {review.rule_count} rule(s) from the saved project configuration.</p>
         {review.current && <fieldset><legend>Current page</legend><strong>{review.current.title}</strong><p>Namespace: {review.current.namespace ?? '—'}</p><p>{review.current.reason}</p></fieldset>}
@@ -63,7 +63,7 @@ export function ReviewPage({ projectId, jobId }: { projectId: string; jobId: str
       </section>
 
       <section className="pane editor-pane">
-        <div className="tabs"><span className="active">Edit box</span><span>History</span><span>What links here</span><span>Logs</span><span>Typos</span></div>
+        <div className="tabs"><span className="active">Edit box</span><span className="inactive" aria-disabled="true">History</span><span className="inactive" aria-disabled="true">What links here</span><span className="inactive" aria-disabled="true">Logs</span><span className="inactive" aria-disabled="true">Typos</span></div>
         {review.page_error && <ErrorBox message={review.page_error} />}
         {review.page ? <>
           <div className="page-heading"><a href={review.page.full_url} target="_blank" rel="noreferrer">Current revision</a><strong>{review.page.changed ? 'Changed' : 'No changes'}</strong></div>
