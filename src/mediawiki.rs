@@ -130,6 +130,22 @@ struct GlobalUserInfo {
 }
 
 #[derive(Deserialize)]
+struct UserInfoResponse {
+    query: UserInfoQuery,
+}
+
+#[derive(Deserialize)]
+struct UserInfoQuery {
+    userinfo: UserInfo,
+}
+
+#[derive(Deserialize)]
+struct UserInfo {
+    #[serde(default)]
+    groups: Vec<String>,
+}
+
+#[derive(Deserialize)]
 struct PageResponse {
     curtimestamp: String,
     query: PageQuery,
@@ -437,6 +453,22 @@ pub async fn page_list_bot(
         .await
 }
 
+pub async fn user_groups(
+    wiki_url: &str,
+    user_agent: &str,
+    access_token: &str,
+) -> Result<Vec<String>, mwapi::Error> {
+    let client = authenticated_client(wiki_url, user_agent, access_token).await?;
+    let response: UserInfoResponse = client
+        .get([
+            ("action", "query"),
+            ("meta", "userinfo"),
+            ("uiprop", "groups"),
+        ])
+        .await?;
+    Ok(response.query.userinfo.groups)
+}
+
 fn resolve_normalized_batch(batch: &[String], query: NormalizeQuery) -> Vec<NormalizedTitle> {
     let normalized: HashMap<_, _> = query
         .normalized
@@ -511,6 +543,22 @@ async fn authenticated_client(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn userinfo_deserialization_keeps_all_groups() {
+        let response: UserInfoResponse = serde_json::from_value(serde_json::json!({
+            "query": {
+                "userinfo": {
+                    "groups": ["*", "user", "autoconfirmed", "sysop"]
+                }
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            response.query.userinfo.groups,
+            ["*", "user", "autoconfirmed", "sysop"]
+        );
+    }
 
     #[test]
     fn normalized_titles_follow_redirects_and_preserve_requested_value() {

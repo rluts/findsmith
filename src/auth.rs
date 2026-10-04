@@ -20,13 +20,6 @@ impl Authentication {
         }
     }
 
-    pub fn groups(&self) -> Vec<String> {
-        match self {
-            Self::WebOAuth(user) => user.profile().groups().to_vec(),
-            Self::OwnerToken { .. } => vec!["owner token".to_owned()],
-        }
-    }
-
     pub fn can_logout(&self) -> bool {
         matches!(self, Self::WebOAuth(_))
     }

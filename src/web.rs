@@ -71,6 +71,7 @@ impl FromRef<OwnerState> for Key {
 struct SessionResponse<'a> {
     username: Option<&'a str>,
     groups: Vec<String>,
+    groups_error: Option<String>,
     can_logout: bool,
 }
 
@@ -299,9 +300,14 @@ pub struct RecomputeForm {
     proposed_text: String,
 }
 
-pub async fn web_oauth_index(State(_state): State<WebState>, user: Option<AxumUser>) -> Response {
+pub async fn web_oauth_index(State(state): State<WebState>, user: Option<AxumUser>) -> Response {
     let authentication = user.map(|user| Authentication::WebOAuth(Box::new(user)));
-    render_index(authentication.as_ref())
+    render_index(
+        authentication.as_ref(),
+        crate::mediawiki::UKWIKI_API_URL,
+        &state.user_agent,
+    )
+    .await
 }
 
 pub async fn owner_index(State(state): State<OwnerState>) -> Response {
@@ -309,7 +315,12 @@ pub async fn owner_index(State(state): State<OwnerState>) -> Response {
         username: state.username.clone(),
         access_token: state.access_token.clone(),
     };
-    render_index(Some(&authentication))
+    render_index(
+        Some(&authentication),
+        crate::mediawiki::UKWIKI_API_URL,
+        &state.user_agent,
+    )
+    .await
 }
 
 pub async fn web_workspace(
@@ -2110,15 +2121,34 @@ async fn delete_project_response(
     }
 }
 
-fn render_index(authentication: Option<&Authentication>) -> Response {
+async fn render_index(
+    authentication: Option<&Authentication>,
+    wiki_url: &str,
+    user_agent: &str,
+) -> Response {
     if let Some(authentication) = authentication {
         debug_assert!(!authentication.access_token().is_empty());
     }
+    let (groups, groups_error) = match authentication {
+        Some(authentication) => {
+            match crate::mediawiki::user_groups(wiki_url, user_agent, authentication.access_token())
+                .await
+            {
+                Ok(groups) => (groups, None),
+                Err(error) => (
+                    Vec::new(),
+                    Some(format!(
+                        "Could not load Ukrainian Wikipedia groups: {error}"
+                    )),
+                ),
+            }
+        }
+        None => (Vec::new(), None),
+    };
     render(SessionResponse {
         username: authentication.map(Authentication::username),
-        groups: authentication
-            .map(Authentication::groups)
-            .unwrap_or_default(),
+        groups,
+        groups_error,
         can_logout: authentication.is_some_and(Authentication::can_logout),
     })
 }

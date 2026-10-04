@@ -19,7 +19,8 @@ export function HomePage() {
         {error && <p className="error">{error}</p>}
         {!session ? <p>Checking session…</p> : session.username ? <>
           <p className="online">● Signed in as <strong>{session.username}</strong></p>
-          <p>Wikimedia groups: {session.groups.length ? session.groups.join(', ') : 'none reported'}</p>
+          <p>Ukrainian Wikipedia groups: {session.groups.length ? session.groups.join(', ') : 'none reported'}</p>
+          {session.groups_error && <p className="error">{session.groups_error}</p>}
           <a className="button primary" href="/workspace">Open workspace</a>
           {session.can_logout && <a className="button" href="/oauth/logout">Log out</a>}
         </> : <>
