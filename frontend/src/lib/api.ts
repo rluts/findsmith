@@ -3,7 +3,7 @@ export class ApiError extends Error {
 }
 
 export async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(path, { headers: { Accept: 'application/json' } })
+  const response = await fetch(path, { cache: 'no-store', headers: { Accept: 'application/json' } })
   return parse<T>(response)
 }
 

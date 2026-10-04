@@ -2,8 +2,10 @@ use std::time::Duration;
 
 use axum::{
     Router,
-    extract::DefaultBodyLimit,
-    http::StatusCode,
+    extract::{DefaultBodyLimit, Request},
+    http::{HeaderValue, StatusCode, header},
+    middleware::Next,
+    response::Response,
     routing::{any, get, get_service},
 };
 use mwoauth::axum::{refresh_session, routes as oauth_routes};
@@ -45,7 +47,8 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
                 user_agent: config.user_agent,
                 csrf_secure: !config.debug,
             };
-            let frontend = get_service(ServeFile::new("frontend/dist/index.html"));
+            let frontend = get_service(ServeFile::new("frontend/dist/index.html"))
+                .layer(axum::middleware::from_fn(disable_frontend_cache));
             Ok(oauth_routes()
                 .route("/api/session", get(web_oauth_index))
                 .route("/api/workspace", get(web_workspace))
@@ -113,7 +116,8 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
                 cookie_key: mwoauth::axum::Key::from(&config.cookie_key),
                 csrf_secure: !config.debug,
             };
-            let frontend = get_service(ServeFile::new("frontend/dist/index.html"));
+            let frontend = get_service(ServeFile::new("frontend/dist/index.html"))
+                .layer(axum::middleware::from_fn(disable_frontend_cache));
             Ok(Router::new()
                 .route("/api/session", get(owner_index))
                 .route("/api/workspace", get(owner_workspace))
@@ -166,6 +170,15 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
                 .with_state(state))
         }
     }
+}
+
+async fn disable_frontend_cache(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, no-cache, must-revalidate, max-age=0"),
+    );
+    response
 }
 
 async fn api_not_found() -> (StatusCode, axum::Json<serde_json::Value>) {
