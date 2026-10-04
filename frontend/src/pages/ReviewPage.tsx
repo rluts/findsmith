@@ -67,11 +67,16 @@ export function ReviewPage({ projectId, jobId }: { projectId: string; jobId: str
         {review.page ? <>
           <div className="page-heading"><a href={review.page.full_url} target="_blank" rel="noreferrer">Current revision</a><strong>{review.page.changed ? 'Changed' : 'No changes'}</strong></div>
           <div className="meta-strip"><span>Revision {review.page.revision_id}</span><span>{review.page.content_model}</span><span>{review.page.editable ? 'Editable' : 'Not editable'}</span><span>Protection: {review.page.protection}</span></div>
-          <textarea className="editor" value={text} maxLength={4194304} onChange={event => setText(event.target.value)} />
-          <button onClick={recompute} disabled={!!busy}>Recompute diff</button>
+          <details className="wikitext-accordion">
+            <summary>Proposed wikitext</summary>
+            <textarea className="editor" value={text} maxLength={4194304} onChange={event => setText(event.target.value)} />
+            <button onClick={recompute} disabled={!!busy}>Recompute diff</button>
+          </details>
           <div className="rule-counts">{review.page.rules.map((rule, index) => <span className={rule.changed ? 'changed' : ''} key={index}>Rule {index + 1}: {rule.count}</span>)}</div>
-          <SideDiff lines={review.page.side_by_side_diff} />
-          <details><summary>Unified diff</summary><UnifiedDiff lines={review.page.unified_diff} /></details>
+          {review.page.changed ? <>
+            <SideDiff lines={review.page.side_by_side_diff} />
+            <details><summary>Unified diff</summary><UnifiedDiff lines={review.page.unified_diff} /></details>
+          </> : <div className="no-diff">No diff — the proposed wikitext matches the current revision.</div>}
         </> : <div className="empty preview-empty">{building ? review.generation_message : 'No reviewable page is selected.'}</div>}
       </section>
     </main>

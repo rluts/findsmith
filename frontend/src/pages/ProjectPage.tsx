@@ -104,8 +104,10 @@ export function ProjectPage({ projectId }: { projectId: string }) {
           <div className="page-heading"><a href={project.page_preview.full_url} target="_blank" rel="noreferrer">{project.page_preview.title}</a><strong>{project.page_preview.total_replacements} replacement(s)</strong></div>
           <div className="meta-strip"><span>Revision {project.page_preview.revision_id}</span><span>NS {project.page_preview.namespace}</span><span>{project.page_preview.content_model}</span><span>{project.page_preview.redirect ? 'Redirect' : 'Page'}</span><span>{project.page_preview.editable ? 'Editable' : 'Not editable'}</span><span>Protection: {project.page_preview.protection}</span></div>
           <div className="rule-counts">{project.page_preview.rules.map((rule, index) => <span className={rule.changed ? 'changed' : ''} key={index}>Rule {index + 1}: {rule.count}</span>)}</div>
-          <SideDiff lines={project.page_preview.side_by_side_diff} />
-          <details><summary>Unified diff</summary><UnifiedDiff lines={project.page_preview.unified_diff} /></details>
+          {project.page_preview.changed ? <>
+            <SideDiff lines={project.page_preview.side_by_side_diff} />
+            <details><summary>Unified diff</summary><UnifiedDiff lines={project.page_preview.unified_diff} /></details>
+          </> : <div className="no-diff">No diff — the replacement rules did not change this page.</div>}
         </> : <div className="empty preview-empty">Enter a page title to test the current rules.</div>}
       </section>
     </main>

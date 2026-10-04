@@ -34,107 +34,130 @@ struct InlineLine {
 
 pub fn unified_lines(original: &str, proposed: &str) -> Vec<DiffLine> {
     let diff = TextDiff::from_lines(original, proposed);
-    diff.ops()
-        .iter()
-        .flat_map(|operation| diff.iter_inline_changes(operation))
-        .map(|change| {
-            let (kind, marker) = change_style(change.tag());
-            DiffLine {
-                kind,
-                marker,
-                fragments: fragments(&change),
-            }
-        })
-        .collect()
+    let mut lines = Vec::new();
+    for (index, group) in diff.grouped_ops(1).into_iter().enumerate() {
+        if index > 0 {
+            lines.push(DiffLine {
+                kind: "separator",
+                marker: '…',
+                fragments: Vec::new(),
+            });
+        }
+        lines.extend(group.iter().flat_map(|operation| {
+            diff.iter_inline_changes(operation).map(|change| {
+                let (kind, marker) = change_style(change.tag());
+                DiffLine {
+                    kind,
+                    marker,
+                    fragments: fragments(&change),
+                }
+            })
+        }));
+    }
+    lines
 }
 
 pub fn side_by_side_lines(original: &str, proposed: &str) -> Vec<SideBySideLine> {
     let diff = TextDiff::from_lines(original, proposed);
     let mut rows = Vec::new();
 
-    for operation in diff.ops() {
-        let changes: Vec<_> = diff
-            .iter_inline_changes(operation)
-            .map(|change| {
-                let tag = change.tag();
-                (
-                    tag,
-                    InlineLine {
-                        old_index: change.old_index(),
-                        new_index: change.new_index(),
-                        fragments: fragments(&change),
-                    },
-                )
-            })
-            .collect();
+    for (group_index, group) in diff.grouped_ops(1).into_iter().enumerate() {
+        if group_index > 0 {
+            rows.push(side_row(
+                None,
+                "separator",
+                '…',
+                Vec::new(),
+                None,
+                "separator",
+                '…',
+                Vec::new(),
+            ));
+        }
+        for operation in group {
+            let changes: Vec<_> = diff
+                .iter_inline_changes(&operation)
+                .map(|change| {
+                    let tag = change.tag();
+                    (
+                        tag,
+                        InlineLine {
+                            old_index: change.old_index(),
+                            new_index: change.new_index(),
+                            fragments: fragments(&change),
+                        },
+                    )
+                })
+                .collect();
 
-        match operation {
-            DiffOp::Equal { .. } => {
-                for (_, line) in changes {
-                    rows.push(side_row(
-                        line.old_index,
-                        "context",
-                        ' ',
-                        line.fragments.clone(),
-                        line.new_index,
-                        "context",
-                        ' ',
-                        line.fragments,
-                    ));
+            match operation {
+                DiffOp::Equal { .. } => {
+                    for (_, line) in changes {
+                        rows.push(side_row(
+                            line.old_index,
+                            "context",
+                            ' ',
+                            line.fragments.clone(),
+                            line.new_index,
+                            "context",
+                            ' ',
+                            line.fragments,
+                        ));
+                    }
                 }
-            }
-            DiffOp::Delete { .. } => {
-                for (_, line) in changes {
-                    rows.push(side_row(
-                        line.old_index,
-                        "removed",
-                        '-',
-                        line.fragments,
-                        None,
-                        "empty",
-                        ' ',
-                        Vec::new(),
-                    ));
+                DiffOp::Delete { .. } => {
+                    for (_, line) in changes {
+                        rows.push(side_row(
+                            line.old_index,
+                            "removed",
+                            '-',
+                            line.fragments,
+                            None,
+                            "empty",
+                            ' ',
+                            Vec::new(),
+                        ));
+                    }
                 }
-            }
-            DiffOp::Insert { .. } => {
-                for (_, line) in changes {
-                    rows.push(side_row(
-                        None,
-                        "empty",
-                        ' ',
-                        Vec::new(),
-                        line.new_index,
-                        "added",
-                        '+',
-                        line.fragments,
-                    ));
+                DiffOp::Insert { .. } => {
+                    for (_, line) in changes {
+                        rows.push(side_row(
+                            None,
+                            "empty",
+                            ' ',
+                            Vec::new(),
+                            line.new_index,
+                            "added",
+                            '+',
+                            line.fragments,
+                        ));
+                    }
                 }
-            }
-            DiffOp::Replace { .. } => {
-                let mut deleted = changes
-                    .iter()
-                    .filter(|(tag, _)| *tag == ChangeTag::Delete)
-                    .map(|(_, line)| line)
-                    .peekable();
-                let mut inserted = changes
-                    .iter()
-                    .filter(|(tag, _)| *tag == ChangeTag::Insert)
-                    .map(|(_, line)| line)
-                    .peekable();
-                while deleted.peek().is_some() || inserted.peek().is_some() {
-                    let left = deleted.next();
-                    let right = inserted.next();
-                    rows.push(side_row(
-                        left.and_then(|line| line.old_index),
-                        if left.is_some() { "removed" } else { "empty" },
-                        if left.is_some() { '-' } else { ' ' },
-                        left.map(|line| line.fragments.clone()).unwrap_or_default(),
-                        right.and_then(|line| line.new_index),
-                        if right.is_some() { "added" } else { "empty" },
-                        if right.is_some() { '+' } else { ' ' },
-                        right.map(|line| line.fragments.clone()).unwrap_or_default(),
-                    ));
+                DiffOp::Replace { .. } => {
+                    let mut deleted = changes
+                        .iter()
+                        .filter(|(tag, _)| *tag == ChangeTag::Delete)
+                        .map(|(_, line)| line)
+                        .peekable();
+                    let mut inserted = changes
+                        .iter()
+                        .filter(|(tag, _)| *tag == ChangeTag::Insert)
+                        .map(|(_, line)| line)
+                        .peekable();
+                    while deleted.peek().is_some() || inserted.peek().is_some() {
+                        let left = deleted.next();
+                        let right = inserted.next();
+                        rows.push(side_row(
+                            left.and_then(|line| line.old_index),
+                            if left.is_some() { "removed" } else { "empty" },
+                            if left.is_some() { '-' } else { ' ' },
+                            left.map(|line| line.fragments.clone()).unwrap_or_default(),
+                            right.and_then(|line| line.new_index),
+                            if right.is_some() { "added" } else { "empty" },
+                            if right.is_some() { '+' } else { ' ' },
+                            right.map(|line| line.fragments.clone()).unwrap_or_default(),
+                        ));
+                    }
                 }
             }
         }
@@ -247,13 +270,25 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_fragments_are_not_emphasized() {
-        let lines = unified_lines("спільний текст\n", "спільний текст\n");
-        assert!(
-            lines[0]
-                .fragments
-                .iter()
-                .all(|fragment| !fragment.emphasized)
+    fn unchanged_files_produce_no_diff_lines() {
+        assert!(unified_lines("спільний текст\n", "спільний текст\n").is_empty());
+    }
+
+    #[test]
+    fn diff_keeps_one_context_line_around_each_change() {
+        let lines = unified_lines(
+            "one\ntwo\nthree\nfour\nfive\nsix\nseven\n",
+            "one\nchanged\nthree\nfour\nfive\nchanged too\nseven\n",
+        );
+        let context: Vec<_> = lines
+            .iter()
+            .filter(|line| line.kind == "context")
+            .map(|line| text(&line.fragments))
+            .collect();
+        assert_eq!(context, ["one", "three", "five", "seven"]);
+        assert_eq!(
+            lines.iter().filter(|line| line.kind == "separator").count(),
+            1
         );
     }
 }
