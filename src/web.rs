@@ -22,12 +22,13 @@ use crate::{
     lists::{queue_from_normalized, source_values, validate_namespaces, validate_queue_limit},
     mediawiki::{
         PageListKind, PageSnapshot, load_page, normalize_titles, page_list, page_list_bot,
-        wiki_api_url, wiki_id,
+        parse_preview, wiki_api_url, wiki_id,
     },
     projects::{
         PageSource, PageSourceKind, ProjectError, ProjectRepository, ProjectState, ReplacementRule,
     },
     rules::{RuleEngine, TransformationResult},
+    saved_rules,
 };
 
 #[derive(Clone)]
@@ -166,6 +167,7 @@ struct PagePreviewView {
     protection: String,
     total_replacements: usize,
     changed: bool,
+    proposed_text: String,
     rules: Vec<RulePreviewView>,
     unified_diff: Vec<DiffLine>,
     side_by_side_diff: Vec<SideBySideLine>,
@@ -252,6 +254,8 @@ pub struct UpdateProjectForm {
     namespaces: Vec<String>,
     queue_limit: usize,
     #[serde(default)]
+    rule_name: Vec<String>,
+    #[serde(default)]
     rule_find: Vec<String>,
     #[serde(default)]
     rule_replace: Vec<String>,
@@ -306,6 +310,294 @@ pub struct QueueActionForm {
 pub struct RecomputeForm {
     csrf_token: String,
     proposed_text: String,
+}
+
+#[derive(Deserialize)]
+pub struct RenderPreviewForm {
+    csrf_token: String,
+    title: String,
+    proposed_text: String,
+}
+
+#[derive(Serialize)]
+struct RenderedPreviewResponse {
+    title: String,
+    wiki_origin: String,
+    html: String,
+    module_styles: Vec<String>,
+}
+
+pub async fn web_render_preview(
+    State(state): State<WebState>,
+    user: AxumUser,
+    Path(id): Path<String>,
+    jar: PrivateCookieJar,
+    Form(form): Form<RenderPreviewForm>,
+) -> Response {
+    if csrf::verify(&jar, &form.csrf_token).is_err() {
+        return csrf_error(&format!("/projects/{id}"));
+    }
+    render_preview_response(
+        &state.database,
+        user.profile().central_id(),
+        user.oauth2_token(),
+        &state.user_agent,
+        &id,
+        form,
+    )
+    .await
+}
+
+pub async fn owner_render_preview(
+    State(state): State<OwnerState>,
+    Path(id): Path<String>,
+    jar: PrivateCookieJar,
+    Form(form): Form<RenderPreviewForm>,
+) -> Response {
+    if csrf::verify(&jar, &form.csrf_token).is_err() {
+        return csrf_error(&format!("/projects/{id}"));
+    }
+    render_preview_response(
+        &state.database,
+        &state.central_id,
+        &state.access_token,
+        &state.user_agent,
+        &id,
+        form,
+    )
+    .await
+}
+
+async fn render_preview_response(
+    database: &DatabaseConnection,
+    owner: &str,
+    access_token: &str,
+    user_agent: &str,
+    project_id: &str,
+    form: RenderPreviewForm,
+) -> Response {
+    let back_href = format!("/projects/{project_id}");
+    let project = match ProjectRepository::new(database)
+        .get(owner, project_id)
+        .await
+    {
+        Ok(Some(project)) => project,
+        Ok(None) => {
+            return error_page(
+                StatusCode::NOT_FOUND,
+                "Project not found",
+                "This project does not exist or you do not have access to it.",
+                "/workspace",
+            );
+        }
+        Err(error) => return project_error_response(error, "/workspace"),
+    };
+    if wiki_id(&project.wiki_url).is_none()
+        || form.title.trim().is_empty()
+        || form.title.chars().count() > 255
+        || form.proposed_text.len() > crate::rules::MAX_OUTPUT_BYTES
+    {
+        return error_page(
+            StatusCode::BAD_REQUEST,
+            "Invalid preview",
+            "The title, wiki, or proposed wikitext is invalid.",
+            &back_href,
+        );
+    }
+    let parsed = match parse_preview(
+        &project.wiki_url,
+        user_agent,
+        access_token,
+        form.title.trim(),
+        &form.proposed_text,
+    )
+    .await
+    {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return error_page(
+                StatusCode::BAD_GATEWAY,
+                "Could not render preview",
+                &error.to_string(),
+                &back_href,
+            );
+        }
+    };
+    let origin = match url::Url::parse(&project.wiki_url) {
+        Ok(url) => url.origin().ascii_serialization(),
+        Err(error) => return internal_error(error),
+    };
+    Json(RenderedPreviewResponse {
+        title: parsed.title,
+        wiki_origin: origin,
+        html: parsed.html,
+        module_styles: parsed.module_styles,
+    })
+    .into_response()
+}
+
+#[derive(Deserialize)]
+pub struct SaveRuleForm {
+    csrf_token: String,
+    rule_json: String,
+}
+
+#[derive(Deserialize)]
+pub struct DeleteRuleForm {
+    csrf_token: String,
+}
+
+pub async fn web_saved_rules(State(state): State<WebState>, user: AxumUser) -> Response {
+    saved_rules_response(&state.database, user.profile().central_id()).await
+}
+
+pub async fn owner_saved_rules(State(state): State<OwnerState>) -> Response {
+    saved_rules_response(&state.database, &state.central_id).await
+}
+
+async fn saved_rules_response(database: &DatabaseConnection, owner: &str) -> Response {
+    match saved_rules::list(database, owner).await {
+        Ok(rules) => Json(rules).into_response(),
+        Err(message) => error_page(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Saved rules unavailable",
+            &message,
+            "/workspace",
+        ),
+    }
+}
+
+pub async fn web_save_rule(
+    State(state): State<WebState>,
+    user: AxumUser,
+    jar: PrivateCookieJar,
+    Form(form): Form<SaveRuleForm>,
+) -> Response {
+    if csrf::verify(&jar, &form.csrf_token).is_err() {
+        return csrf_error("/workspace");
+    }
+    save_rule_response(&state.database, user.profile().central_id(), None, form).await
+}
+
+pub async fn owner_save_rule(
+    State(state): State<OwnerState>,
+    jar: PrivateCookieJar,
+    Form(form): Form<SaveRuleForm>,
+) -> Response {
+    if csrf::verify(&jar, &form.csrf_token).is_err() {
+        return csrf_error("/workspace");
+    }
+    save_rule_response(&state.database, &state.central_id, None, form).await
+}
+
+pub async fn web_update_saved_rule(
+    State(state): State<WebState>,
+    user: AxumUser,
+    Path(id): Path<String>,
+    jar: PrivateCookieJar,
+    Form(form): Form<SaveRuleForm>,
+) -> Response {
+    if csrf::verify(&jar, &form.csrf_token).is_err() {
+        return csrf_error("/workspace");
+    }
+    save_rule_response(
+        &state.database,
+        user.profile().central_id(),
+        Some(&id),
+        form,
+    )
+    .await
+}
+
+pub async fn owner_update_saved_rule(
+    State(state): State<OwnerState>,
+    Path(id): Path<String>,
+    jar: PrivateCookieJar,
+    Form(form): Form<SaveRuleForm>,
+) -> Response {
+    if csrf::verify(&jar, &form.csrf_token).is_err() {
+        return csrf_error("/workspace");
+    }
+    save_rule_response(&state.database, &state.central_id, Some(&id), form).await
+}
+
+async fn save_rule_response(
+    database: &DatabaseConnection,
+    owner: &str,
+    id: Option<&str>,
+    form: SaveRuleForm,
+) -> Response {
+    let rule: ReplacementRule = match serde_json::from_str(&form.rule_json) {
+        Ok(rule) => rule,
+        Err(_) => {
+            return error_page(
+                StatusCode::BAD_REQUEST,
+                "Invalid rule",
+                "Rule data is invalid.",
+                "/workspace",
+            );
+        }
+    };
+    match saved_rules::save(database, owner, id, rule).await {
+        Ok(saved) => Json(saved).into_response(),
+        Err(message) => error_page(
+            if message == "Saved rule not found." {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            "Could not save rule",
+            &message,
+            "/workspace",
+        ),
+    }
+}
+
+pub async fn web_delete_saved_rule(
+    State(state): State<WebState>,
+    user: AxumUser,
+    Path(id): Path<String>,
+    jar: PrivateCookieJar,
+    Form(form): Form<DeleteRuleForm>,
+) -> Response {
+    if csrf::verify(&jar, &form.csrf_token).is_err() {
+        return csrf_error("/workspace");
+    }
+    delete_saved_rule_response(&state.database, user.profile().central_id(), &id).await
+}
+
+pub async fn owner_delete_saved_rule(
+    State(state): State<OwnerState>,
+    Path(id): Path<String>,
+    jar: PrivateCookieJar,
+    Form(form): Form<DeleteRuleForm>,
+) -> Response {
+    if csrf::verify(&jar, &form.csrf_token).is_err() {
+        return csrf_error("/workspace");
+    }
+    delete_saved_rule_response(&state.database, &state.central_id, &id).await
+}
+
+async fn delete_saved_rule_response(
+    database: &DatabaseConnection,
+    owner: &str,
+    id: &str,
+) -> Response {
+    match saved_rules::delete(database, owner, id).await {
+        Ok(true) => Json(serde_json::json!({"ok": true})).into_response(),
+        Ok(false) => error_page(
+            StatusCode::NOT_FOUND,
+            "Saved rule not found",
+            "Saved rule not found.",
+            "/workspace",
+        ),
+        Err(message) => error_page(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Could not delete rule",
+            &message,
+            "/workspace",
+        ),
+    }
 }
 
 pub async fn web_oauth_index(
@@ -1721,6 +2013,7 @@ fn render_page_preview_error(
 
 fn page_preview_view(snapshot: PageSnapshot, result: TransformationResult) -> PagePreviewView {
     let protection = protection_text(&snapshot);
+    let proposed_text = result.text.clone();
     PagePreviewView {
         title: snapshot.title,
         full_url: snapshot.full_url,
@@ -1735,6 +2028,7 @@ fn page_preview_view(snapshot: PageSnapshot, result: TransformationResult) -> Pa
         protection,
         total_replacements: result.total_replacements,
         changed: result.total_replacements > 0,
+        proposed_text,
         rules: result
             .counts
             .into_iter()
@@ -2060,6 +2354,7 @@ fn replacement_rules(form: &UpdateProjectForm) -> Result<Vec<ReplacementRule>, S
         || form.rule_type.len() != count
         || form.rule_case.len() != count
         || form.rule_scope.len() != count
+        || (!form.rule_name.is_empty() && form.rule_name.len() != count)
     {
         return Err(
             "The submitted rule fields are incomplete. Reload the page and try again.".to_owned(),
@@ -2071,6 +2366,10 @@ fn replacement_rules(form: &UpdateProjectForm) -> Result<Vec<ReplacementRule>, S
     let dot_newline = rule_indexes(&form.rule_dot_newline, count)?;
     let mut rules = Vec::with_capacity(count);
     for index in 0..count {
+        let name = form.rule_name.get(index).map(String::as_str).unwrap_or("");
+        if name.chars().count() > 255 {
+            return Err(format!("Rule {} name is too long.", index + 1));
+        }
         if form.rule_find[index].is_empty() && form.rule_replace[index].is_empty() {
             continue;
         }
@@ -2095,6 +2394,7 @@ fn replacement_rules(form: &UpdateProjectForm) -> Result<Vec<ReplacementRule>, S
             }
         };
         rules.push(ReplacementRule {
+            name: name.to_owned(),
             enabled: enabled.contains(&index),
             find: form.rule_find[index].clone(),
             replace: form.rule_replace[index].clone(),
@@ -2305,6 +2605,7 @@ mod tests {
             source_value: Vec::new(),
             namespaces: Vec::new(),
             queue_limit: 100,
+            rule_name: vec!["Remove obsolete".to_owned()],
             rule_find: vec!["obsolete".to_owned()],
             rule_replace: vec![String::new()],
             rule_enabled: vec!["0".to_owned()],
@@ -2322,6 +2623,7 @@ mod tests {
         assert_eq!(rules.len(), 1);
         assert!(rules[0].enabled);
         assert_eq!(rules[0].find, "obsolete");
+        assert_eq!(rules[0].name, "Remove obsolete");
         assert_eq!(rules[0].replace, "");
     }
 }

@@ -13,6 +13,7 @@ mod mediawiki;
 mod migration;
 mod projects;
 mod rules;
+mod saved_rules;
 mod web;
 
 type AppResult<T> = Result<T, Box<dyn Error>>;

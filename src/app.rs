@@ -22,12 +22,14 @@ use crate::{
     mediawiki::owner_identity,
     web::{
         OwnerState, WebState, healthz, owner_build_project, owner_create_project,
-        owner_delete_project, owner_index, owner_job_action, owner_job_queue_action,
-        owner_job_recompute, owner_job_review, owner_page_preview, owner_project, owner_start_job,
-        owner_update_project, owner_workspace, web_build_project, web_create_project,
-        web_delete_project, web_job_action, web_job_queue_action, web_job_recompute,
-        web_job_review, web_oauth_index, web_page_preview, web_project, web_start_job,
-        web_update_project, web_workspace,
+        owner_delete_project, owner_delete_saved_rule, owner_index, owner_job_action,
+        owner_job_queue_action, owner_job_recompute, owner_job_review, owner_page_preview,
+        owner_project, owner_render_preview, owner_save_rule, owner_saved_rules, owner_start_job,
+        owner_update_project, owner_update_saved_rule, owner_workspace, web_build_project,
+        web_create_project, web_delete_project, web_delete_saved_rule, web_job_action,
+        web_job_queue_action, web_job_recompute, web_job_review, web_oauth_index, web_page_preview,
+        web_project, web_render_preview, web_save_rule, web_saved_rules, web_start_job,
+        web_update_project, web_update_saved_rule, web_workspace,
     },
 };
 
@@ -52,7 +54,20 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
             Ok(oauth_routes()
                 .route("/api/session", get(web_oauth_index))
                 .route("/api/workspace", get(web_workspace))
+                .route("/api/rules", get(web_saved_rules).post(web_save_rule))
+                .route(
+                    "/api/rules/{id}",
+                    axum::routing::post(web_update_saved_rule),
+                )
+                .route(
+                    "/api/rules/{id}/delete",
+                    axum::routing::post(web_delete_saved_rule),
+                )
                 .route("/api/projects", axum::routing::post(web_create_project))
+                .route(
+                    "/api/projects/{id}/render-preview",
+                    axum::routing::post(web_render_preview),
+                )
                 .route(
                     "/api/projects/{id}",
                     get(web_project).post(web_update_project),
@@ -121,7 +136,20 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
             Ok(Router::new()
                 .route("/api/session", get(owner_index))
                 .route("/api/workspace", get(owner_workspace))
+                .route("/api/rules", get(owner_saved_rules).post(owner_save_rule))
+                .route(
+                    "/api/rules/{id}",
+                    axum::routing::post(owner_update_saved_rule),
+                )
+                .route(
+                    "/api/rules/{id}/delete",
+                    axum::routing::post(owner_delete_saved_rule),
+                )
                 .route("/api/projects", axum::routing::post(owner_create_project))
+                .route(
+                    "/api/projects/{id}/render-preview",
+                    axum::routing::post(owner_render_preview),
+                )
                 .route(
                     "/api/projects/{id}",
                     get(owner_project).post(owner_update_project),

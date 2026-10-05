@@ -111,6 +111,7 @@ pub struct PageSource {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ReplacementRule {
+    pub name: String,
     pub enabled: bool,
     pub find: String,
     pub replace: String,
@@ -124,6 +125,7 @@ pub struct ReplacementRule {
 impl Default for ReplacementRule {
     fn default() -> Self {
         Self {
+            name: String::new(),
             enabled: true,
             find: String::new(),
             replace: String::new(),

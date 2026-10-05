@@ -62,6 +62,65 @@ pub struct PageProtection {
     pub expiry: String,
 }
 
+pub struct ParsedPreview {
+    pub html: String,
+    pub title: String,
+    pub module_styles: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct ParseResponse {
+    parse: ParseResult,
+}
+
+#[derive(Deserialize)]
+struct ParseResult {
+    title: String,
+    text: ParseText,
+    #[serde(default)]
+    modulestyles: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ParseText {
+    Modern(String),
+    Legacy {
+        #[serde(rename = "*")]
+        html: String,
+    },
+}
+
+pub async fn parse_preview(
+    wiki_url: &str,
+    user_agent: &str,
+    access_token: &str,
+    title: &str,
+    text: &str,
+) -> Result<ParsedPreview, mwapi::Error> {
+    let client = authenticated_client(wiki_url, user_agent, access_token).await?;
+    let response: ParseResponse = client
+        .post([
+            ("action", "parse"),
+            ("title", title),
+            ("text", text),
+            ("contentmodel", "wikitext"),
+            ("prop", "text|modules|jsconfigvars"),
+            ("preview", "1"),
+            ("disableeditsection", "1"),
+            ("useskin", "vector"),
+            ("formatversion", "2"),
+        ])
+        .await?;
+    Ok(ParsedPreview {
+        html: match response.parse.text {
+            ParseText::Modern(html) | ParseText::Legacy { html } => html,
+        },
+        title: response.parse.title,
+        module_styles: response.parse.modulestyles,
+    })
+}
+
 #[derive(Clone, Debug)]
 pub struct NormalizedTitle {
     pub requested_title: String,
@@ -543,6 +602,26 @@ async fn authenticated_client(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_preview_accepts_modern_and_legacy_text_shapes() {
+        for (text, expected) in [
+            (serde_json::json!("<p>Preview</p>"), "<p>Preview</p>"),
+            (serde_json::json!({"*": "<p>Legacy</p>"}), "<p>Legacy</p>"),
+        ] {
+            let response: ParseResponse = serde_json::from_value(serde_json::json!({
+                "parse": { "title": "Example", "text": text, "modulestyles": ["ext.cite.styles"] }
+            }))
+            .unwrap();
+            assert_eq!(response.parse.modulestyles, ["ext.cite.styles"]);
+            assert_eq!(
+                match response.parse.text {
+                    ParseText::Modern(html) | ParseText::Legacy { html } => html,
+                },
+                expected
+            );
+        }
+    }
 
     #[test]
     fn userinfo_deserialization_keeps_all_groups() {
