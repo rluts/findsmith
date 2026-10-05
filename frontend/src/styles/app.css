@@ -28,10 +28,11 @@ h1, h2 { font-size: 16px; margin: 0 0 12px; }
 .statusbar { height: 25px; margin-top: auto; display: flex; justify-content: space-between; padding: 4px 9px; border-top: 1px solid #888; background: #e4e4e4; box-shadow: inset 0 1px white; }
 main { flex: 1; }
 .panel, .pane { background: #eee; border: 1px solid #9d9d9d; box-shadow: inset 0 0 0 1px white; padding: 10px; }
-.home { display: grid; grid-template-columns: 1.4fr .8fr; gap: 10px; padding: 28px; align-items: center; max-width: 1000px; width: 100%; margin: auto; }
-.welcome { padding: 28px; }.welcome h1 { font-size: 36px; }.lead { font-size: 18px; line-height: 1.5; max-width: 610px; }
+.home { display: grid; grid-template-columns: 1fr; gap: 10px; padding: 28px; max-width: 760px; width: 100%; margin: auto; text-align: center; }
+.welcome { padding: 28px; }.welcome h1 { font-size: 36px; }.lead { font-size: 18px; line-height: 1.5; max-width: 610px; margin-left: auto; margin-right: auto; }
 .notice { border: 1px solid #c99322; background: #fff9d6; padding: 12px; margin-top: 24px; }
-.login { padding: 20px; }.login .button { display: block; margin-top: 9px; }.online { color: #176b34; }
+.app-shell > .notice { margin: 4px; }
+.login { padding: 20px; }.login .button { display: block; max-width: 350px; margin: 9px auto 0; }.online { color: #176b34; }
 .workspace-grid { display: grid; grid-template-columns: minmax(420px, 2fr) minmax(260px, 1fr); gap: 8px; padding: 8px; }
 .listbox { background: white; border: 1px solid #777; overflow: auto; }
 .project-row { display: grid; grid-template-columns: 1fr 100px 180px; gap: 12px; color: #111; padding: 8px; text-decoration: none; border-bottom: 1px solid #ddd; }
@@ -55,6 +56,7 @@ main { flex: 1; }
 .diff-row { display: grid; grid-template-columns: 1fr 1fr; min-width: 720px; }.diff-cell { display: grid; grid-template-columns: 38px 18px minmax(0, 1fr); min-height: 21px; border-bottom: 1px solid #ddd; }.diff-cell:first-child { border-right: 1px solid #888; }.diff-cell i, .diff-cell b { padding: 3px; text-align: right; color: #666; font-style: normal; user-select: none; }.diff-cell code, .unified-line code { padding: 3px 5px; white-space: pre-wrap; overflow-wrap: anywhere; }.added { background: #d9f4d2; }.removed { background: #f7d6d2; }.empty { background: #ddd; }mark { background: #67d75f; }.removed mark { background: #ef8178; }
 .unified-line { display: grid; grid-template-columns: 22px 1fr; min-height: 21px; }.unified-line b { padding: 3px; text-align: center; }.separator { color: #777; background: #eee; }.preview-empty { margin-top: 20px; }
 .awb-review { display: grid; grid-template-columns: minmax(230px, 24%) minmax(210px, 20%) minmax(460px, 56%); gap: 4px; padding: 4px; min-height: calc(100vh - 112px); }.queue-list { height: 520px; }.queue-row { display: grid; grid-template-columns: 28px minmax(100px, 1fr) 65px auto; align-items: center; gap: 3px; min-height: 26px; padding: 2px 4px; border-bottom: 1px solid #eee; }.queue-row.selected { color: white; background: #1680cc; }.queue-row.selected .row-actions button { color: #111; }.queue-row i { font-size: 10px; }.append-pages textarea { min-height: 70px; margin-top: 8px; }.clear-queue { width: 100%; margin-top: 5px; }.review-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 12px 0; }.control-pane dl, .rules-pane dl { display: grid; grid-template-columns: 1fr 1fr; margin: 0; }.control-pane dd, .rules-pane dd { margin: 0; text-align: right; }.read-only { background: #fff9d6; border: 1px solid #c99322; padding: 7px; }.editor { min-height: 250px; font-family: Consolas, monospace; line-height: 1.4; }.rule-counts { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }.rule-counts span { padding: 3px 6px; border: 1px solid #aaa; background: #ddd; }.rule-counts .changed { border-color: #278547; background: #d9f4d2; }
+.resume-review { width: 100%; margin: 12px 0; }
 .error-box { border: 1px solid #a32b24; background: #ffe0dd; color: #741b16; margin: 5px; padding: 8px; }.error { color: #9a1b15; }.busy { color: #165b8b; }.empty, .center { color: #666; padding: 14px; text-align: center; }
 .no-diff { margin-top: 8px; border: 1px solid #999; background: white; color: #666; padding: 18px; text-align: center; }
 .snapshot-note { border: 1px solid #c99322; background: #fff9d6; padding: 7px; line-height: 1.4; }

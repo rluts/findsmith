@@ -21,15 +21,15 @@ use crate::{
     config::{AuthenticationConfig, Config},
     mediawiki::owner_identity,
     web::{
-        OwnerState, WebState, healthz, owner_build_project, owner_create_project,
+        OwnerState, WebState, healthz, owner_add_wiki, owner_build_project, owner_create_project,
         owner_delete_project, owner_delete_saved_rule, owner_index, owner_job_action,
         owner_job_queue_action, owner_job_recompute, owner_job_review, owner_page_preview,
         owner_project, owner_render_preview, owner_save_rule, owner_saved_rules, owner_start_job,
-        owner_update_project, owner_update_saved_rule, owner_workspace, web_build_project,
-        web_create_project, web_delete_project, web_delete_saved_rule, web_job_action,
-        web_job_queue_action, web_job_recompute, web_job_review, web_oauth_index, web_page_preview,
-        web_project, web_render_preview, web_save_rule, web_saved_rules, web_start_job,
-        web_update_project, web_update_saved_rule, web_workspace,
+        owner_update_project, owner_update_saved_rule, owner_wikis, owner_workspace, web_add_wiki,
+        web_build_project, web_create_project, web_delete_project, web_delete_saved_rule,
+        web_job_action, web_job_queue_action, web_job_recompute, web_job_review, web_oauth_index,
+        web_page_preview, web_project, web_render_preview, web_save_rule, web_saved_rules,
+        web_start_job, web_update_project, web_update_saved_rule, web_wikis, web_workspace,
     },
 };
 
@@ -54,6 +54,7 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
             Ok(oauth_routes()
                 .route("/api/session", get(web_oauth_index))
                 .route("/api/workspace", get(web_workspace))
+                .route("/api/wikis", get(web_wikis).post(web_add_wiki))
                 .route("/api/rules", get(web_saved_rules).post(web_save_rule))
                 .route(
                     "/api/rules/{id}",
@@ -106,6 +107,7 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
                 .nest_service("/assets", ServeDir::new("frontend/dist/assets"))
                 .route_service("/", frontend.clone())
                 .route_service("/workspace", frontend.clone())
+                .route_service("/add-wiki", frontend.clone())
                 .route_service("/projects/{id}", frontend.clone())
                 .route_service("/projects/{id}/jobs/{job_id}", frontend)
                 .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
@@ -136,6 +138,7 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
             Ok(Router::new()
                 .route("/api/session", get(owner_index))
                 .route("/api/workspace", get(owner_workspace))
+                .route("/api/wikis", get(owner_wikis).post(owner_add_wiki))
                 .route("/api/rules", get(owner_saved_rules).post(owner_save_rule))
                 .route(
                     "/api/rules/{id}",
@@ -188,6 +191,7 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
                 .nest_service("/assets", ServeDir::new("frontend/dist/assets"))
                 .route_service("/", frontend.clone())
                 .route_service("/workspace", frontend.clone())
+                .route_service("/add-wiki", frontend.clone())
                 .route_service("/projects/{id}", frontend.clone())
                 .route_service("/projects/{id}/jobs/{job_id}", frontend)
                 .layer(DefaultBodyLimit::max(16 * 1024 * 1024))

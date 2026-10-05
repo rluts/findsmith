@@ -2,7 +2,7 @@ export function Shell({ children, title, subtitle, authenticated = true }: { chi
   return <div className="app-shell">
     <header className="titlebar"><span className="app-icon">◆</span><strong>FindSmith</strong>{title && <span> — {title}</span>}</header>
     <nav className="menubar" aria-label="Main menu">
-      <a href="/">Home</a>{authenticated ? <a href="/workspace">Projects</a> : <span className="inactive" aria-disabled="true">Projects</span>}<span className="inactive" aria-disabled="true">Help</span>
+      <a href="/">Home</a>{authenticated ? <><a href="/workspace">Your Projects</a><a href="/add-wiki">Add Wiki</a></> : <><span className="inactive" aria-disabled="true">Your Projects</span><span className="inactive" aria-disabled="true">Add Wiki</span></>}<span className="inactive" aria-disabled="true">Help</span>
     </nav>
     {subtitle && <div className="contextbar">{subtitle}</div>}
     {children}

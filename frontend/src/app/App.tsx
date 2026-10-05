@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { WorkspacePage } from '../pages/WorkspacePage'
 import { ProjectPage } from '../pages/ProjectPage'
 import { HomePage } from '../pages/HomePage'
+import { AddWikiPage } from '../pages/AddWikiPage'
 import { navigate } from '../lib/router'
 
 export function App() {
@@ -26,5 +27,6 @@ export function App() {
   if (review) return <ProjectPage projectId={review[1]} jobId={review[2]} />
   if (project) return <ProjectPage projectId={project[1]} />
   if (path === '/workspace') return <WorkspacePage />
+  if (path === '/add-wiki') return <AddWikiPage />
   return <HomePage />
 }

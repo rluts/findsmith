@@ -15,6 +15,7 @@ mod projects;
 mod rules;
 mod saved_rules;
 mod web;
+mod wikis;
 
 type AppResult<T> = Result<T, Box<dyn Error>>;
 

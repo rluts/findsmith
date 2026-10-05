@@ -19,23 +19,6 @@ pub enum PageListKind {
     Search,
 }
 
-pub const UKWIKI_ID: &str = "ukwiki";
-pub const UKWIKI_API_URL: &str = "https://uk.wikipedia.org/w/api.php";
-
-pub fn wiki_api_url(wiki_id: &str) -> Option<&'static str> {
-    match wiki_id {
-        UKWIKI_ID => Some(UKWIKI_API_URL),
-        _ => None,
-    }
-}
-
-pub fn wiki_id(api_url: &str) -> Option<&'static str> {
-    match api_url {
-        UKWIKI_API_URL => Some(UKWIKI_ID),
-        _ => None,
-    }
-}
-
 pub struct UserIdentity {
     pub central_id: String,
     pub username: String,

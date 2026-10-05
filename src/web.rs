@@ -22,13 +22,14 @@ use crate::{
     lists::{queue_from_normalized, source_values, validate_namespaces, validate_queue_limit},
     mediawiki::{
         PageListKind, PageSnapshot, load_page, normalize_titles, page_list, page_list_bot,
-        parse_preview, wiki_api_url, wiki_id,
+        parse_preview,
     },
     projects::{
         PageSource, PageSourceKind, ProjectError, ProjectRepository, ProjectState, ReplacementRule,
     },
     rules::{RuleEngine, TransformationResult},
     saved_rules,
+    wikis::{self, AccessView, WikiView},
 };
 
 #[derive(Clone)]
@@ -83,10 +84,17 @@ pub struct SessionQuery {
     wiki_id: Option<String>,
 }
 
+#[derive(Default, Deserialize)]
+pub struct ProjectQuery {
+    #[serde(default)]
+    include_awb_access: bool,
+}
+
 #[derive(Serialize)]
 struct WorkspaceResponse<'a> {
     username: &'a str,
     projects: Vec<WorkspaceProjectView>,
+    wikis: Vec<WikiView>,
     csrf_token: &'a str,
 }
 
@@ -96,6 +104,7 @@ struct WorkspaceProjectView {
     name: String,
     state_version: i64,
     updated_at: String,
+    wiki_id: String,
 }
 
 #[derive(Serialize)]
@@ -107,6 +116,7 @@ struct ProjectResponse<'a> {
     namespace_options: &'a [NamespaceOption],
     queue_limit: usize,
     wiki_id: &'a str,
+    awb_access: Option<&'a AccessView>,
     rules: &'a [ReplacementRule],
     csrf_token: &'a str,
     page_title: &'a str,
@@ -134,7 +144,7 @@ struct PageSourceView {
 #[derive(Serialize)]
 struct NamespaceOption {
     id: i64,
-    label: &'static str,
+    label: String,
     selected: bool,
 }
 
@@ -239,6 +249,18 @@ fn action_response(redirect: String, id: Option<String>) -> Response {
 pub struct CreateProjectForm {
     name: String,
     wiki_id: String,
+    csrf_token: String,
+}
+
+#[derive(Deserialize)]
+pub struct AddWikiForm {
+    domain: String,
+    csrf_token: String,
+}
+
+#[derive(Serialize)]
+struct WikisResponse {
+    wikis: Vec<WikiView>,
     csrf_token: String,
 }
 
@@ -392,8 +414,7 @@ async fn render_preview_response(
         }
         Err(error) => return project_error_response(error, "/workspace"),
     };
-    if wiki_id(&project.wiki_url).is_none()
-        || form.title.trim().is_empty()
+    if form.title.trim().is_empty()
         || form.title.chars().count() > 255
         || form.proposed_text.len() > crate::rules::MAX_OUTPUT_BYTES
     {
@@ -605,9 +626,14 @@ pub async fn web_oauth_index(
     user: Option<AxumUser>,
     Query(query): Query<SessionQuery>,
 ) -> Response {
+    let owner = user
+        .as_ref()
+        .map(|user| user.profile().central_id().to_owned());
     let authentication = user.map(|user| Authentication::WebOAuth(Box::new(user)));
     render_index(
         authentication.as_ref(),
+        owner.as_deref(),
+        &state.database,
         &state.user_agent,
         query.include_groups,
         query.wiki_id.as_deref(),
@@ -625,11 +651,79 @@ pub async fn owner_index(
     };
     render_index(
         Some(&authentication),
+        Some(&state.central_id),
+        &state.database,
         &state.user_agent,
         query.include_groups,
         query.wiki_id.as_deref(),
     )
     .await
+}
+
+pub async fn web_wikis(
+    State(state): State<WebState>,
+    _user: AxumUser,
+    jar: PrivateCookieJar,
+) -> (PrivateCookieJar, Response) {
+    let (jar, token) = csrf::token(jar, state.csrf_secure);
+    (jar, wikis_response(&state.database, token).await)
+}
+
+pub async fn owner_wikis(
+    State(state): State<OwnerState>,
+    jar: PrivateCookieJar,
+) -> (PrivateCookieJar, Response) {
+    let (jar, token) = csrf::token(jar, state.csrf_secure);
+    (jar, wikis_response(&state.database, token).await)
+}
+
+async fn wikis_response(database: &DatabaseConnection, csrf_token: String) -> Response {
+    match wikis::list(database).await {
+        Ok(items) => render(WikisResponse {
+            wikis: items.into_iter().map(WikiView::from).collect(),
+            csrf_token,
+        }),
+        Err(error) => internal_error(error),
+    }
+}
+
+pub async fn web_add_wiki(
+    State(state): State<WebState>,
+    _user: AxumUser,
+    jar: PrivateCookieJar,
+    Form(form): Form<AddWikiForm>,
+) -> Response {
+    if csrf::verify(&jar, &form.csrf_token).is_err() {
+        return csrf_error("/add-wiki");
+    }
+    add_wiki_response(&state.database, &state.user_agent, &form.domain).await
+}
+
+pub async fn owner_add_wiki(
+    State(state): State<OwnerState>,
+    jar: PrivateCookieJar,
+    Form(form): Form<AddWikiForm>,
+) -> Response {
+    if csrf::verify(&jar, &form.csrf_token).is_err() {
+        return csrf_error("/add-wiki");
+    }
+    add_wiki_response(&state.database, &state.user_agent, &form.domain).await
+}
+
+async fn add_wiki_response(
+    database: &DatabaseConnection,
+    user_agent: &str,
+    domain: &str,
+) -> Response {
+    match wikis::register(database, user_agent, domain).await {
+        Ok(wiki) => action_response("/workspace".into(), Some(wiki.id)),
+        Err(message) => error_page(
+            StatusCode::BAD_REQUEST,
+            "Could not add wiki",
+            &message,
+            "/add-wiki",
+        ),
+    }
 }
 
 pub async fn web_workspace(
@@ -685,21 +779,40 @@ pub async fn web_project(
     State(state): State<WebState>,
     user: AxumUser,
     Path(id): Path<String>,
+    Query(query): Query<ProjectQuery>,
     jar: PrivateCookieJar,
 ) -> (PrivateCookieJar, Response) {
     let (jar, token) = csrf::token(jar, state.csrf_secure);
-    let response =
-        project_response(&state.database, user.profile().central_id(), &id, &token).await;
+    let response = project_response(
+        &state.database,
+        user.profile().central_id(),
+        user.profile().username(),
+        &state.user_agent,
+        query.include_awb_access,
+        &id,
+        &token,
+    )
+    .await;
     (jar, response)
 }
 
 pub async fn owner_project(
     State(state): State<OwnerState>,
     Path(id): Path<String>,
+    Query(query): Query<ProjectQuery>,
     jar: PrivateCookieJar,
 ) -> (PrivateCookieJar, Response) {
     let (jar, token) = csrf::token(jar, state.csrf_secure);
-    let response = project_response(&state.database, &state.central_id, &id, &token).await;
+    let response = project_response(
+        &state.database,
+        &state.central_id,
+        &state.username,
+        &state.user_agent,
+        query.include_awb_access,
+        &id,
+        &token,
+    )
+    .await;
     (jar, response)
 }
 
@@ -1066,6 +1179,10 @@ async fn workspace_response(
     username: &str,
     csrf_token: &str,
 ) -> Response {
+    let wikis = match wikis::list(database).await {
+        Ok(items) => items,
+        Err(error) => return internal_error(error),
+    };
     let repository = ProjectRepository::new(database);
     match repository.list(owner).await {
         Ok(projects) => render(WorkspaceResponse {
@@ -1077,8 +1194,21 @@ async fn workspace_response(
                     name: project.name,
                     state_version: project.state_version,
                     updated_at: project.updated_at.to_rfc3339(),
+                    wiki_id: wikis
+                        .iter()
+                        .find(|wiki| wiki.api_url == project.wiki_url)
+                        .map_or_else(
+                            || {
+                                url::Url::parse(&project.wiki_url)
+                                    .ok()
+                                    .and_then(|url| url.host_str().map(str::to_owned))
+                                    .unwrap_or(project.wiki_url.clone())
+                            },
+                            |wiki| wiki.domain.clone(),
+                        ),
                 })
                 .collect(),
+            wikis: wikis.into_iter().map(WikiView::from).collect(),
             csrf_token,
         }),
         Err(error) => project_error_response(error, "/workspace"),
@@ -1090,7 +1220,10 @@ async fn create_project_response(
     owner: &str,
     form: CreateProjectForm,
 ) -> Response {
-    let Some(wiki_url) = wiki_api_url(&form.wiki_id) else {
+    let Some(wiki) = (match wikis::by_id(database, &form.wiki_id).await {
+        Ok(wiki) => wiki,
+        Err(error) => return internal_error(error),
+    }) else {
         return error_page(
             StatusCode::BAD_REQUEST,
             "Unsupported wiki",
@@ -1099,10 +1232,7 @@ async fn create_project_response(
         );
     };
     let repository = ProjectRepository::new(database);
-    match repository
-        .create(owner, form.name, wiki_url.to_owned())
-        .await
-    {
+    match repository.create(owner, form.name, wiki.api_url).await {
         Ok(project) => action_response(format!("/projects/{}", project.id), Some(project.id)),
         Err(error) => project_error_response(error, "/workspace"),
     }
@@ -1111,6 +1241,9 @@ async fn create_project_response(
 async fn project_response(
     database: &DatabaseConnection,
     owner: &str,
+    username: &str,
+    user_agent: &str,
+    include_awb_access: bool,
     id: &str,
     csrf_token: &str,
 ) -> Response {
@@ -1120,7 +1253,30 @@ async fn project_response(
             match serde_json::from_value::<ProjectState>(project.state_json.clone()) {
                 Ok(state) => {
                     let sources = page_source_views(&state.ordered_sources());
-                    let namespace_options = namespace_options(&state.namespaces);
+                    let registered = match wikis::by_url(database, &project.wiki_url).await {
+                        Ok(wiki) => wiki,
+                        Err(error) => return internal_error(error),
+                    };
+                    let available_namespaces = registered
+                        .as_ref()
+                        .and_then(|wiki| wikis::namespaces(wiki).ok())
+                        .unwrap_or_else(legacy_namespaces);
+                    let namespace_options =
+                        namespace_options(&available_namespaces, &state.namespaces);
+                    let wiki_id = registered
+                        .as_ref()
+                        .map_or(project.wiki_url.as_str(), |wiki| wiki.id.as_str());
+                    let awb_access = if include_awb_access {
+                        match registered.as_ref() {
+                            Some(wiki) => Some(wikis::access(wiki, user_agent, username).await),
+                            None => {
+                                wikis::access_unregistered(&project.wiki_url, user_agent, username)
+                                    .await
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     let latest_job = match JobRepository::new(database).latest(owner, id).await {
                         Ok(job) => job,
                         Err(error) => return job_error_response(error, &format!("/projects/{id}")),
@@ -1173,7 +1329,8 @@ async fn project_response(
                         sources: &sources,
                         namespace_options: &namespace_options,
                         queue_limit: state.queue_limit,
-                        wiki_id: wiki_id(&project.wiki_url).unwrap_or("ukwiki"),
+                        wiki_id,
+                        awb_access: awb_access.as_ref(),
                         rules: &state.rules,
                         csrf_token,
                         page_title: "",
@@ -1227,29 +1384,50 @@ async fn page_preview_response(
     let rules = match replacement_rules(&form) {
         Ok(rules) => rules,
         Err(message) => {
-            return render_page_preview_error(id, &form, &[], &message);
+            return render_page_preview_error(database, id, &form, &[], &message).await;
         }
     };
     let engine = match RuleEngine::compile(&rules) {
         Ok(engine) => engine,
-        Err(error) => return render_page_preview_error(id, &form, &rules, &error.to_string()),
+        Err(error) => {
+            return render_page_preview_error(database, id, &form, &rules, &error.to_string())
+                .await;
+        }
     };
-    let Some(wiki_url) = wiki_api_url(&form.wiki_id) else {
-        return render_page_preview_error(id, &form, &rules, "Select one of the available wikis.");
+    let wiki_url = match resolve_project_wiki_url(database, id, owner, &form.wiki_id).await {
+        Ok(Some(url)) => url,
+        Ok(None) => {
+            return render_page_preview_error(
+                database,
+                id,
+                &form,
+                &rules,
+                "Select one of the available wikis.",
+            )
+            .await;
+        }
+        Err(error) => return internal_error(error),
     };
-    let snapshot = match load_page(wiki_url, user_agent, access_token, &form.page_title).await {
+    let snapshot = match load_page(&wiki_url, user_agent, access_token, &form.page_title).await {
         Ok(snapshot) => snapshot,
-        Err(error) => return render_page_preview_error(id, &form, &rules, &error.to_string()),
+        Err(error) => {
+            return render_page_preview_error(database, id, &form, &rules, &error.to_string())
+                .await;
+        }
     };
     let result = match engine.apply(&snapshot.content) {
         Ok(result) => result,
-        Err(error) => return render_page_preview_error(id, &form, &rules, &error.to_string()),
+        Err(error) => {
+            return render_page_preview_error(database, id, &form, &rules, &error.to_string())
+                .await;
+        }
     };
     let page_preview = page_preview_view(snapshot, result);
     let sources = page_sources_from_form(&form).unwrap_or_default();
     let source_views = page_source_views(&sources);
     let selected_namespaces = parse_namespaces(&form.namespaces).unwrap_or_default();
-    let namespace_options = namespace_options(&selected_namespaces);
+    let namespace_options =
+        namespace_options_for_form(database, &form.wiki_id, &selected_namespaces).await;
     render_project(ProjectResponse {
         project_id: id,
         project_name: &form.name,
@@ -1258,6 +1436,7 @@ async fn page_preview_response(
         namespace_options: &namespace_options,
         queue_limit: form.queue_limit,
         wiki_id: &form.wiki_id,
+        awb_access: None,
         rules: &rules,
         csrf_token: &form.csrf_token,
         page_title: &form.page_title,
@@ -1792,6 +1971,16 @@ async fn job_action_response(
     };
     match form.action.as_str() {
         "previous" => state.previous(),
+        "resume" => {
+            if !state.resume() {
+                return error_page(
+                    StatusCode::CONFLICT,
+                    "Cannot resume review",
+                    "Only a stopped review with a saved queue can be resumed.",
+                    &back_href,
+                );
+            }
+        }
         "stop" => {
             state.status = if state.status == JobStatus::Building {
                 JobStatus::Cancelled
@@ -1840,7 +2029,7 @@ async fn job_action_response(
             return error_page(
                 StatusCode::BAD_REQUEST,
                 "Invalid review action",
-                "Choose Previous, Skip, Stop, or Next.",
+                "Choose Previous, Skip, Stop, Resume, or Next.",
                 &back_href,
             );
         }
@@ -1976,7 +2165,8 @@ fn job_error_response(error: JobError, back_href: &str) -> Response {
     }
 }
 
-fn render_page_preview_error(
+async fn render_page_preview_error(
+    database: &DatabaseConnection,
     id: &str,
     form: &UpdateProjectForm,
     rules: &[ReplacementRule],
@@ -1985,7 +2175,8 @@ fn render_page_preview_error(
     let sources = page_sources_from_form(form).unwrap_or_default();
     let source_views = page_source_views(&sources);
     let selected_namespaces = parse_namespaces(&form.namespaces).unwrap_or_default();
-    let namespace_options = namespace_options(&selected_namespaces);
+    let namespace_options =
+        namespace_options_for_form(database, &form.wiki_id, &selected_namespaces).await;
     render_project(ProjectResponse {
         project_id: id,
         project_name: &form.name,
@@ -1994,6 +2185,7 @@ fn render_page_preview_error(
         namespace_options: &namespace_options,
         queue_limit: form.queue_limit,
         wiki_id: &form.wiki_id,
+        awb_access: None,
         rules,
         csrf_token: &form.csrf_token,
         page_title: &form.page_title,
@@ -2109,13 +2301,17 @@ async fn save_project(
             &back_href,
         )));
     }
-    let Some(wiki_url) = wiki_api_url(&form.wiki_id) else {
-        return Err(Box::new(error_page(
-            StatusCode::BAD_REQUEST,
-            "Unsupported wiki",
-            "Select one of the available wikis.",
-            &back_href,
-        )));
+    let wiki_url = match resolve_project_wiki_url(database, id, owner, &form.wiki_id).await {
+        Ok(Some(url)) => url,
+        Ok(None) => {
+            return Err(Box::new(error_page(
+                StatusCode::BAD_REQUEST,
+                "Unsupported wiki",
+                "Select one of the available wikis.",
+                &back_href,
+            )));
+        }
+        Err(error) => return Err(Box::new(internal_error(error))),
     };
     let queue_limit = match validate_queue_limit(form.queue_limit) {
         Ok(limit) => limit,
@@ -2140,6 +2336,21 @@ async fn save_project(
                 )));
             }
         };
+    if let Ok(Some(wiki)) = wikis::by_id(database, &form.wiki_id).await {
+        if let Ok(available) = wikis::namespaces(&wiki) {
+            if namespaces
+                .iter()
+                .any(|id| !available.iter().any(|entry| entry.id == *id))
+            {
+                return Err(Box::new(error_page(
+                    StatusCode::BAD_REQUEST,
+                    "Invalid namespaces",
+                    "Select namespaces available on this wiki.",
+                    &back_href,
+                )));
+            }
+        }
+    }
     let sources = match page_sources_from_form(form) {
         Ok(sources) => sources,
         Err(message) => {
@@ -2178,7 +2389,7 @@ async fn save_project(
             owner,
             id,
             form.name.clone(),
-            wiki_url.to_owned(),
+            wiki_url,
             state,
             form.state_version,
         )
@@ -2298,14 +2509,25 @@ fn page_source_views(sources: &[PageSource]) -> Vec<PageSourceView> {
         .collect()
 }
 
-fn namespace_options(selected: &[i64]) -> Vec<NamespaceOption> {
+fn namespace_options(available: &[wikis::Namespace], selected: &[i64]) -> Vec<NamespaceOption> {
+    available
+        .iter()
+        .map(|namespace| NamespaceOption {
+            id: namespace.id,
+            label: namespace.name.clone(),
+            selected: selected.contains(&namespace.id),
+        })
+        .collect()
+}
+
+fn legacy_namespaces() -> Vec<wikis::Namespace> {
     [
-        (0, "Article"),
+        (0, "Main"),
         (1, "Talk"),
         (2, "User"),
         (3, "User talk"),
-        (4, "Wikipedia"),
-        (5, "Wikipedia talk"),
+        (4, "Project"),
+        (5, "Project talk"),
         (6, "File"),
         (7, "File talk"),
         (8, "MediaWiki"),
@@ -2322,12 +2544,43 @@ fn namespace_options(selected: &[i64]) -> Vec<NamespaceOption> {
         (829, "Module talk"),
     ]
     .into_iter()
-    .map(|(id, label)| NamespaceOption {
+    .map(|(id, name)| wikis::Namespace {
         id,
-        label,
-        selected: selected.contains(&id),
+        name: name.into(),
     })
     .collect()
+}
+
+async fn namespace_options_for_form(
+    database: &DatabaseConnection,
+    wiki_id: &str,
+    selected: &[i64],
+) -> Vec<NamespaceOption> {
+    let available = match wikis::by_id(database, wiki_id).await {
+        Ok(Some(wiki)) => wikis::namespaces(&wiki).unwrap_or_else(|_| legacy_namespaces()),
+        _ => legacy_namespaces(),
+    };
+    namespace_options(&available, selected)
+}
+
+async fn resolve_project_wiki_url(
+    database: &DatabaseConnection,
+    project_id: &str,
+    owner: &str,
+    wiki_id: &str,
+) -> Result<Option<String>, sea_orm::DbErr> {
+    if let Some(wiki) = wikis::by_id(database, wiki_id).await? {
+        return Ok(Some(wiki.api_url));
+    }
+    if let Ok(Some(project)) = ProjectRepository::new(database)
+        .get(owner, project_id)
+        .await
+    {
+        if wiki_id == project.wiki_url {
+            return Ok(Some(project.wiki_url));
+        }
+    }
+    Ok(None)
 }
 
 fn validate_project_sources(state: &ProjectState) -> Result<(), String> {
@@ -2456,6 +2709,8 @@ async fn delete_project_response(
 
 async fn render_index(
     authentication: Option<&Authentication>,
+    owner: Option<&str>,
+    database: &DatabaseConnection,
     user_agent: &str,
     include_groups: bool,
     requested_wiki_id: Option<&str>,
@@ -2465,7 +2720,24 @@ async fn render_index(
     }
     let (groups, groups_error) = match (authentication, include_groups, requested_wiki_id) {
         (Some(authentication), true, Some(requested_wiki_id)) => {
-            let Some(wiki_url) = wiki_api_url(requested_wiki_id) else {
+            let wiki = match wikis::by_id(database, requested_wiki_id).await {
+                Ok(wiki) => wiki,
+                Err(error) => return internal_error(error),
+            };
+            let wiki_url = if let Some(wiki) = wiki {
+                Some(wiki.api_url)
+            } else if let Some(owner) = owner {
+                match ProjectRepository::new(database).list(owner).await {
+                    Ok(projects) => projects
+                        .into_iter()
+                        .find(|project| project.wiki_url == requested_wiki_id)
+                        .map(|project| project.wiki_url),
+                    Err(error) => return project_error_response(error, "/workspace"),
+                }
+            } else {
+                None
+            };
+            let Some(wiki_url) = wiki_url else {
                 return render(SessionResponse {
                     username: Some(authentication.username()),
                     groups: Vec::new(),
@@ -2475,8 +2747,12 @@ async fn render_index(
                     can_logout: authentication.can_logout(),
                 });
             };
-            match crate::mediawiki::user_groups(wiki_url, user_agent, authentication.access_token())
-                .await
+            match crate::mediawiki::user_groups(
+                &wiki_url,
+                user_agent,
+                authentication.access_token(),
+            )
+            .await
             {
                 Ok(groups) => (groups, None),
                 Err(error) => (
@@ -2600,7 +2876,7 @@ mod tests {
     fn submitted_rule_keeps_empty_replacement() {
         let form = UpdateProjectForm {
             name: "Example".to_owned(),
-            wiki_id: "ukwiki".to_owned(),
+            wiki_id: "examplewiki".to_owned(),
             source_kind: Vec::new(),
             source_value: Vec::new(),
             namespaces: Vec::new(),

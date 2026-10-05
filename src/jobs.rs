@@ -238,6 +238,14 @@ impl JobState {
         self.status = JobStatus::Active;
     }
 
+    pub fn resume(&mut self) -> bool {
+        if self.status != JobStatus::Stopped || self.queue.is_empty() {
+            return false;
+        }
+        self.status = JobStatus::Active;
+        true
+    }
+
     pub fn advance(&mut self, status: QueueEntryStatus, reason: Option<String>) {
         if let Some(entry) = self.queue.get_mut(self.position)
             && entry.status.is_pending()
@@ -445,6 +453,18 @@ mod tests {
         let mut state = JobState::new(vec![entry("A")]);
         state.previous();
         assert_eq!(state.position, 0);
+    }
+
+    #[test]
+    fn resume_keeps_position_and_review_decisions() {
+        let mut state = JobState::new(vec![entry("A"), entry("B")]);
+        state.advance(QueueEntryStatus::Reviewed, None);
+        state.status = JobStatus::Stopped;
+        assert!(state.resume());
+        assert_eq!(state.status, JobStatus::Active);
+        assert_eq!(state.position, 1);
+        assert_eq!(state.queue[0].status, QueueEntryStatus::Reviewed);
+        assert!(!state.resume());
     }
 
     #[test]

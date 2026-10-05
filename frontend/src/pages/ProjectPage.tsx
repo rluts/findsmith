@@ -7,7 +7,6 @@ import { navigate } from '../lib/router'
 import type { ActionResult, Project, RenderedPreview as RenderedPreviewData, Review, Rule, SavedRule, Session, Source } from '../types/api'
 
 const sourceNames: Record<string, string> = { manual: 'Manual titles', category: 'Category members', backlinks: 'Backlinks', transclusions: 'Template transclusions', search: 'Wiki search' }
-const wikiNames: Record<string, string> = { ukwiki: 'Ukrainian Wikipedia' }
 const blankRule = (): Rule => ({ name: '', enabled: true, find: '', replace: '', regex: false, case_sensitive: true, replace_all: true, multiline: false, dot_matches_new_line: false })
 const blankSource = (kind = 'manual'): Source => ({ kind, label: sourceNames[kind], value: '', summary: '' })
 
@@ -46,9 +45,9 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
   const activeJobId = jobId ?? project?.latest_job_id ?? ''
   const reviewPath = activeJobId ? `/api/projects/${projectId}/jobs/${activeJobId}` : ''
 
-  async function loadProject() {
-    const data = await getJson<Project>(`/api/projects/${projectId}`)
-    setProject(data); setConfigurationDirty(false)
+  async function loadProject(includeAccess = false) {
+    const data = await getJson<Project>(`/api/projects/${projectId}${includeAccess ? '?include_awb_access=true' : ''}`)
+    setProject(current => ({ ...data, awb_access: data.awb_access ?? (current?.project_id === data.project_id ? current.awb_access : null) })); setConfigurationDirty(false)
     return data
   }
   async function loadReview(preserveText = false) {
@@ -59,7 +58,7 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
     return data
   }
 
-  useEffect(() => { void loadProject().catch(error => setError(error.message)) }, [projectId])
+  useEffect(() => { void loadProject(true).catch(error => setError(error.message)) }, [projectId])
   useEffect(() => { void getJson<SavedRule[]>('/api/rules').then(setSavedRules).catch(error => setLibraryError(error instanceof Error ? error.message : 'Could not load saved rules.')) }, [projectId])
   useEffect(() => {
     if (!project?.wiki_id) return
@@ -185,6 +184,8 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
   }
   return <Shell title={project.project_name} subtitle={review ? `${review.position} / ${review.total} · ${review.pending} pending · ${review.reviewed} reviewed · ${review.skipped} skipped` : `Project · ${project.wiki_id} · configuration version ${project.state_version}`}>
     {error && <ErrorBox message={error} />}
+    {project.awb_access?.allowed === false && <div className="notice" role="status">Your Wikimedia account is not in the <a href={project.awb_access.check_page} target="_blank" rel="noreferrer">AutoWikiBrowser CheckPageJSON</a> enabledusers or enabledbots list for this wiki. FindSmith reviews are still available; editing will require approval when implemented.</div>}
+    {project.awb_access?.allowed === null && <div className="notice" role="status">Could not verify AutoWikiBrowser access for this wiki: {project.awb_access.error}</div>}
     <main className="awb-workspace">
       <section className="pane sources-pane">
         <div className="pane-title">Make list {review && <span>{review.total} pages</span>}</div>
@@ -208,7 +209,8 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
       <section className="pane rules-pane">
         <div className="tabs"><span className="active">Rules</span><span className="inactive" aria-disabled="true">Options</span></div>
         <label>Project name<input value={project.project_name} maxLength={255} onChange={event => update({project_name: event.target.value})} /></label>
-        <fieldset><legend>Wikimedia account</legend><p>{wikiNames[project.wiki_id] ?? project.wiki_id} groups: {session ? (session.groups.length ? session.groups.join(', ') : 'none reported') : (groupsError ? 'unavailable' : 'loading…')}</p>{session?.groups_error && <p className="error">{session.groups_error}</p>}{groupsError && <p className="error">{groupsError}</p>}</fieldset>
+        <fieldset><legend>Wikimedia account</legend><p>User Groups: {session ? (session.groups.length ? session.groups.join(', ') : 'none reported') : (groupsError ? 'unavailable' : 'loading…')}</p>{session?.groups_error && <p className="error">{session.groups_error}</p>}{groupsError && <p className="error">{groupsError}</p>}</fieldset>
+        {review && <>{active && <div className="review-buttons"><button disabled={!!busy} onClick={() => reviewAction('previous')}>Previous</button><button disabled={!!busy} onClick={() => reviewAction('skip')}>Skip</button><button className="danger" disabled={!!busy} onClick={() => reviewAction('stop')}>Stop review</button><button className="primary" disabled={!!busy} onClick={() => reviewAction('next')}>Next</button></div>}{review.status === 'stopped' && <button className="primary resume-review" disabled={!!busy} onClick={() => reviewAction('resume')}>Resume review</button>}<p className="read-only">Review only: “Next” records the result but does not edit Wikimedia.</p></>}
         <div className="rule-list">{project.rules.map((rule, index) => <article className="rule-card" key={index}>
           <div className="rule-head"><label><input type="checkbox" checked={rule.enabled} onChange={event => { const rules = [...project.rules]; rules[index] = {...rule, enabled: event.target.checked}; update({rules}) }} /> {rule.name || `Rule ${index + 1}`}</label><span className="row-actions"><button disabled={index === 0} onClick={() => update({rules: move(project.rules, index, -1)})}>↑</button><button disabled={index === project.rules.length - 1} onClick={() => update({rules: move(project.rules, index, 1)})}>↓</button><button onClick={() => update({rules: project.rules.filter((_, item) => item !== index)})}>×</button></span></div>
           <label>Name<input value={rule.name} maxLength={255} placeholder="Optional in this project" onChange={event => { const rules = [...project.rules]; rules[index] = {...rule, name: event.target.value}; update({rules}) }} /></label>
@@ -229,8 +231,7 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
         {configurationDirty && <p className="unsaved-note">Configuration changed. Apply rules to refresh the current review.</p>}
         <div className="command-stack"><button className="primary" disabled={!!busy} onClick={() => submitProject(`/api/projects/${projectId}`, review ? 'Applying rules…' : 'Saving…', Boolean(review))}>{review ? 'Apply rules' : 'Save configuration'}</button><button className="danger" onClick={removeProject}>Delete project</button></div>
         {review && <><fieldset><legend>Review progress</legend><dl><dt>Status</dt><dd>{review.status}</dd><dt>Pending</dt><dd>{review.pending}</dd><dt>Reviewed</dt><dd>{review.reviewed}</dd><dt>Skipped</dt><dd>{review.skipped}</dd><dt>Unavailable</dt><dd>{review.unavailable}</dd></dl></fieldset>
-          {review.current && <fieldset><legend>Current page</legend><strong>{review.current.title}</strong><p>Namespace: {review.current.namespace ?? '—'}</p><p>{review.current.reason}</p></fieldset>}
-          <div className="review-buttons"><button disabled={!active || !!busy} onClick={() => reviewAction('previous')}>Previous</button><button disabled={!active || !!busy} onClick={() => reviewAction('skip')}>Skip</button><button className="danger" disabled={!active || !!busy} onClick={() => reviewAction('stop')}>Stop</button><button className="primary" disabled={!active || !!busy} onClick={() => reviewAction('next')}>Next</button></div><p className="read-only">Review only: “Next” records the result but does not edit Wikimedia.</p></>}
+          {review.current && <fieldset><legend>Current page</legend><strong>{review.current.title}</strong><p>Namespace: {review.current.namespace ?? '—'}</p><p>{review.current.reason}</p></fieldset>}</>}
         {busy && <p className="busy">{busy}</p>}
       </section>
 
@@ -239,7 +240,7 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
         {review ? <>
           {review.page_error && <ErrorBox message={review.page_error} />}
           {review.page ? <>
-            <div className="page-heading"><a href={review.page.full_url} target="_blank" rel="noreferrer">{review.current?.title ?? 'Current revision'}</a><strong>{review.page.changed ? 'Changed' : 'No changes'}</strong></div>
+            <div className="page-heading"><a href={review.page.full_url} target="_blank" rel="noreferrer">{review.current?.title ?? 'Current revision'}</a><strong title="Comparison with the current wiki revision; no wiki edit has been made.">{review.page.changed ? 'Proposed changes' : 'No proposed changes'}</strong></div>
             <div className="meta-strip"><span>Revision {review.page.revision_id}</span><span>{review.page.content_model}</span><span>{review.page.editable ? 'Editable' : 'Not editable'}</span><span>Protection: {review.page.protection}</span></div>
             <details className="wikitext-accordion"><summary>Proposed wikitext{textDirty ? ' · modified' : ''}</summary><textarea className="editor" value={text} maxLength={4194304} onChange={event => { setText(event.target.value); setTextDirty(true) }} /><button onClick={recompute} disabled={!!busy}>Recompute diff</button></details>
             <div className="view-switch"><button className={previewMode === 'diff' ? 'active' : ''} onClick={() => setPreviewMode('diff')}>Diff</button><button className={previewMode === 'preview' ? 'active' : ''} onClick={() => showRendered(review.current?.title ?? '', text)}>Preview</button></div>
