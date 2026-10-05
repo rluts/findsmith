@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { WorkspacePage } from '../pages/WorkspacePage'
 import { ProjectPage } from '../pages/ProjectPage'
-import { ReviewPage } from '../pages/ReviewPage'
 import { HomePage } from '../pages/HomePage'
 import { navigate } from '../lib/router'
 
@@ -24,7 +23,7 @@ export function App() {
   }, [])
   const review = path.match(/^\/projects\/([^/]+)\/jobs\/([^/]+)$/)
   const project = path.match(/^\/projects\/([^/]+)$/)
-  if (review) return <ReviewPage projectId={review[1]} jobId={review[2]} />
+  if (review) return <ProjectPage projectId={review[1]} jobId={review[2]} />
   if (project) return <ProjectPage projectId={project[1]} />
   if (path === '/workspace') return <WorkspacePage />
   return <HomePage />
