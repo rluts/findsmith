@@ -7,11 +7,11 @@ export function HomePage() {
   const [session, setSession] = useState<Session | null>(null)
   const [error, setError] = useState('')
   useEffect(() => { getJson<Session>('/api/session').then(setSession).catch(error => setError(error.message)) }, [])
-  return <Shell title="MediaWiki find and replace" authenticated={Boolean(session?.username)}>
+  return <Shell title="Find and replace tool for Wikimedia projects" authenticated={Boolean(session?.username)}>
     <main className="home">
       <section className="welcome panel">
         <h1>FindSmith</h1>
-        <p className="lead">A browser-based MediaWiki find-and-replace workspace inspired by <strong>AutoWikiBrowser</strong>.</p>
+        <p className="lead">A browser-based Wikimedia find-and-replace workspace inspired by <strong>AutoWikiBrowser</strong>.</p>
         <div className="notice"><strong>Under development</strong><br />This tool is not ready for production use yet. Reviews are read-only and do not edit wiki pages.</div>
       </section>
       <section className="login panel">
