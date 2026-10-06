@@ -104,6 +104,12 @@ pub struct JobState {
     pub generation_duplicates: usize,
     #[serde(default)]
     pub generation_limit_reached: bool,
+    #[serde(default)]
+    pub preparse_active: bool,
+    #[serde(default)]
+    pub preparse_cursor: usize,
+    #[serde(default)]
+    pub preparse_render_equivalent: bool,
 }
 
 impl JobState {
@@ -122,6 +128,9 @@ impl JobState {
             generation_found: 0,
             generation_duplicates: 0,
             generation_limit_reached: false,
+            preparse_active: false,
+            preparse_cursor: 0,
+            preparse_render_equivalent: false,
         }
     }
 
@@ -135,6 +144,9 @@ impl JobState {
             generation_found: 0,
             generation_duplicates: 0,
             generation_limit_reached: false,
+            preparse_active: false,
+            preparse_cursor: 0,
+            preparse_render_equivalent: false,
         }
     }
 
@@ -209,6 +221,34 @@ impl JobState {
         self.position = 0;
         self.status = JobStatus::Complete;
         self.generation_message = "Queue cleared.".to_owned();
+    }
+
+    pub fn sort_remaining_by_title(&mut self) {
+        let start = if self.status == JobStatus::Complete {
+            self.queue.len()
+        } else {
+            self.position.saturating_add(1)
+        };
+        if start < self.queue.len() {
+            self.queue[start..].sort_by_key(|entry| entry.title.to_lowercase());
+        }
+    }
+
+    pub fn finish_preparse_if_done(&mut self) {
+        if self.preparse_cursor < self.queue.len() {
+            return;
+        }
+        self.preparse_active = false;
+        if let Some(index) = self
+            .queue
+            .iter()
+            .position(|entry| entry.status.is_pending())
+        {
+            self.position = index;
+            self.status = JobStatus::Active;
+        } else {
+            self.status = JobStatus::Complete;
+        }
     }
 
     pub fn current(&self) -> Option<&QueueEntry> {
@@ -492,5 +532,39 @@ mod tests {
         state.clear();
         assert!(state.queue.is_empty());
         assert_eq!(state.status, JobStatus::Complete);
+    }
+
+    #[test]
+    fn sorting_keeps_current_page_and_past_decisions() {
+        let mut state = JobState::new(vec![
+            entry("Reviewed"),
+            entry("Current"),
+            entry("Zulu"),
+            entry("Alpha"),
+        ]);
+        state.queue[0].status = QueueEntryStatus::Reviewed;
+        state.position = 1;
+        state.sort_remaining_by_title();
+        assert_eq!(
+            state
+                .queue
+                .iter()
+                .map(|entry| entry.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Reviewed", "Current", "Alpha", "Zulu"]
+        );
+        assert_eq!(state.current().unwrap().title, "Current");
+    }
+
+    #[test]
+    fn preparse_returns_to_first_page_requiring_review() {
+        let mut state = JobState::new(vec![entry("No change"), entry("Needs review")]);
+        state.queue[0].status = QueueEntryStatus::Skipped;
+        state.preparse_active = true;
+        state.preparse_cursor = 2;
+        state.finish_preparse_if_done();
+        assert!(!state.preparse_active);
+        assert_eq!(state.position, 1);
+        assert_eq!(state.status, JobStatus::Active);
     }
 }

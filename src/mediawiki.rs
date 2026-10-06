@@ -7,7 +7,8 @@ use mwbot::{
     },
 };
 use serde::Deserialize;
-use std::collections::HashMap;
+use serde_json::Value;
+use std::collections::{HashMap, HashSet};
 
 use crate::AppResult;
 
@@ -17,6 +18,120 @@ pub enum PageListKind {
     Backlinks,
     Transclusions,
     Search,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ApiPageListKind {
+    Watchlist,
+    Contributions,
+    LinksOnPage,
+    CategoriesOnPage,
+    RedirectsToPage,
+}
+
+pub async fn api_page_list(
+    wiki_url: &str,
+    user_agent: &str,
+    access_token: &str,
+    kind: ApiPageListKind,
+    value: &str,
+    namespaces: &[i64],
+    limit: usize,
+) -> Result<Vec<NormalizedTitle>, String> {
+    let client = authenticated_client(wiki_url, user_agent, access_token)
+        .await
+        .map_err(|error| error.to_string())?;
+    let (module, name, key, argument) = match kind {
+        ApiPageListKind::Watchlist => ("list", "watchlistraw", "watchlistraw", ""),
+        ApiPageListKind::Contributions => ("list", "usercontribs", "usercontribs", "ucuser"),
+        ApiPageListKind::LinksOnPage => ("prop", "links", "links", "titles"),
+        ApiPageListKind::CategoriesOnPage => ("prop", "categories", "categories", "titles"),
+        ApiPageListKind::RedirectsToPage => ("prop", "redirects", "redirects", "titles"),
+    };
+    let limit_parameter = match kind {
+        ApiPageListKind::Watchlist => "wrlimit",
+        ApiPageListKind::Contributions => "uclimit",
+        ApiPageListKind::LinksOnPage => "pllimit",
+        ApiPageListKind::CategoriesOnPage => "cllimit",
+        ApiPageListKind::RedirectsToPage => "rdlimit",
+    };
+    let namespace_parameter = match kind {
+        ApiPageListKind::Watchlist => "wrnamespace",
+        ApiPageListKind::Contributions => "ucnamespace",
+        ApiPageListKind::LinksOnPage => "plnamespace",
+        ApiPageListKind::CategoriesOnPage => "clnamespace",
+        ApiPageListKind::RedirectsToPage => "rdnamespace",
+    };
+    let mut params = vec![
+        ("action".to_owned(), "query".to_owned()),
+        (module.to_owned(), name.to_owned()),
+        (limit_parameter.to_owned(), "max".to_owned()),
+        ("formatversion".to_owned(), "2".to_owned()),
+    ];
+    if !argument.is_empty() {
+        params.push((argument.to_owned(), value.to_owned()));
+    }
+    if !namespaces.is_empty() && !matches!(kind, ApiPageListKind::CategoriesOnPage) {
+        params.push((
+            namespace_parameter.to_owned(),
+            namespaces
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join("|"),
+        ));
+    }
+    let mut titles = Vec::new();
+    let mut seen = HashSet::new();
+    let mut requests = 0;
+    while titles.len() < limit && requests < 20 {
+        requests += 1;
+        let response: Value = client
+            .get(params.clone())
+            .await
+            .map_err(|error| error.to_string())?;
+        for title in api_list_titles(&response, module, key) {
+            if seen.insert(title.to_owned()) {
+                titles.push(title.to_owned());
+            }
+            if titles.len() == limit {
+                break;
+            }
+        }
+        let Some(next) = response.get("continue").and_then(Value::as_object) else {
+            break;
+        };
+        params.retain(|(key, _)| key != "continue" && !key.ends_with("continue"));
+        for (key, value) in next {
+            if let Some(value) = value.as_str() {
+                params.push((key.clone(), value.to_owned()));
+            }
+        }
+        if !next.keys().any(|key| key != "continue") {
+            break;
+        }
+    }
+    let mut pages = normalize_titles_impl(wiki_url, user_agent, access_token, &titles, false)
+        .await
+        .map_err(|error| error.to_string())?;
+    if !namespaces.is_empty() {
+        pages.retain(|page| page.namespace.is_some_and(|id| namespaces.contains(&id)));
+    }
+    Ok(pages)
+}
+
+fn api_list_titles<'a>(response: &'a Value, module: &str, key: &str) -> Vec<&'a str> {
+    let items = if module == "list" {
+        response.pointer(&format!("/query/{key}"))
+    } else {
+        response.pointer(&format!("/query/pages/0/{key}"))
+    };
+    items
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("title").and_then(Value::as_str))
+        .collect()
 }
 
 pub struct UserIdentity {
@@ -223,6 +338,8 @@ struct NormalizePage {
     #[serde(default)]
     missing: bool,
     #[serde(default)]
+    redirect: bool,
+    #[serde(default)]
     invalid: bool,
     #[serde(default)]
     invalidreason: String,
@@ -398,19 +515,28 @@ pub async fn normalize_titles(
     access_token: &str,
     titles: &[String],
 ) -> Result<Vec<NormalizedTitle>, mwapi::Error> {
+    normalize_titles_impl(wiki_url, user_agent, access_token, titles, true).await
+}
+
+async fn normalize_titles_impl(
+    wiki_url: &str,
+    user_agent: &str,
+    access_token: &str,
+    titles: &[String],
+    follow_redirects: bool,
+) -> Result<Vec<NormalizedTitle>, mwapi::Error> {
     const BATCH_SIZE: usize = 50;
     let client = authenticated_client(wiki_url, user_agent, access_token).await?;
     let mut output = Vec::with_capacity(titles.len());
 
     for batch in titles.chunks(BATCH_SIZE) {
-        let response: NormalizeResponse = client
-            .get([
-                ("action", "query"),
-                ("titles", &batch.join("|")),
-                ("redirects", "1"),
-                ("formatversion", "2"),
-            ])
-            .await?;
+        let mut params = vec![("action", "query"), ("titles", ""), ("formatversion", "2")];
+        let joined = batch.join("|");
+        params[1].1 = &joined;
+        if follow_redirects {
+            params.push(("redirects", "1"));
+        }
+        let response: NormalizeResponse = client.get(params).await?;
         output.extend(resolve_normalized_batch(batch, response.query));
     }
     Ok(output)
@@ -547,7 +673,7 @@ fn resolve_normalized_batch(batch: &[String], query: NormalizeQuery) -> Vec<Norm
                     title: page.title.clone(),
                     page_id: (!page.missing && !page.invalid).then_some(page.pageid),
                     namespace: (!page.invalid).then_some(page.ns),
-                    redirect: redirected,
+                    redirect: redirected || page.redirect,
                     invalid_reason: page.invalid.then(|| {
                         if page.invalidreason.is_empty() {
                             "The page title is invalid.".to_owned()
@@ -585,6 +711,41 @@ async fn authenticated_client(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn additional_source_shapes_read_titles() {
+        let watchlist =
+            serde_json::json!({"query": {"watchlistraw": [{"title": "A"}, {"title": "B"}]}});
+        assert_eq!(
+            api_list_titles(&watchlist, "list", "watchlistraw"),
+            ["A", "B"]
+        );
+        let links = serde_json::json!({"query": {"pages": [{"title": "Source", "links": [{"title": "Target"}]}]}});
+        assert_eq!(api_list_titles(&links, "prop", "links"), ["Target"]);
+    }
+
+    #[test]
+    fn redirect_source_keeps_redirect_page_title() {
+        let pages = resolve_normalized_batch(
+            &["Alias".to_owned()],
+            NormalizeQuery {
+                normalized: vec![],
+                redirects: vec![],
+                pages: vec![NormalizePage {
+                    pageid: 7,
+                    ns: 0,
+                    title: "Alias".to_owned(),
+                    missing: false,
+                    redirect: true,
+                    invalid: false,
+                    invalidreason: String::new(),
+                }],
+            },
+        );
+        assert_eq!(pages[0].title, "Alias");
+        assert_eq!(pages[0].page_id, Some(7));
+        assert!(pages[0].redirect);
+    }
 
     #[test]
     fn parse_preview_accepts_modern_and_legacy_text_shapes() {
@@ -640,6 +801,7 @@ mod tests {
                     ns: 0,
                     title: "Target".to_owned(),
                     missing: false,
+                    redirect: false,
                     invalid: false,
                     invalidreason: String::new(),
                 }],
@@ -663,6 +825,7 @@ mod tests {
                     ns: 0,
                     title: "Bad".to_owned(),
                     missing: false,
+                    redirect: false,
                     invalid: true,
                     invalidreason: String::new(),
                 }],

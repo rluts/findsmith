@@ -21,14 +21,16 @@ use crate::{
     },
     lists::{queue_from_normalized, source_values, validate_namespaces, validate_queue_limit},
     mediawiki::{
-        PageListKind, PageSnapshot, load_page, normalize_titles, page_list, page_list_bot,
-        parse_preview,
+        ApiPageListKind, PageListKind, PageSnapshot, api_page_list, load_page, normalize_titles,
+        page_list, page_list_bot, parse_preview,
     },
     projects::{
         PageSource, PageSourceKind, ProjectError, ProjectRepository, ProjectState, ReplacementRule,
+        RuleMask, RuleOperation,
     },
     rules::{RuleEngine, TransformationResult},
     saved_rules,
+    structural::apply_with_wiki,
     wikis::{self, AccessView, WikiView},
 };
 
@@ -82,12 +84,6 @@ pub struct SessionQuery {
     #[serde(default)]
     include_groups: bool,
     wiki_id: Option<String>,
-}
-
-#[derive(Default, Deserialize)]
-pub struct ProjectQuery {
-    #[serde(default)]
-    include_awb_access: bool,
 }
 
 #[derive(Serialize)]
@@ -199,6 +195,9 @@ struct ReviewResponse<'a> {
     unavailable: usize,
     rule_count: usize,
     generation_message: &'a str,
+    preparse_active: bool,
+    preparse_cursor: usize,
+    preparse_render_equivalent: bool,
     queue: &'a [QueueEntry],
     current: Option<&'a QueueEntry>,
     page: Option<&'a ReviewPageView>,
@@ -278,6 +277,30 @@ pub struct UpdateProjectForm {
     #[serde(default)]
     rule_name: Vec<String>,
     #[serde(default)]
+    rule_operation: Vec<String>,
+    #[serde(default)]
+    rule_group: Vec<String>,
+    #[serde(default)]
+    rule_group_contains: Vec<String>,
+    #[serde(default)]
+    rule_parameter: Vec<String>,
+    #[serde(default)]
+    rule_mask_comments: Vec<String>,
+    #[serde(default)]
+    rule_mask_tags: Vec<String>,
+    #[serde(default)]
+    rule_mask_references: Vec<String>,
+    #[serde(default)]
+    rule_mask_links: Vec<String>,
+    #[serde(default)]
+    rule_mask_headings: Vec<String>,
+    #[serde(default)]
+    rule_mask_templates: Vec<String>,
+    #[serde(default)]
+    rule_mask_link_targets: Vec<String>,
+    #[serde(default)]
+    rule_group_invert: Vec<String>,
+    #[serde(default)]
     rule_find: Vec<String>,
     #[serde(default)]
     rule_replace: Vec<String>,
@@ -315,6 +338,8 @@ pub struct JobActionForm {
     csrf_token: String,
     state_version: i64,
     action: String,
+    #[serde(default)]
+    render_equivalent: bool,
 }
 
 #[derive(Deserialize)]
@@ -779,7 +804,6 @@ pub async fn web_project(
     State(state): State<WebState>,
     user: AxumUser,
     Path(id): Path<String>,
-    Query(query): Query<ProjectQuery>,
     jar: PrivateCookieJar,
 ) -> (PrivateCookieJar, Response) {
     let (jar, token) = csrf::token(jar, state.csrf_secure);
@@ -788,7 +812,6 @@ pub async fn web_project(
         user.profile().central_id(),
         user.profile().username(),
         &state.user_agent,
-        query.include_awb_access,
         &id,
         &token,
     )
@@ -799,7 +822,6 @@ pub async fn web_project(
 pub async fn owner_project(
     State(state): State<OwnerState>,
     Path(id): Path<String>,
-    Query(query): Query<ProjectQuery>,
     jar: PrivateCookieJar,
 ) -> (PrivateCookieJar, Response) {
     let (jar, token) = csrf::token(jar, state.csrf_secure);
@@ -808,7 +830,6 @@ pub async fn owner_project(
         &state.central_id,
         &state.username,
         &state.user_agent,
-        query.include_awb_access,
         &id,
         &token,
     )
@@ -1071,6 +1092,7 @@ pub async fn web_job_action(
     job_action_response(
         &state.database,
         user.profile().central_id(),
+        user.profile().username(),
         user.oauth2_token(),
         &state.user_agent,
         &id,
@@ -1092,6 +1114,7 @@ pub async fn owner_job_action(
     job_action_response(
         &state.database,
         &state.central_id,
+        &state.username,
         &state.access_token,
         &state.user_agent,
         &id,
@@ -1243,7 +1266,6 @@ async fn project_response(
     owner: &str,
     username: &str,
     user_agent: &str,
-    include_awb_access: bool,
     id: &str,
     csrf_token: &str,
 ) -> Response {
@@ -1266,16 +1288,12 @@ async fn project_response(
                     let wiki_id = registered
                         .as_ref()
                         .map_or(project.wiki_url.as_str(), |wiki| wiki.id.as_str());
-                    let awb_access = if include_awb_access {
-                        match registered.as_ref() {
-                            Some(wiki) => Some(wikis::access(wiki, user_agent, username).await),
-                            None => {
-                                wikis::access_unregistered(&project.wiki_url, user_agent, username)
-                                    .await
-                            }
+                    let awb_access = match registered.as_ref() {
+                        Some(wiki) => Some(wikis::access(wiki, user_agent, username).await),
+                        None => {
+                            wikis::access_unregistered(&project.wiki_url, user_agent, username)
+                                .await
                         }
-                    } else {
-                        None
                     };
                     let latest_job = match JobRepository::new(database).latest(owner, id).await {
                         Ok(job) => job,
@@ -1387,13 +1405,6 @@ async fn page_preview_response(
             return render_page_preview_error(database, id, &form, &[], &message).await;
         }
     };
-    let engine = match RuleEngine::compile(&rules) {
-        Ok(engine) => engine,
-        Err(error) => {
-            return render_page_preview_error(database, id, &form, &rules, &error.to_string())
-                .await;
-        }
-    };
     let wiki_url = match resolve_project_wiki_url(database, id, owner, &form.wiki_id).await {
         Ok(Some(url)) => url,
         Ok(None) => {
@@ -1408,6 +1419,7 @@ async fn page_preview_response(
         }
         Err(error) => return internal_error(error),
     };
+    let category_prefix = category_prefix_for_wiki(database, &wiki_url).await;
     let snapshot = match load_page(&wiki_url, user_agent, access_token, &form.page_title).await {
         Ok(snapshot) => snapshot,
         Err(error) => {
@@ -1415,11 +1427,18 @@ async fn page_preview_response(
                 .await;
         }
     };
-    let result = match engine.apply(&snapshot.content) {
+    let result = match apply_with_wiki(
+        &rules,
+        &snapshot.content,
+        &wiki_url,
+        user_agent,
+        &category_prefix,
+    )
+    .await
+    {
         Ok(result) => result,
         Err(error) => {
-            return render_page_preview_error(database, id, &form, &rules, &error.to_string())
-                .await;
+            return render_page_preview_error(database, id, &form, &rules, &error).await;
         }
     };
     let page_preview = page_preview_view(snapshot, result);
@@ -1641,10 +1660,15 @@ async fn build_job_queue(
         }
 
         let (kind, label) = match source.kind {
-            PageSourceKind::Category => (PageListKind::CategoryMembers, "category members"),
-            PageSourceKind::Backlinks => (PageListKind::Backlinks, "backlinks"),
-            PageSourceKind::Transclusions => (PageListKind::Transclusions, "transclusions"),
-            PageSourceKind::Search => (PageListKind::Search, "search results"),
+            PageSourceKind::Category => (Some(PageListKind::CategoryMembers), "category members"),
+            PageSourceKind::Backlinks => (Some(PageListKind::Backlinks), "backlinks"),
+            PageSourceKind::Transclusions => (Some(PageListKind::Transclusions), "transclusions"),
+            PageSourceKind::Search => (Some(PageListKind::Search), "search results"),
+            PageSourceKind::Watchlist => (None, "watchlist pages"),
+            PageSourceKind::Contributions => (None, "contribution pages"),
+            PageSourceKind::LinksOnPage => (None, "linked pages"),
+            PageSourceKind::CategoriesOnPage => (None, "categories on page"),
+            PageSourceKind::RedirectsToPage => (None, "redirect pages"),
             PageSourceKind::Manual => unreachable!(),
         };
         for value in &source.values {
@@ -1674,15 +1698,37 @@ async fn build_job_queue(
             {
                 return;
             }
-            match page_list(
-                &bot,
-                kind,
-                value,
-                &state.namespaces,
-                state.queue_limit - current,
-            )
-            .await
-            {
+            let pages = if let Some(kind) = kind {
+                page_list(
+                    &bot,
+                    kind,
+                    value,
+                    &state.namespaces,
+                    state.queue_limit - current,
+                )
+                .await
+                .map_err(|error| error.to_string())
+            } else {
+                let kind = match source.kind {
+                    PageSourceKind::Watchlist => ApiPageListKind::Watchlist,
+                    PageSourceKind::Contributions => ApiPageListKind::Contributions,
+                    PageSourceKind::LinksOnPage => ApiPageListKind::LinksOnPage,
+                    PageSourceKind::CategoriesOnPage => ApiPageListKind::CategoriesOnPage,
+                    PageSourceKind::RedirectsToPage => ApiPageListKind::RedirectsToPage,
+                    _ => unreachable!(),
+                };
+                api_page_list(
+                    &wiki_url,
+                    &user_agent,
+                    &access_token,
+                    kind,
+                    value,
+                    &state.namespaces,
+                    state.queue_limit - current,
+                )
+                .await
+            };
+            match pages {
                 Ok(pages) => {
                     let message = format!("Loaded {label} for “{value}”.");
                     if update_generation(
@@ -1857,13 +1903,16 @@ async fn review_response(
         Err(error) => return internal_error(error),
     };
     let counters = state.counters();
-    let current = state.status.is_active().then(|| state.current()).flatten();
+    let current = (state.status.is_active() && !state.preparse_active)
+        .then(|| state.current())
+        .flatten();
     let mut page = None;
     let mut page_error = None;
     if let Some(entry) = current.filter(|entry| {
         entry.status != QueueEntryStatus::Missing && entry.status != QueueEntryStatus::Invalid
     }) {
         match review_page_view(
+            database,
             &job.wiki_url,
             user_agent,
             access_token,
@@ -1892,6 +1941,9 @@ async fn review_response(
         unavailable: counters.unavailable,
         rule_count: config.rules.len(),
         generation_message: &state.generation_message,
+        preparse_active: state.preparse_active,
+        preparse_cursor: state.preparse_cursor,
+        preparse_render_equivalent: state.preparse_render_equivalent,
         queue: &state.queue,
         current,
         page: page.as_ref(),
@@ -1900,6 +1952,7 @@ async fn review_response(
 }
 
 async fn review_page_view(
+    database: &DatabaseConnection,
     wiki_url: &str,
     user_agent: &str,
     access_token: &str,
@@ -1910,9 +1963,15 @@ async fn review_page_view(
     let snapshot = load_page(wiki_url, user_agent, access_token, &entry.title)
         .await
         .map_err(|error| error.to_string())?;
-    let result = RuleEngine::compile(&config.rules)
-        .and_then(|engine| engine.apply(&snapshot.content))
-        .map_err(|error| error.to_string())?;
+    let category_prefix = category_prefix_for_wiki(database, wiki_url).await;
+    let result = apply_with_wiki(
+        &config.rules,
+        &snapshot.content,
+        wiki_url,
+        user_agent,
+        &category_prefix,
+    )
+    .await?;
     let proposed_text = proposed_text.unwrap_or_else(|| result.text.clone());
     if proposed_text.len() > crate::rules::MAX_OUTPUT_BYTES {
         return Err("The proposed wikitext is too large.".to_owned());
@@ -1945,6 +2004,7 @@ async fn review_page_view(
 async fn job_action_response(
     database: &DatabaseConnection,
     owner: &str,
+    username: &str,
     access_token: &str,
     user_agent: &str,
     project_id: &str,
@@ -1961,6 +2021,9 @@ async fn job_action_response(
     if job.state_version != form.state_version {
         return job_error_response(JobError::Conflict, &back_href);
     }
+    // Review actions remain read-only, but the server refreshes AWB eligibility
+    // even when a client skips the project-page status request.
+    let _access = wikis::access_unregistered(&job.wiki_url, user_agent, username).await;
     let config: JobConfigV1 = match serde_json::from_value(job.config_json) {
         Ok(config) => config,
         Err(error) => return internal_error(error),
@@ -1969,7 +2032,138 @@ async fn job_action_response(
         Ok(state) => state,
         Err(error) => return internal_error(error),
     };
+    if state.preparse_active
+        && !matches!(
+            form.action.as_str(),
+            "preparse_step" | "preparse_stop" | "stop"
+        )
+    {
+        return error_page(
+            StatusCode::CONFLICT,
+            "Pre-parse is running",
+            "Stop pre-parse before reviewing pages.",
+            &back_href,
+        );
+    }
     match form.action.as_str() {
+        "preparse_start" => {
+            if state.status != JobStatus::Active {
+                return error_page(
+                    StatusCode::CONFLICT,
+                    "Cannot pre-parse",
+                    "Start or resume a review first.",
+                    &back_href,
+                );
+            }
+            state.preparse_cursor = 0;
+            state.preparse_active = true;
+            state.preparse_render_equivalent = form.render_equivalent;
+        }
+        "preparse_stop" => {
+            state.preparse_active = false;
+            if !state
+                .current()
+                .is_some_and(|entry| entry.status.is_pending())
+            {
+                if let Some(index) = state
+                    .queue
+                    .iter()
+                    .position(|entry| entry.status.is_pending())
+                {
+                    state.position = index;
+                } else {
+                    state.status = JobStatus::Complete;
+                }
+            }
+        }
+        "preparse_step" => {
+            if !state.preparse_active {
+                return error_page(
+                    StatusCode::CONFLICT,
+                    "Pre-parse stopped",
+                    "Start pre-parse before scanning pages.",
+                    &back_href,
+                );
+            }
+            if let Some(entry) = state
+                .queue
+                .get(state.preparse_cursor)
+                .filter(|entry| entry.status.is_pending())
+            {
+                let title = entry.title.clone();
+                match load_page(&job.wiki_url, user_agent, access_token, &title).await {
+                    Ok(snapshot) => {
+                        let prefix = category_prefix_for_wiki(database, &job.wiki_url).await;
+                        match apply_with_wiki(
+                            &config.rules,
+                            &snapshot.content,
+                            &job.wiki_url,
+                            user_agent,
+                            &prefix,
+                        )
+                        .await
+                        {
+                            Ok(result) => {
+                                if let Some(entry) = state.queue.get_mut(state.preparse_cursor) {
+                                    entry.revision_id = Some(snapshot.revision_id);
+                                    entry.revision_timestamp = Some(snapshot.revision_timestamp);
+                                    entry.replacement_count = Some(result.total_replacements);
+                                    if result.text == snapshot.content {
+                                        entry.status = QueueEntryStatus::Skipped;
+                                        entry.reason =
+                                            Some("No changes after rules (pre-parse).".to_owned());
+                                    }
+                                }
+                                if result.text != snapshot.content
+                                    && state.preparse_render_equivalent
+                                {
+                                    let before = parse_preview(
+                                        &job.wiki_url,
+                                        user_agent,
+                                        access_token,
+                                        &snapshot.title,
+                                        &snapshot.content,
+                                    )
+                                    .await;
+                                    let after = parse_preview(
+                                        &job.wiki_url,
+                                        user_agent,
+                                        access_token,
+                                        &snapshot.title,
+                                        &result.text,
+                                    )
+                                    .await;
+                                    if let (Ok(before), Ok(after)) = (before, after)
+                                        && before.html == after.html
+                                        && before.module_styles == after.module_styles
+                                        && let Some(entry) =
+                                            state.queue.get_mut(state.preparse_cursor)
+                                    {
+                                        entry.status = QueueEntryStatus::Skipped;
+                                        entry.reason = Some(
+                                            "Rendered output is unchanged (pre-parse).".to_owned(),
+                                        );
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                if let Some(entry) = state.queue.get_mut(state.preparse_cursor) {
+                                    entry.reason =
+                                        Some(format!("Pre-parse transformation failed: {error}"));
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(entry) = state.queue.get_mut(state.preparse_cursor) {
+                            entry.reason = Some(format!("Pre-parse could not load page: {error}"));
+                        }
+                    }
+                }
+            }
+            state.preparse_cursor += 1;
+            state.finish_preparse_if_done();
+        }
         "previous" => state.previous(),
         "resume" => {
             if !state.resume() {
@@ -1982,6 +2176,7 @@ async fn job_action_response(
             }
         }
         "stop" => {
+            state.preparse_active = false;
             state.status = if state.status == JobStatus::Building {
                 JobStatus::Cancelled
             } else {
@@ -2000,8 +2195,14 @@ async fn job_action_response(
                 let title = entry.title.clone();
                 let loaded = load_page(&job.wiki_url, user_agent, access_token, &title).await;
                 match loaded {
-                    Ok(snapshot) => match RuleEngine::compile(&config.rules)
-                        .and_then(|engine| engine.apply(&snapshot.content))
+                    Ok(snapshot) => match apply_with_wiki(
+                        &config.rules,
+                        &snapshot.content,
+                        &job.wiki_url,
+                        user_agent,
+                        &category_prefix_for_wiki(database, &job.wiki_url).await,
+                    )
+                    .await
                     {
                         Ok(result) => {
                             if let Some(entry) = state.queue.get_mut(state.position) {
@@ -2029,7 +2230,7 @@ async fn job_action_response(
             return error_page(
                 StatusCode::BAD_REQUEST,
                 "Invalid review action",
-                "Choose Previous, Skip, Stop, Resume, or Next.",
+                "Choose Previous, Skip, Stop, Resume, Next, or Pre-parse.",
                 &back_href,
             );
         }
@@ -2075,11 +2276,20 @@ async fn queue_action_response(
             &back_href,
         );
     }
+    if state.preparse_active {
+        return error_page(
+            StatusCode::CONFLICT,
+            "Pre-parse is running",
+            "Stop pre-parse before changing the queue.",
+            &back_href,
+        );
+    }
     match form.action.as_str() {
         "move_up" => state.move_entry(form.index, -1),
         "move_down" => state.move_entry(form.index, 1),
         "remove" => state.remove_entry(form.index),
         "clear" => state.clear(),
+        "sort_remaining" => state.sort_remaining_by_title(),
         "append" => {
             let titles = match source_values(&split_lines(&form.titles), "Appended pages") {
                 Ok(titles) if !titles.is_empty() => titles,
@@ -2129,7 +2339,7 @@ async fn queue_action_response(
             return error_page(
                 StatusCode::BAD_REQUEST,
                 "Invalid queue action",
-                "Choose append, move, remove, or clear.",
+                "Choose append, move, remove, sort, or clear.",
                 &back_href,
             );
         }
@@ -2255,6 +2465,17 @@ async fn update_project_response(
     id: &str,
     form: UpdateProjectForm,
 ) -> Response {
+    if let Ok(Some(job)) = JobRepository::new(database).latest(owner, id).await
+        && let Ok(state) = serde_json::from_value::<JobState>(job.state_json)
+        && state.preparse_active
+    {
+        return error_page(
+            StatusCode::CONFLICT,
+            "Pre-parse is running",
+            "Stop pre-parse before changing the rules.",
+            &format!("/projects/{id}"),
+        );
+    }
     match save_project(database, owner, id, &form).await {
         Ok((project, rules)) => {
             let jobs = JobRepository::new(database);
@@ -2293,7 +2514,7 @@ async fn save_project(
             )));
         }
     };
-    if let Err(error) = RuleEngine::compile(&rules).and_then(|engine| engine.apply("")) {
+    if let Err(error) = RuleEngine::compile(&rules) {
         return Err(Box::new(error_page(
             StatusCode::BAD_REQUEST,
             "Invalid replacement rules",
@@ -2443,8 +2664,16 @@ fn parse_page_source(kind: &str, mut values: Vec<String>) -> Result<PageSource, 
         "backlinks" => PageSourceKind::Backlinks,
         "transclusions" => PageSourceKind::Transclusions,
         "search" => PageSourceKind::Search,
+        "watchlist" => PageSourceKind::Watchlist,
+        "contributions" => PageSourceKind::Contributions,
+        "links_on_page" => PageSourceKind::LinksOnPage,
+        "categories_on_page" => PageSourceKind::CategoriesOnPage,
+        "redirects_to_page" => PageSourceKind::RedirectsToPage,
         _ => return Err("A page source has an unsupported type.".to_owned()),
     };
+    if kind == PageSourceKind::Watchlist {
+        values = vec!["My watchlist".to_owned()];
+    }
     if matches!(
         kind,
         PageSourceKind::Category | PageSourceKind::Transclusions
@@ -2474,6 +2703,11 @@ fn legacy_sources(sources: &[PageSource]) -> LegacySourceLists {
             PageSourceKind::Backlinks => backlinks.extend(source.values.clone()),
             PageSourceKind::Transclusions => transclusions.extend(source.values.clone()),
             PageSourceKind::Search => searches.extend(source.values.clone()),
+            PageSourceKind::Watchlist
+            | PageSourceKind::Contributions
+            | PageSourceKind::LinksOnPage
+            | PageSourceKind::CategoriesOnPage
+            | PageSourceKind::RedirectsToPage => {}
         }
     }
     LegacySourceLists {
@@ -2563,6 +2797,17 @@ async fn namespace_options_for_form(
     namespace_options(&available, selected)
 }
 
+async fn category_prefix_for_wiki(database: &DatabaseConnection, wiki_url: &str) -> String {
+    if let Ok(Some(wiki)) = wikis::by_url(database, wiki_url).await
+        && let Ok(namespaces) = wikis::namespaces(&wiki)
+        && let Some(category) = namespaces.into_iter().find(|namespace| namespace.id == 14)
+        && !category.name.trim().is_empty()
+    {
+        return category.name;
+    }
+    "Category".to_owned()
+}
+
 async fn resolve_project_wiki_url(
     database: &DatabaseConnection,
     project_id: &str,
@@ -2607,6 +2852,10 @@ fn replacement_rules(form: &UpdateProjectForm) -> Result<Vec<ReplacementRule>, S
         || form.rule_type.len() != count
         || form.rule_case.len() != count
         || form.rule_scope.len() != count
+        || (!form.rule_operation.is_empty() && form.rule_operation.len() != count)
+        || (!form.rule_group.is_empty() && form.rule_group.len() != count)
+        || (!form.rule_group_contains.is_empty() && form.rule_group_contains.len() != count)
+        || (!form.rule_parameter.is_empty() && form.rule_parameter.len() != count)
         || (!form.rule_name.is_empty() && form.rule_name.len() != count)
     {
         return Err(
@@ -2617,6 +2866,14 @@ fn replacement_rules(form: &UpdateProjectForm) -> Result<Vec<ReplacementRule>, S
     let enabled = rule_indexes(&form.rule_enabled, count)?;
     let multiline = rule_indexes(&form.rule_multiline, count)?;
     let dot_newline = rule_indexes(&form.rule_dot_newline, count)?;
+    let group_invert = rule_indexes(&form.rule_group_invert, count)?;
+    let mask_comments = rule_indexes(&form.rule_mask_comments, count)?;
+    let mask_tags = rule_indexes(&form.rule_mask_tags, count)?;
+    let mask_references = rule_indexes(&form.rule_mask_references, count)?;
+    let mask_links = rule_indexes(&form.rule_mask_links, count)?;
+    let mask_headings = rule_indexes(&form.rule_mask_headings, count)?;
+    let mask_templates = rule_indexes(&form.rule_mask_templates, count)?;
+    let mask_link_targets = rule_indexes(&form.rule_mask_link_targets, count)?;
     let mut rules = Vec::with_capacity(count);
     for index in 0..count {
         let name = form.rule_name.get(index).map(String::as_str).unwrap_or("");
@@ -2626,6 +2883,23 @@ fn replacement_rules(form: &UpdateProjectForm) -> Result<Vec<ReplacementRule>, S
         if form.rule_find[index].is_empty() && form.rule_replace[index].is_empty() {
             continue;
         }
+        let operation = match form
+            .rule_operation
+            .get(index)
+            .map(String::as_str)
+            .unwrap_or("replace")
+        {
+            "replace" => RuleOperation::Replace,
+            "append" => RuleOperation::Append,
+            "prepend" => RuleOperation::Prepend,
+            "category_add" => RuleOperation::CategoryAdd,
+            "category_remove" => RuleOperation::CategoryRemove,
+            "category_replace" => RuleOperation::CategoryReplace,
+            "template_rename" => RuleOperation::TemplateRename,
+            "template_parameter_set" => RuleOperation::TemplateParameterSet,
+            "template_parameter_remove" => RuleOperation::TemplateParameterRemove,
+            _ => return Err(format!("Rule {} has an invalid operation.", index + 1)),
+        };
         let regex = match form.rule_type[index].as_str() {
             "plain" => false,
             "regex" => true,
@@ -2649,6 +2923,24 @@ fn replacement_rules(form: &UpdateProjectForm) -> Result<Vec<ReplacementRule>, S
         rules.push(ReplacementRule {
             name: name.to_owned(),
             enabled: enabled.contains(&index),
+            operation,
+            group_name: form.rule_group.get(index).cloned().unwrap_or_default(),
+            group_contains: form
+                .rule_group_contains
+                .get(index)
+                .cloned()
+                .unwrap_or_default(),
+            group_invert: group_invert.contains(&index),
+            parameter: form.rule_parameter.get(index).cloned().unwrap_or_default(),
+            mask: RuleMask {
+                comments: mask_comments.contains(&index),
+                tags: mask_tags.contains(&index),
+                references: mask_references.contains(&index),
+                links: mask_links.contains(&index),
+                headings: mask_headings.contains(&index),
+                templates: mask_templates.contains(&index),
+                link_targets: mask_link_targets.contains(&index),
+            },
             find: form.rule_find[index].clone(),
             replace: form.rule_replace[index].clone(),
             regex,
@@ -2882,6 +3174,18 @@ mod tests {
             namespaces: Vec::new(),
             queue_limit: 100,
             rule_name: vec!["Remove obsolete".to_owned()],
+            rule_operation: vec!["replace".to_owned()],
+            rule_group: Vec::new(),
+            rule_group_contains: Vec::new(),
+            rule_parameter: Vec::new(),
+            rule_mask_comments: Vec::new(),
+            rule_mask_tags: Vec::new(),
+            rule_mask_references: Vec::new(),
+            rule_mask_links: Vec::new(),
+            rule_mask_headings: Vec::new(),
+            rule_mask_templates: Vec::new(),
+            rule_mask_link_targets: Vec::new(),
+            rule_group_invert: Vec::new(),
             rule_find: vec!["obsolete".to_owned()],
             rule_replace: vec![String::new()],
             rule_enabled: vec!["0".to_owned()],

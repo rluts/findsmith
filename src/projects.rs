@@ -78,6 +78,11 @@ pub enum PageSourceKind {
     Backlinks,
     Transclusions,
     Search,
+    Watchlist,
+    Contributions,
+    LinksOnPage,
+    CategoriesOnPage,
+    RedirectsToPage,
 }
 
 impl PageSourceKind {
@@ -88,6 +93,11 @@ impl PageSourceKind {
             Self::Backlinks => "backlinks",
             Self::Transclusions => "transclusions",
             Self::Search => "search",
+            Self::Watchlist => "watchlist",
+            Self::Contributions => "contributions",
+            Self::LinksOnPage => "links_on_page",
+            Self::CategoriesOnPage => "categories_on_page",
+            Self::RedirectsToPage => "redirects_to_page",
         }
     }
 
@@ -98,6 +108,11 @@ impl PageSourceKind {
             Self::Backlinks => "Backlinks",
             Self::Transclusions => "Template transclusions",
             Self::Search => "Wiki search",
+            Self::Watchlist => "My watchlist",
+            Self::Contributions => "User contributions",
+            Self::LinksOnPage => "Links on a page",
+            Self::CategoriesOnPage => "Categories on a page",
+            Self::RedirectsToPage => "Redirects to a page",
         }
     }
 }
@@ -113,6 +128,12 @@ pub struct PageSource {
 pub struct ReplacementRule {
     pub name: String,
     pub enabled: bool,
+    pub operation: RuleOperation,
+    pub group_name: String,
+    pub group_contains: String,
+    pub group_invert: bool,
+    pub parameter: String,
+    pub mask: RuleMask,
     pub find: String,
     pub replace: String,
     pub regex: bool,
@@ -127,6 +148,12 @@ impl Default for ReplacementRule {
         Self {
             name: String::new(),
             enabled: true,
+            operation: RuleOperation::Replace,
+            group_name: String::new(),
+            group_contains: String::new(),
+            group_invert: false,
+            parameter: String::new(),
+            mask: RuleMask::default(),
             find: String::new(),
             replace: String::new(),
             regex: false,
@@ -136,6 +163,45 @@ impl Default for ReplacementRule {
             dot_matches_new_line: false,
         }
     }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RuleMask {
+    pub comments: bool,
+    pub tags: bool,
+    pub references: bool,
+    pub links: bool,
+    pub headings: bool,
+    pub templates: bool,
+    pub link_targets: bool,
+}
+
+impl RuleMask {
+    pub fn any(&self) -> bool {
+        self.comments
+            || self.tags
+            || self.references
+            || self.links
+            || self.headings
+            || self.templates
+            || self.link_targets
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleOperation {
+    #[default]
+    Replace,
+    Append,
+    Prepend,
+    CategoryAdd,
+    CategoryRemove,
+    CategoryReplace,
+    TemplateRename,
+    TemplateParameterSet,
+    TemplateParameterRemove,
 }
 
 #[derive(Debug)]

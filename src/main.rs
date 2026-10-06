@@ -9,11 +9,13 @@ mod diff;
 mod entities;
 mod jobs;
 mod lists;
+mod masking;
 mod mediawiki;
 mod migration;
 mod projects;
 mod rules;
 mod saved_rules;
+mod structural;
 mod web;
 mod wikis;
 

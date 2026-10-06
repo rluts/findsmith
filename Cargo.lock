@@ -1217,6 +1217,7 @@ dependencies = [
  "mwapi",
  "mwbot",
  "mwoauth",
+ "parsoid",
  "regex",
  "sea-orm",
  "sea-orm-migration",

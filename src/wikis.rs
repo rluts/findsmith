@@ -4,7 +4,11 @@ use sea_orm::{
     Set, SqlErr,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
+};
 
 use crate::entities::wiki;
 
@@ -301,7 +305,7 @@ pub async fn register(
     })
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct AccessView {
     pub wiki_id: String,
     pub wiki_name: String,
@@ -309,6 +313,32 @@ pub struct AccessView {
     pub allowed: Option<bool>,
     pub bot: bool,
     pub error: Option<String>,
+}
+
+const ACCESS_CHECK_TTL: Duration = Duration::from_secs(5 * 60);
+
+struct CachedAccess {
+    checked_at: Instant,
+    value: AccessResult,
+}
+
+impl CachedAccess {
+    fn is_fresh(&self) -> bool {
+        self.checked_at.elapsed() < ACCESS_CHECK_TTL
+    }
+}
+
+#[derive(Clone)]
+struct AccessResult {
+    allowed: Option<bool>,
+    bot: bool,
+    error: Option<String>,
+    check_page_title: String,
+}
+
+fn access_cache() -> &'static Mutex<HashMap<(String, String), CachedAccess>> {
+    static CACHE: OnceLock<Mutex<HashMap<(String, String), CachedAccess>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 pub async fn access(wiki: &wiki::Model, user_agent: &str, username: &str) -> AccessView {
@@ -340,37 +370,69 @@ async fn access_url(
     user_agent: &str,
     username: &str,
 ) -> AccessView {
-    let checked = check_page(api_url, user_agent).await;
-    let (allowed, bot, error, check_page_title) = match checked {
-        Ok((title, users)) => {
-            let member = |list: &[String]| {
-                list.iter().any(|name| {
-                    name.replace('_', " ").to_lowercase()
-                        == username.replace('_', " ").to_lowercase()
-                })
-            };
-            let bot = member(&users.enabledbots);
-            (Some(bot || member(&users.enabledusers)), bot, None, title)
-        }
-        Err(error) => (
-            None,
-            false,
-            Some(error),
-            "Project:AutoWikiBrowser/CheckPageJSON".into(),
-        ),
+    let key = (
+        api_url.to_owned(),
+        username.replace('_', " ").to_lowercase(),
+    );
+    let cached = access_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&key)
+        .filter(|entry| entry.is_fresh())
+        .map(|entry| entry.value.clone());
+    let result = if let Some(cached) = cached {
+        cached
+    } else {
+        let checked = check_page(api_url, user_agent).await;
+        let result = match checked {
+            Ok((title, users)) => {
+                let member = |list: &[String]| {
+                    list.iter().any(|name| {
+                        name.replace('_', " ").to_lowercase()
+                            == username.replace('_', " ").to_lowercase()
+                    })
+                };
+                let bot = member(&users.enabledbots);
+                AccessResult {
+                    allowed: Some(bot || member(&users.enabledusers)),
+                    bot,
+                    error: None,
+                    check_page_title: title,
+                }
+            }
+            Err(error) => AccessResult {
+                allowed: None,
+                bot: false,
+                error: Some(error),
+                check_page_title: "Project:AutoWikiBrowser/CheckPageJSON".into(),
+            },
+        };
+        let mut cache = access_cache()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        cache.retain(|_, entry| entry.is_fresh());
+        cache.insert(
+            key,
+            CachedAccess {
+                checked_at: Instant::now(),
+                value: result.clone(),
+            },
+        );
+        result
     };
-    AccessView {
+    let value = AccessView {
         wiki_id: wiki_id.to_owned(),
         wiki_name: wiki_name.to_owned(),
         check_page: format!(
             "https://{}/wiki/{}",
             domain,
-            check_page_title.replace(' ', "_")
+            result.check_page_title.replace(' ', "_")
         ),
-        allowed,
-        bot,
-        error,
-    }
+        allowed: result.allowed,
+        bot: result.bot,
+        error: result.error,
+    };
+    value
 }
 
 #[cfg(test)]
@@ -420,5 +482,29 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(response.query.namespaces["4"].name, "Wikipedia");
+    }
+
+    #[test]
+    fn access_cache_expires_after_five_minutes() {
+        let value = AccessResult {
+            allowed: Some(true),
+            bot: false,
+            error: None,
+            check_page_title: String::new(),
+        };
+        assert!(
+            CachedAccess {
+                checked_at: Instant::now(),
+                value: value.clone()
+            }
+            .is_fresh()
+        );
+        assert!(
+            !CachedAccess {
+                checked_at: Instant::now() - ACCESS_CHECK_TTL,
+                value
+            }
+            .is_fresh()
+        );
     }
 }
