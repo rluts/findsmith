@@ -6,7 +6,7 @@ export function Shell({ children, title, subtitle, authenticated = true }: { chi
     </nav>
     {subtitle && <div className="contextbar">{subtitle}</div>}
     {children}
-    <footer className="statusbar"><span>FindSmith is under development</span><span>Read-only review mode</span></footer>
+    <footer className="statusbar"><span>FindSmith is under development</span><span>License: <a href="https://www.gnu.org/licenses/gpl-3.0.txt" target="_blank" rel="noreferrer">GPL-3.0-or-later</a></span></footer>
   </div>
 }
 

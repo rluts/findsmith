@@ -26,7 +26,7 @@ Select '''Add rule''' in the '''Rules''' tab. Rules run in the order shown; use 
 
 For find and replace, enter '''Find''' and '''Replace with'''. Leave '''Replace with''' empty to remove matches. Choose literal text or '''Regex''', case sensitivity, and first match or all matches. Regex rules also have multiline and dot-matches-newline options. Replacement rules can protect selected wikitext regions, such as comments, references, links, headings, and templates. '''Conditional group''' runs rules sharing a group name only when their shared condition matches the original page text. FindSmith uses Rust regex syntax; expressions written for AutoWikiBrowser's .NET regex engine may need adjustment.
 
-Give a rule a name and select '''Save to my rules''' to reuse it in other projects. Rule names do not have to be unique. '''Add to project''' copies a saved rule into the current project. Use '''Apply rules''' after changing a project's rules. If the rules changed, FindSmith starts a fresh review of the same page list: even pages previously marked '''saved''' become pending again. The earlier review keeps its results. Merely clicking a saved page does not enable saving it again in that earlier review.
+Give a rule a name and select '''Save to my rules''' to reuse it in other projects. Rule names do not have to be unique. '''Add to project''' copies a saved rule into the current project.
 
 Before building a list, you can enter a title in the '''Preview''' panel to test the current rules on one page without editing Wikimedia.
 
@@ -38,7 +38,7 @@ For each page, compare the proposed text with the current revision in the side-b
 
 To publish a reviewed change, acknowledge the wiki's editing policies and select '''Save'''. FindSmith suggests an edit summary from the first enabled find-and-replace rule; if the complete summary would exceed 500 characters, it uses <code>Autoreplacement</code> instead. You can edit the summary text, but FindSmith always appends <code>using [[User:RLuts/FS|Findsmith]]</code> and does not let you edit that attribution. Select '''Minor edit''' only when allowed. '''Bot edit''' is available to accounts in the <code>bot</code> or <code>flood</code> group that also have the <code>bot</code> right; the backend checks this again when saving. FindSmith checks current edit permissions and the page revision before submission. If the page has changed, reload and review it again rather than saving an outdated version.
 
-The '''Status''' tab shows review progress and decision history, including saved revisions and skip reasons. A previously saved page remains viewable, but cannot be saved again in the same review. To apply changed rules to all pages, including saved pages, select '''Apply rules''' to start a new review.
+The '''Status''' tab shows review progress and decision history, including saved revisions and skip reasons. You can click a '''reviewed''' page in the Page list and save it later, even after the review is complete. After changing rules, select '''Apply rules''' to review the page list with the updated rules.
 
 == Limitations ==
 

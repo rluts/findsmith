@@ -302,6 +302,17 @@ impl JobState {
         self.queue.get(self.position)
     }
 
+    pub fn can_save_current(&self) -> bool {
+        matches!(self.status, JobStatus::Active | JobStatus::Complete)
+            && !self.preparse_active
+            && self.current().is_some_and(|entry| {
+                matches!(
+                    entry.status,
+                    QueueEntryStatus::Pending | QueueEntryStatus::Reviewed
+                )
+            })
+    }
+
     pub fn counters(&self) -> JobCounters {
         let mut counters = JobCounters::default();
         for entry in &self.queue {
@@ -339,7 +350,9 @@ impl JobState {
 
     pub fn advance(&mut self, status: QueueEntryStatus, reason: Option<String>) {
         if let Some(entry) = self.queue.get_mut(self.position)
-            && entry.status.is_pending()
+            && (entry.status.is_pending()
+                || (status == QueueEntryStatus::Saved
+                    && entry.status == QueueEntryStatus::Reviewed))
         {
             entry.status = status;
             entry.reason = reason;
@@ -594,6 +607,28 @@ mod tests {
         assert_eq!(state.status, JobStatus::Complete);
         assert_eq!(state.queue[0].status, QueueEntryStatus::Saved);
         assert!(!state.select(2));
+    }
+
+    #[test]
+    fn reviewed_page_can_be_saved_after_review_completes() {
+        let mut state = JobState::new(vec![entry("A"), entry("B")]);
+        state.advance(QueueEntryStatus::Reviewed, None);
+        state.advance(QueueEntryStatus::Reviewed, None);
+        assert_eq!(state.status, JobStatus::Complete);
+        assert!(state.select(0));
+        assert!(state.can_save_current());
+        state.advance(QueueEntryStatus::Saved, None);
+        assert_eq!(state.status, JobStatus::Complete);
+        assert_eq!(state.queue[0].status, QueueEntryStatus::Saved);
+        assert_eq!(state.counters().saved, 1);
+        assert!(!state.can_save_current());
+        assert!(state.select(1));
+        assert!(state.can_save_current());
+        state.status = JobStatus::Stopped;
+        assert!(!state.can_save_current());
+        state.status = JobStatus::Complete;
+        state.queue[1].status = QueueEntryStatus::Skipped;
+        assert!(!state.can_save_current());
     }
 
     #[test]

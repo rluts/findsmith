@@ -2152,16 +2152,11 @@ async fn save_current_page(
     form: &JobActionForm,
     back_href: &str,
 ) -> Response {
-    if state.status != JobStatus::Active
-        || state.preparse_active
-        || !state
-            .current()
-            .is_some_and(|entry| entry.status.is_pending())
-    {
+    if !state.can_save_current() {
         return error_page(
             StatusCode::CONFLICT,
             "Cannot save",
-            "Select a pending page in an active review.",
+            "Select a pending or reviewed page in an active or completed review.",
             back_href,
         );
     }
