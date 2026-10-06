@@ -21,8 +21,9 @@ use crate::{
     },
     lists::{queue_from_normalized, source_values, validate_namespaces, validate_queue_limit},
     mediawiki::{
-        ApiPageListKind, PageListKind, PageSnapshot, api_page_list, load_page, normalize_titles,
-        page_list, page_list_bot, parse_preview,
+        ApiPageListKind, EditFailureKind, PageListKind, PageSnapshot, api_page_list,
+        bot_edit_allowed, classify_edit_error, edit_existing_page, edit_permissions, load_page,
+        normalize_titles, page_list, page_list_bot, parse_preview,
     },
     projects::{
         PageSource, PageSourceKind, ProjectError, ProjectRepository, ProjectState, ReplacementRule,
@@ -191,6 +192,7 @@ struct ReviewResponse<'a> {
     total: usize,
     pending: usize,
     reviewed: usize,
+    saved: usize,
     skipped: usize,
     unavailable: usize,
     rule_count: usize,
@@ -198,6 +200,9 @@ struct ReviewResponse<'a> {
     preparse_active: bool,
     preparse_cursor: usize,
     preparse_render_equivalent: bool,
+    edit_in_flight: bool,
+    edit_policy_blocked: bool,
+    policy_acknowledged: bool,
     queue: &'a [QueueEntry],
     current: Option<&'a QueueEntry>,
     page: Option<&'a ReviewPageView>,
@@ -212,6 +217,10 @@ struct ReviewPageView {
     server_timestamp: String,
     content_model: String,
     editable: bool,
+    can_edit: bool,
+    can_minor: bool,
+    can_bot: bool,
+    edit_access_message: Option<&'static str>,
     protection: String,
     total_replacements: usize,
     changed: bool,
@@ -340,6 +349,18 @@ pub struct JobActionForm {
     action: String,
     #[serde(default)]
     render_equivalent: bool,
+    #[serde(default)]
+    proposed_text: Option<String>,
+    #[serde(default)]
+    base_revid: Option<u64>,
+    #[serde(default)]
+    start_timestamp: Option<String>,
+    #[serde(default)]
+    policy_acknowledged: bool,
+    #[serde(default)]
+    minor: bool,
+    #[serde(default)]
+    bot: bool,
 }
 
 #[derive(Deserialize)]
@@ -1903,13 +1924,13 @@ async fn review_response(
         Err(error) => return internal_error(error),
     };
     let counters = state.counters();
-    let current = (state.status.is_active() && !state.preparse_active)
-        .then(|| state.current())
-        .flatten();
+    let current = (!state.preparse_active).then(|| state.current()).flatten();
     let mut page = None;
     let mut page_error = None;
     if let Some(entry) = current.filter(|entry| {
-        entry.status != QueueEntryStatus::Missing && entry.status != QueueEntryStatus::Invalid
+        !state.status.is_building()
+            && entry.status != QueueEntryStatus::Missing
+            && entry.status != QueueEntryStatus::Invalid
     }) {
         match review_page_view(
             database,
@@ -1937,6 +1958,7 @@ async fn review_response(
         total: state.queue.len(),
         pending: counters.pending,
         reviewed: counters.reviewed,
+        saved: counters.saved,
         skipped: counters.skipped,
         unavailable: counters.unavailable,
         rule_count: config.rules.len(),
@@ -1944,6 +1966,9 @@ async fn review_response(
         preparse_active: state.preparse_active,
         preparse_cursor: state.preparse_cursor,
         preparse_render_equivalent: state.preparse_render_equivalent,
+        edit_in_flight: state.edit_in_flight,
+        edit_policy_blocked: state.edit_policy_blocked,
+        policy_acknowledged: state.policy_acknowledged,
         queue: &state.queue,
         current,
         page: page.as_ref(),
@@ -1977,6 +2002,21 @@ async fn review_page_view(
         return Err("The proposed wikitext is too large.".to_owned());
     }
     let protection = protection_text(&snapshot);
+    let permissions = edit_permissions(wiki_url, user_agent, access_token).await;
+    let edit_access_message = match &permissions {
+        Err(_) => {
+            Some("Could not verify your edit rights on this wiki. Reload the review to try again.")
+        }
+        Ok(permissions) if permissions.blocked => Some("Your account is blocked on this wiki."),
+        Ok(permissions) if permissions.new_messages => {
+            Some("Read your new messages on this wiki before editing.")
+        }
+        Ok(permissions) if !permissions.can_read || !permissions.can_edit => {
+            Some("Your account lacks read or edit rights on this wiki.")
+        }
+        Ok(_) => None,
+    };
+    let permissions = permissions.ok();
     let unified_diff = unified_lines(&snapshot.content, &proposed_text);
     let side_by_side_diff = side_by_side_lines(&snapshot.content, &proposed_text);
     Ok(ReviewPageView {
@@ -1986,6 +2026,19 @@ async fn review_page_view(
         server_timestamp: snapshot.server_timestamp,
         content_model: snapshot.content_model,
         editable: snapshot.editable,
+        can_edit: permissions.as_ref().is_some_and(|permissions| {
+            permissions.can_read
+                && permissions.can_edit
+                && !permissions.blocked
+                && !permissions.new_messages
+        }),
+        can_minor: permissions
+            .as_ref()
+            .is_some_and(|permissions| permissions.can_minor),
+        can_bot: permissions
+            .as_ref()
+            .is_some_and(|permissions| permissions.can_bot),
+        edit_access_message,
         protection,
         total_replacements: result.total_replacements,
         changed: snapshot.content != proposed_text,
@@ -1999,6 +2052,336 @@ async fn review_page_view(
         unified_diff,
         side_by_side_diff,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn save_current_page(
+    repository: &JobRepository<'_>,
+    owner: &str,
+    username: &str,
+    access_token: &str,
+    user_agent: &str,
+    project_id: &str,
+    job_id: &str,
+    wiki_url: &str,
+    state_version: i64,
+    state: &mut JobState,
+    form: &JobActionForm,
+    back_href: &str,
+) -> Response {
+    if state.status != JobStatus::Active
+        || state.preparse_active
+        || !state
+            .current()
+            .is_some_and(|entry| entry.status.is_pending())
+    {
+        return error_page(
+            StatusCode::CONFLICT,
+            "Cannot save",
+            "Select a pending page in an active review.",
+            back_href,
+        );
+    }
+    if state.edit_policy_blocked {
+        return error_page(
+            StatusCode::CONFLICT,
+            "Edit blocked",
+            "This job encountered a wiki policy warning. Start a new review after resolving it on the wiki.",
+            back_href,
+        );
+    }
+    let (Some(text), Some(base_revid), Some(start_timestamp)) =
+        (&form.proposed_text, form.base_revid, &form.start_timestamp)
+    else {
+        return error_page(
+            StatusCode::BAD_REQUEST,
+            "Cannot save",
+            "The reviewed text, base revision, and start timestamp are required.",
+            back_href,
+        );
+    };
+    if !form.policy_acknowledged && !state.policy_acknowledged {
+        return error_page(
+            StatusCode::BAD_REQUEST,
+            "Policy acknowledgement required",
+            "Acknowledge the selected wiki's editing policies before saving.",
+            back_href,
+        );
+    }
+    if text.len() > crate::rules::MAX_OUTPUT_BYTES {
+        return error_page(
+            StatusCode::BAD_REQUEST,
+            "Cannot save",
+            "The proposed wikitext is too large.",
+            back_href,
+        );
+    }
+    let title = state
+        .current()
+        .map(|entry| entry.title.clone())
+        .unwrap_or_default();
+    let access = wikis::access_unregistered(wiki_url, user_agent, username).await;
+    if !access.is_some_and(|access| access.allowed == Some(true)) {
+        return pause_edit(repository, owner, project_id, job_id, state_version, state,
+            "permission", "This account is not approved in this wiki's AutoWikiBrowser CheckPageJSON, or access could not be verified.", back_href).await;
+    }
+    let permissions = match edit_permissions(wiki_url, user_agent, access_token).await {
+        Ok(permissions) => permissions,
+        Err(error) => {
+            return pause_edit(
+                repository,
+                owner,
+                project_id,
+                job_id,
+                state_version,
+                state,
+                classify_edit_error(&error).label(),
+                "Could not verify local Wikimedia edit permissions.",
+                back_href,
+            )
+            .await;
+        }
+    };
+    if permissions.blocked
+        || !permissions.can_read
+        || !permissions.can_edit
+        || permissions.new_messages
+    {
+        let (kind, message) = if permissions.blocked {
+            ("block", "This account is blocked on the selected wiki.")
+        } else if permissions.new_messages {
+            (
+                "permission",
+                "Read your new messages on the selected wiki before editing.",
+            )
+        } else {
+            (
+                "permission",
+                "This account lacks read or edit rights on the selected wiki.",
+            )
+        };
+        return pause_edit(
+            repository,
+            owner,
+            project_id,
+            job_id,
+            state_version,
+            state,
+            kind,
+            message,
+            back_href,
+        )
+        .await;
+    }
+    if (form.minor && !permissions.can_minor) || (form.bot && !permissions.can_bot) {
+        return pause_edit(
+            repository,
+            owner,
+            project_id,
+            job_id,
+            state_version,
+            state,
+            "permission",
+            "The selected minor or bot flag is not permitted for this account.",
+            back_href,
+        )
+        .await;
+    }
+    let snapshot = match load_page(wiki_url, user_agent, access_token, &title).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            return pause_edit(
+                repository,
+                owner,
+                project_id,
+                job_id,
+                state_version,
+                state,
+                "conflict",
+                &format!("Reload and review this page again: {error}"),
+                back_href,
+            )
+            .await;
+        }
+    };
+    if snapshot.revision_id != base_revid || snapshot.title != title {
+        return pause_edit(
+            repository,
+            owner,
+            project_id,
+            job_id,
+            state_version,
+            state,
+            "conflict",
+            "The page revision changed. Reload and review the latest revision before saving.",
+            back_href,
+        )
+        .await;
+    }
+    if !snapshot.editable {
+        return pause_edit(
+            repository,
+            owner,
+            project_id,
+            job_id,
+            state_version,
+            state,
+            "protection",
+            "This page is not editable by the current account.",
+            back_href,
+        )
+        .await;
+    }
+    match bot_edit_allowed(wiki_url, user_agent, username, &snapshot.content).await {
+        Ok(true) => {}
+        Ok(false) => {
+            state.edit_policy_blocked = true;
+            return pause_edit(
+                repository,
+                owner,
+                project_id,
+                job_id,
+                state_version,
+                state,
+                "bot exclusion",
+                "This page excludes automated edits with {{bots}} or {{nobots}}.",
+                back_href,
+            )
+            .await;
+        }
+        Err(_) => {
+            return pause_edit(
+                repository,
+                owner,
+                project_id,
+                job_id,
+                state_version,
+                state,
+                "bot exclusion",
+                "Could not verify this page's bot-exclusion templates.",
+                back_href,
+            )
+            .await;
+        }
+    }
+    if snapshot.content == *text {
+        return error_page(
+            StatusCode::CONFLICT,
+            "No changes",
+            "The proposed wikitext matches the current revision.",
+            back_href,
+        );
+    }
+    state.policy_acknowledged = true;
+    state.edit_in_flight = true;
+    state.status = JobStatus::Stopped;
+    if let Some(entry) = state.queue.get_mut(state.position) {
+        entry.edit_result = Some("in_flight".to_owned());
+        entry.reason = Some("Edit outcome unknown until Wikimedia responds; do not retry this job if the request is interrupted.".to_owned());
+    }
+    if let Err(error) = repository
+        .update_state(owner, project_id, job_id, state, state_version)
+        .await
+    {
+        return job_error_response(error, back_href);
+    }
+    let outcome = edit_existing_page(
+        wiki_url,
+        user_agent,
+        access_token,
+        username,
+        &snapshot.title,
+        text,
+        snapshot.revision_id,
+        &snapshot.revision_timestamp,
+        start_timestamp,
+        form.minor,
+        form.bot,
+    )
+    .await;
+    match outcome {
+        Ok(new_revid) => {
+            state.edit_in_flight = false;
+            state.status = JobStatus::Active;
+            if let Some(entry) = state.queue.get_mut(state.position) {
+                entry.revision_id = Some(snapshot.revision_id);
+                entry.revision_timestamp = Some(snapshot.revision_timestamp);
+                entry.edit_revision_id = Some(new_revid);
+                entry.edit_result = Some("saved".to_owned());
+            }
+            state.advance(QueueEntryStatus::Saved, None);
+        }
+        Err(error) => {
+            let kind = classify_edit_error(&error);
+            // Transport failures and unrecognized responses can happen after MediaWiki committed the edit.
+            let ambiguous = matches!(
+                error,
+                mwapi::Error::HttpError(_)
+                    | mwapi::Error::InvalidJson(_)
+                    | mwapi::Error::Unknown(_)
+            );
+            state.edit_in_flight = ambiguous;
+            state.edit_policy_blocked = matches!(
+                kind,
+                EditFailureKind::AbuseFilter
+                    | EditFailureKind::Captcha
+                    | EditFailureKind::Spam
+                    | EditFailureKind::Block
+                    | EditFailureKind::Protection
+                    | EditFailureKind::Permission
+                    | EditFailureKind::Unknown
+            );
+            if let Some(entry) = state.queue.get_mut(state.position) {
+                entry.edit_result = Some(kind.label().to_owned());
+                entry.reason = Some(if ambiguous {
+                    "The edit outcome is unknown. Check the wiki page and start a new review; this job cannot retry it.".to_owned()
+                } else if kind == EditFailureKind::Conflict {
+                    "Edit conflict. Reload and review the current revision before trying again."
+                        .to_owned()
+                } else if kind == EditFailureKind::AbuseFilter {
+                    "The wiki's abuse filter warned or blocked this edit. Review it on the wiki; FindSmith will not confirm it automatically.".to_owned()
+                } else {
+                    format!(
+                        "MediaWiki rejected the edit ({}). Review the page before resuming.",
+                        kind.label()
+                    )
+                });
+            }
+        }
+    }
+    match repository
+        .update_state(owner, project_id, job_id, state, state_version + 1)
+        .await
+    {
+        Ok(()) => action_response(back_href.to_owned(), Some(job_id.to_owned())),
+        Err(error) => job_error_response(error, back_href),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn pause_edit(
+    repository: &JobRepository<'_>,
+    owner: &str,
+    project_id: &str,
+    job_id: &str,
+    state_version: i64,
+    state: &mut JobState,
+    kind: &str,
+    message: &str,
+    back_href: &str,
+) -> Response {
+    state.status = JobStatus::Stopped;
+    if let Some(entry) = state.queue.get_mut(state.position) {
+        entry.edit_result = Some(kind.to_owned());
+        entry.reason = Some(message.to_owned());
+    }
+    match repository
+        .update_state(owner, project_id, job_id, state, state_version)
+        .await
+    {
+        Ok(()) => action_response(back_href.to_owned(), Some(job_id.to_owned())),
+        Err(error) => job_error_response(error, back_href),
+    }
 }
 
 async fn job_action_response(
@@ -2021,8 +2404,8 @@ async fn job_action_response(
     if job.state_version != form.state_version {
         return job_error_response(JobError::Conflict, &back_href);
     }
-    // Review actions remain read-only, but the server refreshes AWB eligibility
-    // even when a client skips the project-page status request.
+    // Refresh AWB eligibility for review actions even when the client skips
+    // the project-page status request. Save checks eligibility again and enforces it.
     let _access = wikis::access_unregistered(&job.wiki_url, user_agent, username).await;
     let config: JobConfigV1 = match serde_json::from_value(job.config_json) {
         Ok(config) => config,
@@ -2032,6 +2415,39 @@ async fn job_action_response(
         Ok(state) => state,
         Err(error) => return internal_error(error),
     };
+    if state.edit_in_flight {
+        return error_page(
+            StatusCode::CONFLICT,
+            "Edit outcome unknown",
+            "An edit request may have reached Wikimedia. Start a new review after checking the page; this job cannot retry it.",
+            &back_href,
+        );
+    }
+    if state.edit_policy_blocked && form.action != "stop" {
+        return error_page(
+            StatusCode::CONFLICT,
+            "Edit blocked",
+            "This job encountered a wiki policy warning. Start a new review after resolving it on the wiki.",
+            &back_href,
+        );
+    }
+    if form.action == "save" {
+        return save_current_page(
+            &repository,
+            owner,
+            username,
+            access_token,
+            user_agent,
+            project_id,
+            job_id,
+            &job.wiki_url,
+            job.state_version,
+            &mut state,
+            &form,
+            &back_href,
+        )
+        .await;
+    }
     if state.preparse_active
         && !matches!(
             form.action.as_str(),
@@ -2042,6 +2458,16 @@ async fn job_action_response(
             StatusCode::CONFLICT,
             "Pre-parse is running",
             "Stop pre-parse before reviewing pages.",
+            &back_href,
+        );
+    }
+    if matches!(form.action.as_str(), "next" | "skip" | "previous")
+        && state.status != JobStatus::Active
+    {
+        return error_page(
+            StatusCode::CONFLICT,
+            "Review stopped",
+            "Resume the review before navigating its pages.",
             &back_href,
         );
     }
@@ -2268,6 +2694,14 @@ async fn queue_action_response(
         Ok(state) => state,
         Err(error) => return internal_error(error),
     };
+    if state.edit_in_flight || state.edit_policy_blocked {
+        return error_page(
+            StatusCode::CONFLICT,
+            "Queue locked",
+            "This job is paused after an edit attempt. Start a new review after checking the wiki page.",
+            &back_href,
+        );
+    }
     if state.status == JobStatus::Building {
         return error_page(
             StatusCode::CONFLICT,
@@ -2285,6 +2719,16 @@ async fn queue_action_response(
         );
     }
     match form.action.as_str() {
+        "select" => {
+            if !state.select(form.index) {
+                return error_page(
+                    StatusCode::BAD_REQUEST,
+                    "Cannot select page",
+                    "Choose a page in the current list after generation finishes.",
+                    &back_href,
+                );
+            }
+        }
         "move_up" => state.move_entry(form.index, -1),
         "move_down" => state.move_entry(form.index, 1),
         "remove" => state.remove_entry(form.index),
@@ -2339,7 +2783,7 @@ async fn queue_action_response(
             return error_page(
                 StatusCode::BAD_REQUEST,
                 "Invalid queue action",
-                "Choose append, move, remove, sort, or clear.",
+                "Choose select, append, move, remove, sort, or clear.",
                 &back_href,
             );
         }
@@ -2467,14 +2911,23 @@ async fn update_project_response(
 ) -> Response {
     if let Ok(Some(job)) = JobRepository::new(database).latest(owner, id).await
         && let Ok(state) = serde_json::from_value::<JobState>(job.state_json)
-        && state.preparse_active
     {
-        return error_page(
-            StatusCode::CONFLICT,
-            "Pre-parse is running",
-            "Stop pre-parse before changing the rules.",
-            &format!("/projects/{id}"),
-        );
+        if state.edit_in_flight || state.edit_policy_blocked {
+            return error_page(
+                StatusCode::CONFLICT,
+                "Review is paused",
+                "Check the wiki page and build a new list before changing rules after an uncertain or policy-sensitive edit.",
+                &format!("/projects/{id}"),
+            );
+        }
+        if state.preparse_active || state.status.is_building() {
+            return error_page(
+                StatusCode::CONFLICT,
+                "Review is busy",
+                "Wait for list generation or stop pre-parse before changing the rules.",
+                &format!("/projects/{id}"),
+            );
+        }
     }
     match save_project(database, owner, id, &form).await {
         Ok((project, rules)) => {
@@ -2483,12 +2936,40 @@ async fn update_project_response(
                 Ok(job) => job,
                 Err(error) => return job_error_response(error, &format!("/projects/{id}")),
             };
-            if let Some(job) = latest_job
-                && let Err(error) = jobs
+            if let Some(job) = latest_job {
+                let old_config: JobConfigV1 = match serde_json::from_value(job.config_json) {
+                    Ok(config) => config,
+                    Err(error) => return internal_error(error),
+                };
+                let old_state: JobState = match serde_json::from_value(job.state_json) {
+                    Ok(state) => state,
+                    Err(error) => return internal_error(error),
+                };
+                if old_config.rules != rules && !old_state.queue.is_empty() {
+                    let next = match jobs
+                        .create(
+                            owner,
+                            id,
+                            &project.wiki_url,
+                            JobConfigV1::new(rules),
+                            JobState::repeat_with_new_rules(&old_state),
+                        )
+                        .await
+                    {
+                        Ok(next) => next,
+                        Err(error) => return job_error_response(error, &format!("/projects/{id}")),
+                    };
+                    return action_response(
+                        format!("/projects/{id}/jobs/{}", next.id),
+                        Some(next.id),
+                    );
+                }
+                if let Err(error) = jobs
                     .update_config(owner, id, &job.id, &JobConfigV1::new(rules))
                     .await
-            {
-                return job_error_response(error, &format!("/projects/{id}"));
+                {
+                    return job_error_response(error, &format!("/projects/{id}"));
+                }
             }
             action_response(format!("/projects/{id}"), Some(project.id))
         }

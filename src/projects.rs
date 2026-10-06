@@ -123,7 +123,7 @@ pub struct PageSource {
     pub values: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct ReplacementRule {
     pub name: String,
@@ -165,7 +165,7 @@ impl Default for ReplacementRule {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct RuleMask {
     pub comments: bool,

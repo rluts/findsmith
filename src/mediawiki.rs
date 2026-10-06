@@ -6,9 +6,13 @@ use mwbot::{
         EmbeddedIn, Generator, categories::CategoryMembers, link::LinksHere, search::Search,
     },
 };
+use parsoid::prelude::*;
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Mutex, OnceLock},
+};
 
 use crate::AppResult;
 
@@ -300,6 +304,259 @@ struct UserInfoQuery {
 struct UserInfo {
     #[serde(default)]
     groups: Vec<String>,
+    #[serde(default)]
+    rights: Vec<String>,
+    #[serde(default)]
+    blockedby: Option<String>,
+    #[serde(default)]
+    messages: bool,
+}
+
+pub struct EditPermissions {
+    pub can_read: bool,
+    pub can_edit: bool,
+    pub can_minor: bool,
+    pub can_bot: bool,
+    pub blocked: bool,
+    pub new_messages: bool,
+}
+
+pub async fn edit_permissions(
+    wiki_url: &str,
+    user_agent: &str,
+    access_token: &str,
+) -> Result<EditPermissions, mwapi::Error> {
+    let client = authenticated_client(wiki_url, user_agent, access_token).await?;
+    let response: UserInfoResponse = client
+        .get([
+            ("action", "query"),
+            ("meta", "userinfo"),
+            ("uiprop", "rights|groups|blockinfo|hasmsg"),
+        ])
+        .await?;
+    let user = response.query.userinfo;
+    Ok(EditPermissions {
+        can_read: user.rights.iter().any(|right| right == "read"),
+        can_edit: user.rights.iter().any(|right| right == "edit"),
+        can_minor: user.rights.iter().any(|right| right == "minoredit"),
+        can_bot: can_mark_bot_edit(&user),
+        blocked: user.blockedby.is_some(),
+        new_messages: user.messages,
+    })
+}
+
+fn can_mark_bot_edit(user: &UserInfo) -> bool {
+    user.groups
+        .iter()
+        .any(|group| matches!(group.as_str(), "bot" | "flood" | "flooder"))
+        && user.rights.iter().any(|right| right == "bot")
+}
+
+pub async fn bot_edit_allowed(
+    wiki_url: &str,
+    user_agent: &str,
+    username: &str,
+    text: &str,
+) -> Result<bool, String> {
+    let rest_url = wiki_url
+        .strip_suffix("api.php")
+        .ok_or("The wiki has no supported Parsoid endpoint.")?;
+    let client = ParsoidClient::new(&format!("{rest_url}rest.php"), user_agent)
+        .map_err(|error| format!("Could not connect to Parsoid: {error}"))?;
+    let code = client
+        .transform_to_html(text)
+        .await
+        .map_err(|error| format!("Could not inspect bot exclusions: {error}"))?
+        .into_mutable();
+    let templates = code
+        .filter_templates()
+        .map_err(|error| format!("Could not inspect bot exclusions: {error}"))?;
+    let user = username.replace('_', " ").to_lowercase();
+    for template in templates {
+        let name = template.name_in_wikitext().replace('_', " ").to_lowercase();
+        let name = name.strip_prefix("template:").unwrap_or(&name).trim();
+        if name == "nobots" {
+            return Ok(false);
+        }
+        if name != "bots" {
+            continue;
+        }
+        if let Some(allow) = template.param("allow") {
+            let allowed = allow
+                .split(',')
+                .map(|name| name.trim().replace('_', " ").to_lowercase())
+                .any(|name| name == "all" || name == user);
+            if !allowed {
+                return Ok(false);
+            }
+        }
+        if let Some(deny) = template.param("deny") {
+            let denied = deny
+                .split(',')
+                .map(|name| name.trim().replace('_', " ").to_lowercase())
+                .any(|name| name == "all" || name == user);
+            if denied {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditFailureKind {
+    Authentication,
+    Permission,
+    Block,
+    Protection,
+    Captcha,
+    Spam,
+    Conflict,
+    Maxlag,
+    AbuseFilter,
+    Unknown,
+}
+
+impl EditFailureKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Authentication => "authentication",
+            Self::Permission => "permission",
+            Self::Block => "block",
+            Self::Protection => "protection",
+            Self::Captcha => "captcha",
+            Self::Spam => "spam",
+            Self::Conflict => "conflict",
+            Self::Maxlag => "maxlag",
+            Self::AbuseFilter => "abuse filter",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+pub fn classify_edit_error(error: &mwapi::Error) -> EditFailureKind {
+    use EditFailureKind as Kind;
+    let code = match error {
+        mwapi::Error::NotLoggedIn | mwapi::Error::NotLoggedInAsBot | mwapi::Error::BadToken => {
+            return Kind::Authentication;
+        }
+        mwapi::Error::Maxlag { .. }
+        | mwapi::Error::TooManyRequests { .. }
+        | mwapi::Error::Readonly { .. } => return Kind::Maxlag,
+        mwapi::Error::ApiError(error) => error.code.to_ascii_lowercase(),
+        _ => return Kind::Unknown,
+    };
+    if code.contains("abusefilter") {
+        Kind::AbuseFilter
+    } else if code.contains("captcha") {
+        Kind::Captcha
+    } else if code.contains("spam") {
+        Kind::Spam
+    } else if code.contains("editconflict") || code == "articleexists" {
+        Kind::Conflict
+    } else if code.contains("protected") || code.contains("cascade") {
+        Kind::Protection
+    } else if code.contains("blocked") || code.contains("block") {
+        Kind::Block
+    } else if code.contains("assert") || code.contains("token") || code.contains("login") {
+        Kind::Authentication
+    } else if code.contains("permission")
+        || code.contains("denied")
+        || code.contains("create")
+        || code.contains("right")
+    {
+        Kind::Permission
+    } else {
+        Kind::Unknown
+    }
+}
+
+fn edit_clients() -> &'static Mutex<HashMap<(String, String), mwapi::Client>> {
+    static CLIENTS: OnceLock<Mutex<HashMap<(String, String), mwapi::Client>>> = OnceLock::new();
+    CLIENTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn edit_existing_page(
+    wiki_url: &str,
+    user_agent: &str,
+    access_token: &str,
+    username: &str,
+    title: &str,
+    text: &str,
+    revision_id: u64,
+    revision_timestamp: &str,
+    start_timestamp: &str,
+    minor: bool,
+    bot: bool,
+) -> Result<u64, mwapi::Error> {
+    // Cloned clients share mwapi's CSRF token cache. Keep the cache bounded and server-side.
+    let key = (wiki_url.to_owned(), access_token.to_owned());
+    let cached = edit_clients()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(&key)
+        .cloned();
+    let client = if let Some(client) = cached {
+        client
+    } else {
+        let client = mwapi::Client::builder(wiki_url)
+            .set_oauth2_token(access_token)
+            .set_user_agent(user_agent)
+            .set_assert(mwapi::Assert::User)
+            .set_maxlag(5)
+            .set_retry_limit(0)
+            .build()
+            .await?;
+        let mut clients = edit_clients()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if clients.len() >= 128 {
+            clients.clear();
+        }
+        clients.insert(key, client.clone());
+        client
+    };
+    let mut params = vec![
+        ("action".to_owned(), "edit".to_owned()),
+        ("title".to_owned(), title.to_owned()),
+        ("text".to_owned(), text.to_owned()),
+        ("summary".to_owned(), "Autoreplacement".to_owned()),
+        ("assertuser".to_owned(), username.to_owned()),
+        ("baserevid".to_owned(), revision_id.to_string()),
+        ("basetimestamp".to_owned(), revision_timestamp.to_owned()),
+        ("starttimestamp".to_owned(), start_timestamp.to_owned()),
+        ("nocreate".to_owned(), "1".to_owned()),
+    ];
+    if minor {
+        params.push(("minor".to_owned(), "1".to_owned()));
+    }
+    if bot {
+        params.push(("bot".to_owned(), "1".to_owned()));
+    }
+    let response: Value = client.post_with_token("csrf", params).await?;
+    if response.pointer("/edit/result").and_then(Value::as_str) != Some("Success") {
+        let code = if response.pointer("/edit/captcha").is_some() {
+            "captcha"
+        } else if response.pointer("/edit/spamblacklist").is_some() {
+            "spamdetected"
+        } else if response.pointer("/edit/abusefilter").is_some() {
+            "abusefilter-warning"
+        } else {
+            "edit-failed"
+        };
+        return Err(mwapi::Error::ApiError(mwapi::ApiError {
+            code: code.to_owned(),
+            text: "MediaWiki did not save the edit.".to_owned(),
+            data: None,
+        }));
+    }
+    response
+        .pointer("/edit/newrevid")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            mwapi::Error::Unknown("MediaWiki did not return the new revision ID.".to_owned())
+        })
 }
 
 #[derive(Deserialize)]
@@ -711,6 +968,75 @@ async fn authenticated_client(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bot_edit_requires_bot_or_flood_group_and_right() {
+        let user: UserInfo = serde_json::from_value(serde_json::json!({
+            "groups": ["user", "bot"], "rights": ["edit", "bot"]
+        }))
+        .unwrap();
+        assert!(can_mark_bot_edit(&user));
+        for group in ["flood", "flooder"] {
+            let flood_user: UserInfo = serde_json::from_value(serde_json::json!({
+                "groups": ["user", group], "rights": ["edit", "bot"]
+            }))
+            .unwrap();
+            assert!(can_mark_bot_edit(&flood_user));
+        }
+        let right_only: UserInfo = serde_json::from_value(serde_json::json!({
+            "groups": ["user"], "rights": ["edit", "bot"]
+        }))
+        .unwrap();
+        assert!(!can_mark_bot_edit(&right_only));
+        let group_only: UserInfo = serde_json::from_value(serde_json::json!({
+            "groups": ["user", "bot"], "rights": ["edit"]
+        }))
+        .unwrap();
+        assert!(!can_mark_bot_edit(&group_only));
+        let flood_without_right: UserInfo = serde_json::from_value(serde_json::json!({
+            "groups": ["user", "flood"], "rights": ["edit"]
+        }))
+        .unwrap();
+        assert!(!can_mark_bot_edit(&flood_without_right));
+    }
+
+    #[test]
+    fn edit_errors_are_classified_without_exposing_server_text() {
+        let error = |code: &str| {
+            mwapi::Error::ApiError(mwapi::ApiError {
+                code: code.to_owned(),
+                text: "private page text".to_owned(),
+                data: None,
+            })
+        };
+        assert_eq!(
+            classify_edit_error(&error("abusefilter-warning")),
+            EditFailureKind::AbuseFilter
+        );
+        assert_eq!(
+            classify_edit_error(&error("protectedpage")),
+            EditFailureKind::Protection
+        );
+        assert_eq!(
+            classify_edit_error(&error("editconflict")),
+            EditFailureKind::Conflict
+        );
+        assert_eq!(
+            classify_edit_error(&error("spamdetected")),
+            EditFailureKind::Spam
+        );
+        assert_eq!(
+            classify_edit_error(&error("captcha")),
+            EditFailureKind::Captcha
+        );
+        assert_eq!(
+            classify_edit_error(&mwapi::Error::Maxlag {
+                info: String::new(),
+                retry_after: None
+            }),
+            EditFailureKind::Maxlag
+        );
+    }
 
     #[test]
     fn additional_source_shapes_read_titles() {

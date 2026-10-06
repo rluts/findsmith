@@ -55,9 +55,14 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
   const [comparison, setComparison] = useState('')
   const [preparseError, setPreparseError] = useState('')
   const [renderEquivalence, setRenderEquivalence] = useState(false)
+  const [policyAcknowledged, setPolicyAcknowledged] = useState(false)
+  const [minorEdit, setMinorEdit] = useState(false)
+  const [botEdit, setBotEdit] = useState<boolean | null>(null)
   const renderRequest = useRef(0)
   const activeJobId = jobId ?? project?.latest_job_id ?? ''
   const reviewPath = activeJobId ? `/api/projects/${projectId}/jobs/${activeJobId}` : ''
+
+  useEffect(() => { setPolicyAcknowledged(false) }, [activeJobId])
 
   async function loadProject() {
     const data = await getJson<Project>(`/api/projects/${projectId}`)
@@ -91,6 +96,7 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
   useEffect(() => { void getJson<SavedRule[]>('/api/rules').then(setSavedRules).catch(error => setLibraryError(error instanceof Error ? error.message : 'Could not load saved rules.')) }, [projectId])
   useEffect(() => {
     if (!project?.wiki_id) return
+    setBotEdit(null)
     setSession(null); setGroupsError('')
     void getJson<Session>(`/api/session?include_groups=true&wiki_id=${encodeURIComponent(project.wiki_id)}`).then(setSession).catch(error => setGroupsError(error instanceof Error ? error.message : 'Could not load Wikimedia groups.'))
   }, [project?.wiki_id])
@@ -178,7 +184,7 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
       else {
         const saved = await loadProject()
         if (refreshReview) {
-          const nextJobId = createsJob && 'id' in result && result.id ? result.id : saved.latest_job_id
+          const nextJobId = 'id' in result && result.id && (createsJob || result.id !== projectId) ? result.id : saved.latest_job_id
           if (nextJobId && nextJobId !== activeJobId) navigate(`/projects/${projectId}/jobs/${nextJobId}`)
           else await loadReview()
         }
@@ -198,6 +204,20 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
     setBusy(name); setError('')
     try { await postForm<ActionResult>(`${reviewPath}/action`, new URLSearchParams({ csrf_token: review.csrf_token, state_version: String(review.state_version), action: name, render_equivalent: name === 'preparse_start' && renderEquivalence ? 'true' : 'false' })); await Promise.all([loadProject(), loadReview()]) }
     catch (error) { setError(error instanceof Error ? error.message : 'Review action failed.') }
+    finally { setBusy('') }
+  }
+  async function savePage() {
+    if (!review || !reviewPath || !review.page || textDirty || !review.page.changed || !(policyAcknowledged || review.policy_acknowledged)) return
+    setBusy('Saving edit…'); setError('')
+    try {
+      await postForm<ActionResult>(`${reviewPath}/action`, new URLSearchParams({
+        csrf_token: review.csrf_token, state_version: String(review.state_version), action: 'save',
+        proposed_text: text, base_revid: String(review.page.revision_id), start_timestamp: review.page.server_timestamp,
+        policy_acknowledged: String(policyAcknowledged || review.policy_acknowledged),
+        minor: String(minorEdit && review.page.can_minor), bot: String((botEdit ?? review.page.can_bot) && review.page.can_bot),
+      }))
+      await Promise.all([loadProject(), loadReview()])
+    } catch (error) { setError(error instanceof Error ? error.message : 'Could not save the edit. Reload the review before retrying.') }
     finally { setBusy('') }
   }
   async function recompute() {
@@ -239,6 +259,15 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
   const comparisonOnly = comparisonTitles.filter(title => !queueTitles.has(title.toLocaleLowerCase()))
   const comparisonSet = new Set(comparisonTitles.map(title => title.toLocaleLowerCase()))
   const queueOnly = review?.queue.filter(entry => !comparisonSet.has(entry.title.toLocaleLowerCase())) ?? []
+  const saveBlockers = review?.page ? [
+    review.current?.status !== 'pending' && 'This page has already been processed in this review. Change the rules and apply them to start a fresh review.',
+    !review.page.changed && 'This page has no proposed changes.',
+    textDirty && 'Recompute the diff after changing the proposed wikitext.',
+    !(policyAcknowledged || review.policy_acknowledged) && 'Acknowledge this wiki’s editing policies for the new review.',
+    !review.page.editable && 'MediaWiki reports that this page is not editable.',
+    !review.page.can_edit && (review.page.edit_access_message || 'Your edit rights could not be verified.'),
+    project.awb_access?.allowed !== true && (project.awb_access?.allowed === false ? 'Your account is not on this wiki’s AutoWikiBrowser enabled list.' : 'AutoWikiBrowser access could not be verified.'),
+  ].filter((reason): reason is string => typeof reason === 'string') : []
   function renderPanel() {
     if (!previewTitle || previewText === undefined) return <div className="empty preview-empty">Select a page to render.</div>
     const isRendering = renderBusy === previewTitle
@@ -250,7 +279,7 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
   }
   return <Shell title={project.project_name} subtitle={review ? `${review.position} / ${review.total} · ${review.pending} pending · ${review.reviewed} reviewed · ${review.skipped} skipped` : `Project · ${project.wiki_id} · configuration version ${project.state_version}`}>
     {error && <ErrorBox message={error} />}
-    {project.awb_access?.allowed === false && <div className="notice" role="status">Your Wikimedia account is not in the <a href={project.awb_access.check_page} target="_blank" rel="noreferrer">AutoWikiBrowser CheckPageJSON</a> enabledusers or enabledbots list for this wiki. FindSmith reviews are still available; editing will require approval when implemented.</div>}
+    {project.awb_access?.allowed === false && <div className="notice" role="status">Your Wikimedia account is not in the <a href={project.awb_access.check_page} target="_blank" rel="noreferrer">AutoWikiBrowser CheckPageJSON</a> enabledusers or enabledbots list for this wiki. FindSmith reviews are still available, but saving edits is disabled.</div>}
     {project.awb_access?.allowed === null && <div className="notice" role="status">Could not verify AutoWikiBrowser access for this wiki: {project.awb_access.error}</div>}
     <main className="awb-workspace">
       <section className="pane sources-pane">
@@ -268,8 +297,8 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
         </details>
         <button className="primary build-list" disabled={!!busy} onClick={() => submitProject(`/api/projects/${projectId}/build`, 'Building…', true, true)}>Build page list</button>
         {review && <>{building && <div className="generation"><progress /><p>{review.generation_message}</p><button className="danger" onClick={() => reviewAction('stop')}>Cancel generation</button></div>}
-          <details className="queue-tools"><summary>List tools</summary><label>Find title<input value={queueFilter} onChange={event => setQueueFilter(event.target.value)} placeholder="Filter the queue" /></label><label>Status<select value={queueStatus} onChange={event => setQueueStatus(event.target.value)}><option value="all">All statuses</option><option value="pending">Pending</option><option value="reviewed">Reviewed</option><option value="skipped">Skipped</option><option value="missing">Missing</option><option value="invalid">Invalid</option></select></label><p>{shownQueue.length} of {review.queue.length} shown</p><div className="row-actions"><button disabled={building || !!busy} onClick={() => queueAction('sort_remaining')}>Sort remaining by title</button><button onClick={exportQueue}>Export CSV</button></div><label>Compare with titles<textarea value={comparison} onChange={event => setComparison(event.target.value)} placeholder="Paste titles, one per line" /></label>{comparison.trim() && <><p>{comparisonOnly.length} only in pasted list · {queueOnly.length} only in queue · {comparisonTitles.length - comparisonOnly.length} in both</p><details><summary>Show differences</summary><strong>Only in pasted list</strong><ul>{comparisonOnly.map(title => <li key={title}>{title}</li>)}</ul><strong>Only in queue</strong><ul>{queueOnly.map(entry => <li key={entry.title}>{entry.title}</li>)}</ul></details></>}</details>
-          <div className="queue-list listbox">{shownQueue.map(({entry, index}) => <div className={`queue-row ${index + 1 === review.position ? 'selected' : ''}`} key={`${entry.title}-${index}`}><span>{index + 1}</span><strong title={entry.reason ?? ''}>{entry.title}</strong><i>{entry.status}</i>{!building && <span className="row-actions"><button disabled={index === 0} onClick={() => queueAction('move_up', index)}>↑</button><button disabled={index === review.queue.length - 1} onClick={() => queueAction('move_down', index)}>↓</button><button onClick={() => queueAction('remove', index)}>×</button></span>}</div>)}</div>
+          <details className="queue-tools"><summary>List tools</summary><label>Find title<input value={queueFilter} onChange={event => setQueueFilter(event.target.value)} placeholder="Filter the queue" /></label><label>Status<select value={queueStatus} onChange={event => setQueueStatus(event.target.value)}><option value="all">All statuses</option><option value="pending">Pending</option><option value="reviewed">Reviewed</option><option value="saved">Saved</option><option value="skipped">Skipped</option><option value="missing">Missing</option><option value="invalid">Invalid</option></select></label><p>{shownQueue.length} of {review.queue.length} shown</p><div className="row-actions"><button disabled={building || !!busy} onClick={() => queueAction('sort_remaining')}>Sort remaining by title</button><button onClick={exportQueue}>Export CSV</button></div><label>Compare with titles<textarea value={comparison} onChange={event => setComparison(event.target.value)} placeholder="Paste titles, one per line" /></label>{comparison.trim() && <><p>{comparisonOnly.length} only in pasted list · {queueOnly.length} only in queue · {comparisonTitles.length - comparisonOnly.length} in both</p><details><summary>Show differences</summary><strong>Only in pasted list</strong><ul>{comparisonOnly.map(title => <li key={title}>{title}</li>)}</ul><strong>Only in queue</strong><ul>{queueOnly.map(entry => <li key={entry.title}>{entry.title}</li>)}</ul></details></>}</details>
+          <div className="queue-list listbox">{shownQueue.map(({entry, index}) => <div className={`queue-row ${index + 1 === review.position ? 'selected' : ''}`} key={`${entry.title}-${index}`}><button type="button" className="queue-select" disabled={building || !!busy} aria-current={index + 1 === review.position ? 'page' : undefined} onClick={() => queueAction('select', index)}><span>{index + 1}</span><strong title={entry.reason ?? ''}>{entry.title}</strong></button><i>{entry.status}</i>{!building && <span className="row-actions"><button disabled={index === 0} onClick={() => queueAction('move_up', index)}>↑</button><button disabled={index === review.queue.length - 1} onClick={() => queueAction('move_down', index)}>↓</button><button onClick={() => queueAction('remove', index)}>×</button></span>}</div>)}</div>
           {!building && <><AppendPages onAppend={titles => queueAction('append', 0, titles)} /><button className="danger clear-queue" disabled={!review.queue.length} onClick={() => { if (window.confirm('Clear the entire queue?')) void queueAction('clear') }}>Clear queue</button></>}</>}
       </section>
 
@@ -278,7 +307,8 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
         {(!review || rulesTab === 'rules') && <>
         <label>Project name<input value={project.project_name} maxLength={255} onChange={event => update({project_name: event.target.value})} /></label>
         <fieldset><legend>Wikimedia account</legend><p>User Groups: {session ? (session.groups.length ? session.groups.join(', ') : 'none reported') : (groupsError ? 'unavailable' : 'loading…')}</p>{session?.groups_error && <p className="error">{session.groups_error}</p>}{groupsError && <p className="error">{groupsError}</p>}</fieldset>
-        {review && <>{active && (review.preparse_active ? <div className="generation"><progress value={review.preparse_cursor} max={review.total || 1} /><p>Pre-parsing {review.preparse_cursor} of {review.total} pages. Pages without changes are skipped; pages with changes remain for review.</p>{preparseError && <ErrorBox message={preparseError} />}<button className="danger" disabled={!!busy} onClick={() => reviewAction('preparse_stop')}>Stop pre-parse</button></div> : <><div className="review-buttons"><button disabled={!!busy} onClick={() => reviewAction('previous')}>Previous</button><button disabled={!!busy} onClick={() => reviewAction('skip')}>Skip</button><button className="danger" disabled={!!busy} onClick={() => reviewAction('stop')}>Stop review</button><button className="primary" disabled={!!busy} onClick={() => reviewAction('next')}>Next</button></div><p className="keyboard-hint">Shortcuts when no field is focused: N next · P previous · S skip</p><label className="preparse-option"><input type="checkbox" checked={renderEquivalence} onChange={event => setRenderEquivalence(event.target.checked)} />Also skip pages whose rendered output is unchanged (slower)</label><button disabled={!!busy} onClick={() => reviewAction('preparse_start')}>Pre-parse queue</button></>)}{review.status === 'stopped' && <button className="primary resume-review" disabled={!!busy} onClick={() => reviewAction('resume')}>Resume review</button>}<p className="read-only">Review only: “Next” records the result but does not edit Wikimedia.</p></>}
+          {review && <>{active && (review.preparse_active ? <div className="generation"><progress value={review.preparse_cursor} max={review.total || 1} /><p>Pre-parsing {review.preparse_cursor} of {review.total} pages. Pages without changes are skipped; pages with changes remain for review.</p>{preparseError && <ErrorBox message={preparseError} />}<button className="danger" disabled={!!busy} onClick={() => reviewAction('preparse_stop')}>Stop pre-parse</button></div> : <><div className="review-buttons"><button disabled={!!busy} onClick={() => reviewAction('previous')}>Previous</button><button disabled={!!busy} onClick={() => reviewAction('skip')}>Skip</button><button className="danger" disabled={!!busy} onClick={() => reviewAction('stop')}>Stop review</button><button className="primary" disabled={!!busy} onClick={() => reviewAction('next')}>Next</button></div><p className="keyboard-hint">Shortcuts when no field is focused: N next · P previous · S skip</p><label className="preparse-option"><input type="checkbox" checked={renderEquivalence} onChange={event => setRenderEquivalence(event.target.checked)} />Also skip pages whose rendered output is unchanged (slower)</label><button disabled={!!busy} onClick={() => reviewAction('preparse_start')}>Pre-parse queue</button></>)}{review.status === 'stopped' && !review.edit_in_flight && !review.edit_policy_blocked && <button className="primary resume-review" disabled={!!busy} onClick={() => reviewAction('resume')}>Resume review</button>}{review.current?.reason && <p className="notice">{review.current.reason}</p>}</>}
+          {active && review?.page && !review.preparse_active && <fieldset className="edit-controls"><legend>Save to Wikimedia</legend><p>Edit summary: <strong>Autoreplacement</strong></p><label><input type="checkbox" checked={policyAcknowledged || review.policy_acknowledged} disabled={review.policy_acknowledged} onChange={event => setPolicyAcknowledged(event.target.checked)} /> I will follow this wiki's editing policies.</label><label><input type="checkbox" checked={minorEdit && review.page.can_minor} disabled={!review.page.can_minor} onChange={event => setMinorEdit(event.target.checked)} /> Minor edit</label><label><input type="checkbox" checked={(botEdit ?? review.page.can_bot) && review.page.can_bot} disabled={!review.page.can_bot} onChange={event => setBotEdit(event.target.checked)} /> Bot edit</label><button className="primary" disabled={!!busy || saveBlockers.length > 0} onClick={savePage}>Save</button>{saveBlockers.length > 0 && <ul className="save-blockers" aria-live="polite">{saveBlockers.map(reason => <li key={reason}>{reason}</li>)}</ul>}<p>“Next” records the review without editing Wikimedia.</p></fieldset>}
         <div className="rule-list">{project.rules.map((rule, index) => <article className={`rule-card ${rule.operation?.startsWith('category_') || rule.operation?.startsWith('template_') ? 'structural-rule' : ''}`} key={index}>
           <div className="rule-head"><label><input type="checkbox" checked={rule.enabled} onChange={event => { const rules = [...project.rules]; rules[index] = {...rule, enabled: event.target.checked}; update({rules}) }} /> {rule.name || `Rule ${index + 1}`} <small>· {rule.operation?.startsWith('category_') ? 'category' : rule.operation?.startsWith('template_') ? 'template' : 'text'}</small></label><span className="row-actions"><button disabled={index === 0} onClick={() => update({rules: move(project.rules, index, -1)})}>↑</button><button disabled={index === project.rules.length - 1} onClick={() => update({rules: move(project.rules, index, 1)})}>↓</button><button onClick={() => update({rules: project.rules.filter((_, item) => item !== index)})}>×</button></span></div>
           <label>Name<input value={rule.name} maxLength={255} placeholder="Optional in this project" onChange={event => { const rules = [...project.rules]; rules[index] = {...rule, name: event.target.value}; update({rules}) }} /></label>
@@ -306,8 +336,8 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
         <div className="command-stack"><button className="primary" disabled={!!busy} onClick={() => submitProject(`/api/projects/${projectId}`, review ? 'Applying rules…' : 'Saving…', Boolean(review))}>{review ? 'Apply rules' : 'Save configuration'}</button><button className="danger" onClick={removeProject}>Delete project</button></div>
         </>}
         {review && rulesTab === 'status' && <>
-          <fieldset><legend>Review progress</legend><dl><dt>Status</dt><dd>{review.status}</dd><dt>Pending</dt><dd>{review.pending}</dd><dt>Reviewed</dt><dd>{review.reviewed}</dd><dt>Skipped</dt><dd>{review.skipped}</dd><dt>Unavailable</dt><dd>{review.unavailable}</dd></dl></fieldset>
-          <fieldset className="decision-history"><legend>Decision history</legend>{review.queue.filter(entry => entry.status !== 'pending').length ? <ol>{review.queue.filter(entry => entry.status !== 'pending').map((entry, index) => <li key={`${entry.title}-${index}`}><strong>{entry.title}</strong> — {entry.status}{entry.reason ? `: ${entry.reason}` : ''}{entry.replacement_count !== null ? ` · ${entry.replacement_count} replacements` : ''}</li>)}</ol> : <p className="empty">No decisions recorded yet.</p>}</fieldset>
+          <fieldset><legend>Review progress</legend><dl><dt>Status</dt><dd>{review.status}</dd><dt>Pending</dt><dd>{review.pending}</dd><dt>Reviewed</dt><dd>{review.reviewed}</dd><dt>Saved to wiki</dt><dd>{review.saved}</dd><dt>Skipped</dt><dd>{review.skipped}</dd><dt>Unavailable</dt><dd>{review.unavailable}</dd></dl></fieldset>
+          <fieldset className="decision-history"><legend>Decision history</legend>{review.queue.filter(entry => entry.status !== 'pending' || entry.edit_result).length ? <ol>{review.queue.filter(entry => entry.status !== 'pending' || entry.edit_result).map((entry, index) => <li key={`${entry.title}-${index}`}><strong>{entry.title}</strong> — {entry.status}{entry.edit_result ? ` · ${entry.edit_result}` : ''}{entry.edit_revision_id ? ` · revision ${entry.edit_revision_id}` : ''}{entry.reason ? `: ${entry.reason}` : ''}{entry.replacement_count !== null ? ` · ${entry.replacement_count} replacements` : ''}</li>)}</ol> : <p className="empty">No decisions recorded yet.</p>}</fieldset>
         </>}
         {busy && <p className="busy">{busy}</p>}
       </section>

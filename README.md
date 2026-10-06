@@ -1,6 +1,6 @@
 # FindSmith
 
-FindSmith is a browser-based MediaWiki find-and-replace tool inspired by AutoWikiBrowser. It is currently under development and performs read-only reviews; it does not submit edits to Wikimedia.
+FindSmith is a browser-based Wikimedia find-and-replace tool inspired by AutoWikiBrowser. It is currently under development. Editors can review proposed changes and explicitly save individual pages to Wikimedia when their account has the required wiki access and edit rights.
 
 The application has two parts:
 

@@ -50,10 +50,6 @@ impl JobStatus {
         }
     }
 
-    pub fn is_active(&self) -> bool {
-        matches!(self, Self::Active)
-    }
-
     pub fn is_building(&self) -> bool {
         matches!(self, Self::Building)
     }
@@ -64,6 +60,7 @@ impl JobStatus {
 pub enum QueueEntryStatus {
     Pending,
     Reviewed,
+    Saved,
     Skipped,
     Missing,
     Invalid,
@@ -87,6 +84,10 @@ pub struct QueueEntry {
     pub revision_id: Option<u64>,
     pub revision_timestamp: Option<String>,
     pub replacement_count: Option<usize>,
+    #[serde(default)]
+    pub edit_revision_id: Option<u64>,
+    #[serde(default)]
+    pub edit_result: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -110,9 +111,38 @@ pub struct JobState {
     pub preparse_cursor: usize,
     #[serde(default)]
     pub preparse_render_equivalent: bool,
+    #[serde(default)]
+    pub edit_in_flight: bool,
+    #[serde(default)]
+    pub policy_acknowledged: bool,
+    #[serde(default)]
+    pub edit_policy_blocked: bool,
 }
 
 impl JobState {
+    pub fn repeat_with_new_rules(previous: &Self) -> Self {
+        let mut state = Self::building(previous.queue_limit);
+        state.queue = previous
+            .queue
+            .iter()
+            .cloned()
+            .map(|mut entry| {
+                entry.status = QueueEntryStatus::Pending;
+                entry.reason = None;
+                entry.revision_id = None;
+                entry.revision_timestamp = None;
+                entry.replacement_count = None;
+                entry.edit_revision_id = None;
+                entry.edit_result = None;
+                entry
+            })
+            .collect();
+        state.finish_build();
+        state.generation_message =
+            "Rules changed. Review every page again against its latest revision.".to_owned();
+        state
+    }
+
     #[cfg(test)]
     pub fn new(queue: Vec<QueueEntry>) -> Self {
         Self {
@@ -131,6 +161,9 @@ impl JobState {
             preparse_active: false,
             preparse_cursor: 0,
             preparse_render_equivalent: false,
+            edit_in_flight: false,
+            policy_acknowledged: false,
+            edit_policy_blocked: false,
         }
     }
 
@@ -147,6 +180,9 @@ impl JobState {
             preparse_active: false,
             preparse_cursor: 0,
             preparse_render_equivalent: false,
+            edit_in_flight: false,
+            policy_acknowledged: false,
+            edit_policy_blocked: false,
         }
     }
 
@@ -234,6 +270,14 @@ impl JobState {
         }
     }
 
+    pub fn select(&mut self, index: usize) -> bool {
+        if index >= self.queue.len() || self.status == JobStatus::Building || self.preparse_active {
+            return false;
+        }
+        self.position = index;
+        true
+    }
+
     pub fn finish_preparse_if_done(&mut self) {
         if self.preparse_cursor < self.queue.len() {
             return;
@@ -261,6 +305,10 @@ impl JobState {
             match entry.status {
                 QueueEntryStatus::Pending => counters.pending += 1,
                 QueueEntryStatus::Reviewed => counters.reviewed += 1,
+                QueueEntryStatus::Saved => {
+                    counters.reviewed += 1;
+                    counters.saved += 1;
+                }
                 QueueEntryStatus::Skipped => counters.skipped += 1,
                 QueueEntryStatus::Missing | QueueEntryStatus::Invalid => counters.unavailable += 1,
             }
@@ -309,6 +357,7 @@ fn default_queue_limit() -> usize {
 pub struct JobCounters {
     pub pending: usize,
     pub reviewed: usize,
+    pub saved: usize,
     pub skipped: usize,
     pub unavailable: usize,
 }
@@ -474,6 +523,8 @@ mod tests {
             revision_id: None,
             revision_timestamp: None,
             replacement_count: None,
+            edit_revision_id: None,
+            edit_result: None,
         }
     }
 
@@ -505,6 +556,56 @@ mod tests {
         assert_eq!(state.position, 1);
         assert_eq!(state.queue[0].status, QueueEntryStatus::Reviewed);
         assert!(!state.resume());
+    }
+
+    #[test]
+    fn changed_rules_reopen_saved_pages_in_a_new_job_state() {
+        let mut previous = JobState::new(vec![entry("A"), entry("B")]);
+        previous.queue[0].status = QueueEntryStatus::Saved;
+        previous.queue[0].edit_revision_id = Some(42);
+        previous.queue[0].edit_result = Some("saved".to_owned());
+        previous.queue[1].status = QueueEntryStatus::Reviewed;
+        previous.status = JobStatus::Complete;
+
+        let next = JobState::repeat_with_new_rules(&previous);
+        assert_eq!(next.status, JobStatus::Active);
+        assert_eq!(next.position, 0);
+        assert!(next.queue.iter().all(|entry| entry.status.is_pending()));
+        assert!(next.queue[0].edit_revision_id.is_none());
+        assert_eq!(previous.queue[0].edit_revision_id, Some(42));
+        assert_eq!(previous.queue[0].status, QueueEntryStatus::Saved);
+        assert!(!next.policy_acknowledged);
+    }
+
+    #[test]
+    fn selecting_processed_page_does_not_change_its_outcome() {
+        let mut state = JobState::new(vec![entry("A"), entry("B")]);
+        state.queue[0].status = QueueEntryStatus::Saved;
+        state.status = JobStatus::Complete;
+        state.position = 1;
+        assert!(state.select(0));
+        assert_eq!(state.position, 0);
+        assert_eq!(state.status, JobStatus::Complete);
+        assert_eq!(state.queue[0].status, QueueEntryStatus::Saved);
+        assert!(!state.select(2));
+    }
+
+    #[test]
+    fn existing_job_state_without_edit_fields_still_loads() {
+        let mut value = serde_json::to_value(JobState::new(vec![entry("A")])).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("edit_in_flight");
+        object.remove("edit_policy_blocked");
+        object.remove("policy_acknowledged");
+        object.get_mut("queue").unwrap().as_array_mut().unwrap()[0]
+            .as_object_mut()
+            .unwrap()
+            .remove("edit_result");
+        let restored: JobState = serde_json::from_value(value).unwrap();
+        assert!(!restored.edit_in_flight);
+        assert!(!restored.edit_policy_blocked);
+        assert!(!restored.policy_acknowledged);
+        assert!(restored.queue[0].edit_result.is_none());
     }
 
     #[test]

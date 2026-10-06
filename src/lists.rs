@@ -76,6 +76,8 @@ pub fn queue_from_normalized(titles: Vec<NormalizedTitle>) -> Vec<QueueEntry> {
                 revision_id: None,
                 revision_timestamp: None,
                 replacement_count: None,
+                edit_revision_id: None,
+                edit_result: None,
             })
         })
         .collect()
