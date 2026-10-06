@@ -2829,7 +2829,7 @@ async fn queue_action_response(
         "move_down" => state.move_entry(form.index, 1),
         "remove" => state.remove_entry(form.index),
         "clear" => state.clear(),
-        "sort_remaining" => state.sort_remaining_by_title(),
+        "sort_by_title" | "sort_remaining" => state.sort_by_title(),
         "append" => {
             let titles = match source_values(&split_lines(&form.titles), "Appended pages") {
                 Ok(titles) if !titles.is_empty() => titles,

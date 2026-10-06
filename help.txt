@@ -18,7 +18,7 @@ FindSmith checks whether your account appears in that wiki's <code>enabledusers<
 
 In '''Make list''', open '''Page sources and filters'''. Add one or more sources and enter one value per line where an input is shown. Available sources are manual titles, category members, backlinks, template transclusions, wiki search, your watchlist, user contributions, links on a page, categories on a page, and redirects to a page. Select the namespaces to include and set '''Maximum pages''' (up to 500). Then select '''Build page list'''. FindSmith normalizes titles and removes duplicates.
 
-The Page list shows each page's status. Click a title to inspect that page. You can reorder or remove entries, append titles, or clear the queue. '''List tools''' can filter by title or status, sort remaining pages, compare the queue with pasted titles, and export a CSV file. Rebuilding the list starts a new review.
+The Page list shows each page's status. Click a title to inspect that page. You can reorder or remove entries, append titles, or clear the queue. '''List tools''' can filter by title or status, sort the list by title, compare the queue with pasted titles, and export a CSV file. Rebuilding the list starts a new review.
 
 == Define replacements ==
 

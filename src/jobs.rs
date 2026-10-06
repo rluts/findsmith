@@ -259,27 +259,18 @@ impl JobState {
         self.generation_message = "Queue cleared.".to_owned();
     }
 
-    pub fn sort_remaining_by_title(&mut self) {
-        let pending_positions: Vec<usize> = self
-            .queue
-            .iter()
+    pub fn sort_by_title(&mut self) {
+        let selected = self.position;
+        let mut entries: Vec<(usize, QueueEntry)> = std::mem::take(&mut self.queue)
+            .into_iter()
             .enumerate()
-            .filter_map(|(index, entry)| entry.status.is_pending().then_some(index))
             .collect();
-        let mut pending_entries: Vec<QueueEntry> = pending_positions
+        entries.sort_by_cached_key(|(_, entry)| entry.title.to_lowercase());
+        self.position = entries
             .iter()
-            .map(|&index| self.queue[index].clone())
-            .collect();
-        pending_entries.sort_by_cached_key(|entry| entry.title.to_lowercase());
-        for (index, entry) in pending_positions.iter().copied().zip(pending_entries) {
-            self.queue[index] = entry;
-        }
-        if let Some(&first_pending) = pending_positions.first() {
-            self.position = first_pending;
-            if self.status == JobStatus::Complete {
-                self.status = JobStatus::Active;
-            }
-        }
+            .position(|(original_index, _)| *original_index == selected)
+            .unwrap_or(0);
+        self.queue = entries.into_iter().map(|(_, entry)| entry).collect();
     }
 
     pub fn select(&mut self, index: usize) -> bool {
@@ -353,8 +344,11 @@ impl JobState {
             entry.status = status;
             entry.reason = reason;
         }
-        if self.position + 1 < self.queue.len() {
-            self.position += 1;
+        let next = (self.position + 1..self.queue.len())
+            .chain(0..self.position)
+            .find(|&index| self.queue[index].status.is_pending());
+        if let Some(index) = next {
+            self.position = index;
         } else {
             self.status = JobStatus::Complete;
         }
@@ -648,7 +642,7 @@ mod tests {
     }
 
     #[test]
-    fn sorting_orders_all_pending_pages_and_preserves_past_decisions() {
+    fn sorting_orders_all_pages_and_preserves_selection_and_decisions() {
         let mut state = JobState::new(vec![
             entry("Reviewed"),
             entry("Zulu"),
@@ -657,24 +651,24 @@ mod tests {
         ]);
         state.queue[0].status = QueueEntryStatus::Reviewed;
         state.position = 2;
-        state.sort_remaining_by_title();
+        state.sort_by_title();
         assert_eq!(
             state
                 .queue
                 .iter()
                 .map(|entry| entry.title.as_str())
                 .collect::<Vec<_>>(),
-            ["Reviewed", "Alpha", "Current", "Zulu"]
+            ["Alpha", "Current", "Reviewed", "Zulu"]
         );
         assert_eq!(state.position, 1);
-        assert_eq!(state.current().unwrap().title, "Alpha");
-        assert_eq!(state.queue[0].status, QueueEntryStatus::Reviewed);
+        assert_eq!(state.current().unwrap().title, "Current");
+        assert_eq!(state.queue[2].status, QueueEntryStatus::Reviewed);
     }
 
     #[test]
     fn sorting_new_list_includes_first_page() {
         let mut state = JobState::new(vec![entry("Zulu"), entry("Alpha"), entry("Bravo")]);
-        state.sort_remaining_by_title();
+        state.sort_by_title();
         assert_eq!(
             state
                 .queue
@@ -683,7 +677,57 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["Alpha", "Bravo", "Zulu"]
         );
-        assert_eq!(state.position, 0);
+        assert_eq!(state.position, 2);
+    }
+
+    #[test]
+    fn sorting_completed_review_reorders_saved_pages() {
+        let mut state = JobState::new(vec![
+            entry("User:RLuts/test4"),
+            entry("User:RLuts/test"),
+            entry("User:RLuts/test2"),
+            entry("User:RLuts/test3"),
+        ]);
+        for entry in &mut state.queue {
+            entry.status = QueueEntryStatus::Saved;
+        }
+        state.status = JobStatus::Complete;
+        state.sort_by_title();
+        assert_eq!(
+            state
+                .queue
+                .iter()
+                .map(|entry| entry.title.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "User:RLuts/test",
+                "User:RLuts/test2",
+                "User:RLuts/test3",
+                "User:RLuts/test4"
+            ]
+        );
+        assert_eq!(state.position, 3);
+        assert_eq!(state.status, JobStatus::Complete);
+        assert!(
+            state
+                .queue
+                .iter()
+                .all(|entry| entry.status == QueueEntryStatus::Saved)
+        );
+    }
+
+    #[test]
+    fn advancing_after_sort_visits_pending_pages_before_selected_page() {
+        let mut state = JobState::new(vec![entry("Zulu"), entry("Alpha"), entry("Bravo")]);
+        state.sort_by_title();
+        assert_eq!(state.position, 2);
+        state.advance(QueueEntryStatus::Reviewed, None);
+        assert_eq!(state.current().unwrap().title, "Alpha");
+        state.advance(QueueEntryStatus::Reviewed, None);
+        assert_eq!(state.current().unwrap().title, "Bravo");
+        state.advance(QueueEntryStatus::Reviewed, None);
+        assert_eq!(state.status, JobStatus::Complete);
+        assert_eq!(state.counters().pending, 0);
     }
 
     #[test]
