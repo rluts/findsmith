@@ -7,7 +7,7 @@ The application has two parts:
 - an Axum backend for Wikimedia OAuth, projects, MediaWiki requests, transformation jobs, CSRF validation, and JSON APIs;
 - a React and TypeScript frontend built with Vite and served by Axum from `frontend/dist`.
 
-OAuth credentials and access tokens stay in the backend. The frontend receives only identity metadata, project/job data, and an application CSRF token.
+OAuth client credentials stay on the backend. User OAuth tokens are carried in encrypted, HttpOnly session cookies; they are not stored in the application database or returned by its JSON APIs. Browser code receives workspace data and an application CSRF token.
 
 ## Local development
 

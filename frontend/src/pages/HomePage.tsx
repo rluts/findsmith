@@ -22,7 +22,7 @@ export function HomePage() {
           <a className="button primary" href="/workspace">Open workspace</a>
           {session.can_logout && <a className="button" href="/oauth/logout">Log out</a>}
         </> : <>
-          <p>Sign in with Wikimedia OAuth. Your password and OAuth tokens stay outside the frontend.</p>
+          <p>Sign in through Wikimedia. FindSmith never sees or stores your password. OAuth tokens are kept in an encrypted sign-in cookie, not in our database.</p>
           <a className="button primary" href="/oauth/login">Log in with Wikimedia</a>
         </>}
       </section>
