@@ -58,11 +58,15 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
   const [policyAcknowledged, setPolicyAcknowledged] = useState(false)
   const [minorEdit, setMinorEdit] = useState(false)
   const [botEdit, setBotEdit] = useState<boolean | null>(null)
+  const [editSummary, setEditSummary] = useState('')
   const renderRequest = useRef(0)
   const activeJobId = jobId ?? project?.latest_job_id ?? ''
   const reviewPath = activeJobId ? `/api/projects/${projectId}/jobs/${activeJobId}` : ''
 
   useEffect(() => { setPolicyAcknowledged(false) }, [activeJobId])
+  useEffect(() => {
+    if (review) setEditSummary(review.suggested_edit_summary)
+  }, [review?.job_id, review?.position, review?.current?.title])
 
   async function loadProject() {
     const data = await getJson<Project>(`/api/projects/${projectId}`)
@@ -215,6 +219,7 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
         proposed_text: text, base_revid: String(review.page.revision_id), start_timestamp: review.page.server_timestamp,
         policy_acknowledged: String(policyAcknowledged || review.policy_acknowledged),
         minor: String(minorEdit && review.page.can_minor), bot: String((botEdit ?? review.page.can_bot) && review.page.can_bot),
+        edit_summary: editSummary,
       }))
       await Promise.all([loadProject(), loadReview()])
     } catch (error) { setError(error instanceof Error ? error.message : 'Could not save the edit. Reload the review before retrying.') }
@@ -259,9 +264,13 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
   const comparisonOnly = comparisonTitles.filter(title => !queueTitles.has(title.toLocaleLowerCase()))
   const comparisonSet = new Set(comparisonTitles.map(title => title.toLocaleLowerCase()))
   const queueOnly = review?.queue.filter(entry => !comparisonSet.has(entry.title.toLocaleLowerCase())) ?? []
+  const summaryLength = Array.from(editSummary.trim() + (review?.edit_summary_suffix ?? '')).length
   const saveBlockers = review?.page ? [
     review.current?.status !== 'pending' && 'This page has already been processed in this review. Change the rules and apply them to start a fresh review.',
     !review.page.changed && 'This page has no proposed changes.',
+    !editSummary.trim() && 'Enter an edit summary.',
+    summaryLength > 500 && 'The edit summary must be at most 500 characters, including the Findsmith attribution.',
+    editSummary.includes('[[User:RLuts/FS|Findsmith]]') && 'The Findsmith attribution is added automatically.',
     textDirty && 'Recompute the diff after changing the proposed wikitext.',
     !(policyAcknowledged || review.policy_acknowledged) && 'Acknowledge this wiki’s editing policies for the new review.',
     !review.page.editable && 'MediaWiki reports that this page is not editable.',
@@ -308,7 +317,7 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
         <label>Project name<input value={project.project_name} maxLength={255} onChange={event => update({project_name: event.target.value})} /></label>
         <fieldset><legend>Wikimedia account</legend><p>User Groups: {session ? (session.groups.length ? session.groups.join(', ') : 'none reported') : (groupsError ? 'unavailable' : 'loading…')}</p>{session?.groups_error && <p className="error">{session.groups_error}</p>}{groupsError && <p className="error">{groupsError}</p>}</fieldset>
           {review && <>{active && (review.preparse_active ? <div className="generation"><progress value={review.preparse_cursor} max={review.total || 1} /><p>Pre-parsing {review.preparse_cursor} of {review.total} pages. Pages without changes are skipped; pages with changes remain for review.</p>{preparseError && <ErrorBox message={preparseError} />}<button className="danger" disabled={!!busy} onClick={() => reviewAction('preparse_stop')}>Stop pre-parse</button></div> : <><div className="review-buttons"><button disabled={!!busy} onClick={() => reviewAction('previous')}>Previous</button><button disabled={!!busy} onClick={() => reviewAction('skip')}>Skip</button><button className="danger" disabled={!!busy} onClick={() => reviewAction('stop')}>Stop review</button><button className="primary" disabled={!!busy} onClick={() => reviewAction('next')}>Next</button></div><p className="keyboard-hint">Shortcuts when no field is focused: N next · P previous · S skip</p><label className="preparse-option"><input type="checkbox" checked={renderEquivalence} onChange={event => setRenderEquivalence(event.target.checked)} />Also skip pages whose rendered output is unchanged (slower)</label><button disabled={!!busy} onClick={() => reviewAction('preparse_start')}>Pre-parse queue</button></>)}{review.status === 'stopped' && !review.edit_in_flight && !review.edit_policy_blocked && <button className="primary resume-review" disabled={!!busy} onClick={() => reviewAction('resume')}>Resume review</button>}{review.current?.reason && <p className="notice">{review.current.reason}</p>}</>}
-          {active && review?.page && !review.preparse_active && <fieldset className="edit-controls"><legend>Save to Wikimedia</legend><p>Edit summary: <strong>Autoreplacement</strong></p><label><input type="checkbox" checked={policyAcknowledged || review.policy_acknowledged} disabled={review.policy_acknowledged} onChange={event => setPolicyAcknowledged(event.target.checked)} /> I will follow this wiki's editing policies.</label><label><input type="checkbox" checked={minorEdit && review.page.can_minor} disabled={!review.page.can_minor} onChange={event => setMinorEdit(event.target.checked)} /> Minor edit</label><label><input type="checkbox" checked={(botEdit ?? review.page.can_bot) && review.page.can_bot} disabled={!review.page.can_bot} onChange={event => setBotEdit(event.target.checked)} /> Bot edit</label><button className="primary" disabled={!!busy || saveBlockers.length > 0} onClick={savePage}>Save</button>{saveBlockers.length > 0 && <ul className="save-blockers" aria-live="polite">{saveBlockers.map(reason => <li key={reason}>{reason}</li>)}</ul>}<p>“Next” records the review without editing Wikimedia.</p></fieldset>}
+          {active && review?.page && !review.preparse_active && <fieldset className="edit-controls"><legend>Save to Wikimedia</legend><div className="edit-summary-control"><label htmlFor="edit-summary">Edit summary</label><input id="edit-summary" value={editSummary} onChange={event => setEditSummary(event.target.value)} /><span className="edit-summary-suffix">{review.edit_summary_suffix.trimStart()}</span><small>{summaryLength} / 500 characters including the fixed attribution</small></div><label><input type="checkbox" checked={policyAcknowledged || review.policy_acknowledged} disabled={review.policy_acknowledged} onChange={event => setPolicyAcknowledged(event.target.checked)} /> I will follow this wiki's editing policies.</label><label><input type="checkbox" checked={minorEdit && review.page.can_minor} disabled={!review.page.can_minor} onChange={event => setMinorEdit(event.target.checked)} /> Minor edit</label><label><input type="checkbox" checked={(botEdit ?? review.page.can_bot) && review.page.can_bot} disabled={!review.page.can_bot} onChange={event => setBotEdit(event.target.checked)} /> Bot edit</label><button className="primary" disabled={!!busy || saveBlockers.length > 0} onClick={savePage}>Save</button>{saveBlockers.length > 0 && <ul className="save-blockers" aria-live="polite">{saveBlockers.map(reason => <li key={reason}>{reason}</li>)}</ul>}<p>“Next” records the review without editing Wikimedia.</p></fieldset>}
         <div className="rule-list">{project.rules.map((rule, index) => <article className={`rule-card ${rule.operation?.startsWith('category_') || rule.operation?.startsWith('template_') ? 'structural-rule' : ''}`} key={index}>
           <div className="rule-head"><label><input type="checkbox" checked={rule.enabled} onChange={event => { const rules = [...project.rules]; rules[index] = {...rule, enabled: event.target.checked}; update({rules}) }} /> {rule.name || `Rule ${index + 1}`} <small>· {rule.operation?.startsWith('category_') ? 'category' : rule.operation?.startsWith('template_') ? 'template' : 'text'}</small></label><span className="row-actions"><button disabled={index === 0} onClick={() => update({rules: move(project.rules, index, -1)})}>↑</button><button disabled={index === project.rules.length - 1} onClick={() => update({rules: move(project.rules, index, 1)})}>↓</button><button onClick={() => update({rules: project.rules.filter((_, item) => item !== index)})}>×</button></span></div>
           <label>Name<input value={rule.name} maxLength={255} placeholder="Optional in this project" onChange={event => { const rules = [...project.rules]; rules[index] = {...rule, name: event.target.value}; update({rules}) }} /></label>

@@ -196,6 +196,8 @@ struct ReviewResponse<'a> {
     skipped: usize,
     unavailable: usize,
     rule_count: usize,
+    suggested_edit_summary: String,
+    edit_summary_suffix: &'static str,
     generation_message: &'a str,
     preparse_active: bool,
     preparse_cursor: usize,
@@ -361,6 +363,84 @@ pub struct JobActionForm {
     minor: bool,
     #[serde(default)]
     bot: bool,
+    #[serde(default)]
+    edit_summary: Option<String>,
+}
+
+const EDIT_SUMMARY_SUFFIX: &str = " using [[User:RLuts/FS|Findsmith]]";
+const EDIT_SUMMARY_FALLBACK: &str = "Autoreplacement";
+const MAX_EDIT_SUMMARY_CHARS: usize = 500;
+
+fn suggested_edit_summary(rules: &[ReplacementRule]) -> String {
+    let candidate = rules
+        .iter()
+        .find(|rule| rule.enabled)
+        .map(|rule| match rule.operation {
+            RuleOperation::Replace => {
+                let replacement = if rule.replace.is_empty() {
+                    "(removed)"
+                } else {
+                    &rule.replace
+                };
+                format!("Autoreplacement: {} -> {replacement}", rule.find)
+            }
+            RuleOperation::Append => "Appended wikitext".to_owned(),
+            RuleOperation::Prepend => "Prepended wikitext".to_owned(),
+            RuleOperation::CategoryAdd => format!("Added category {}", rule.replace),
+            RuleOperation::CategoryRemove => format!("Removed category {}", rule.find),
+            RuleOperation::CategoryReplace => {
+                format!("Replaced category {} with {}", rule.find, rule.replace)
+            }
+            RuleOperation::TemplateRename => {
+                format!("Renamed template {} to {}", rule.find, rule.replace)
+            }
+            RuleOperation::TemplateParameterSet => {
+                let value = if rule.replace.is_empty() {
+                    "(empty)"
+                } else {
+                    &rule.replace
+                };
+                format!(
+                    "Set parameter {} in template {} to {value}",
+                    rule.parameter, rule.find
+                )
+            }
+            RuleOperation::TemplateParameterRemove => {
+                format!(
+                    "Removed parameter {} from template {}",
+                    rule.parameter, rule.find
+                )
+            }
+        });
+    candidate
+        .filter(|prefix| {
+            !prefix.chars().any(char::is_control)
+                && !prefix.contains("[[User:RLuts/FS|Findsmith]]")
+                && (prefix.chars().count() + EDIT_SUMMARY_SUFFIX.chars().count()
+                    <= MAX_EDIT_SUMMARY_CHARS)
+        })
+        .unwrap_or_else(|| EDIT_SUMMARY_FALLBACK.to_owned())
+}
+
+fn complete_edit_summary(prefix: &str) -> Result<String, &'static str> {
+    let prefix = prefix.trim();
+    if prefix.is_empty() {
+        return Err("Enter an edit summary before saving.");
+    }
+    if prefix.contains("[[User:RLuts/FS|Findsmith]]") {
+        return Err(
+            "The Findsmith attribution is added automatically; do not include it in the editable summary.",
+        );
+    }
+    if prefix.chars().any(char::is_control) {
+        return Err("The edit summary must be one line.");
+    }
+    if prefix.chars().count() + EDIT_SUMMARY_SUFFIX.chars().count() > MAX_EDIT_SUMMARY_CHARS {
+        return Err(
+            "The edit summary, including the required Findsmith attribution, must be at most 500 characters.",
+        );
+    }
+    Ok(format!("{prefix}{EDIT_SUMMARY_SUFFIX}"))
 }
 
 #[derive(Deserialize)]
@@ -1962,6 +2042,8 @@ async fn review_response(
         skipped: counters.skipped,
         unavailable: counters.unavailable,
         rule_count: config.rules.len(),
+        suggested_edit_summary: suggested_edit_summary(&config.rules),
+        edit_summary_suffix: EDIT_SUMMARY_SUFFIX,
         generation_message: &state.generation_message,
         preparse_active: state.preparse_active,
         preparse_cursor: state.preparse_cursor,
@@ -2066,6 +2148,7 @@ async fn save_current_page(
     wiki_url: &str,
     state_version: i64,
     state: &mut JobState,
+    config: &JobConfigV1,
     form: &JobActionForm,
     back_href: &str,
 ) -> Response {
@@ -2116,6 +2199,17 @@ async fn save_current_page(
             back_href,
         );
     }
+    let summary_prefix = form
+        .edit_summary
+        .as_deref()
+        .map(str::to_owned)
+        .unwrap_or_else(|| suggested_edit_summary(&config.rules));
+    let summary = match complete_edit_summary(&summary_prefix) {
+        Ok(summary) => summary,
+        Err(message) => {
+            return error_page(StatusCode::BAD_REQUEST, "Cannot save", message, back_href);
+        }
+    };
     let title = state
         .current()
         .map(|entry| entry.title.clone())
@@ -2295,6 +2389,7 @@ async fn save_current_page(
         snapshot.revision_id,
         &snapshot.revision_timestamp,
         start_timestamp,
+        &summary,
         form.minor,
         form.bot,
     )
@@ -2443,6 +2538,7 @@ async fn job_action_response(
             &job.wiki_url,
             job.state_version,
             &mut state,
+            &config,
             &form,
             &back_href,
         )
@@ -3627,6 +3723,114 @@ fn error_page_without_rendering() -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edit_summary_uses_first_enabled_rule_and_fixed_attribution() {
+        let rules = vec![
+            ReplacementRule {
+                enabled: false,
+                find: "ignored".to_owned(),
+                replace: "ignored".to_owned(),
+                ..Default::default()
+            },
+            ReplacementRule {
+                find: "old".to_owned(),
+                replace: "new".to_owned(),
+                ..Default::default()
+            },
+        ];
+        let suggested = suggested_edit_summary(&rules);
+        assert_eq!(suggested, "Autoreplacement: old -> new");
+        assert_eq!(
+            complete_edit_summary(&suggested).unwrap(),
+            "Autoreplacement: old -> new using [[User:RLuts/FS|Findsmith]]"
+        );
+        assert_eq!(
+            complete_edit_summary("Custom reason").unwrap(),
+            "Custom reason using [[User:RLuts/FS|Findsmith]]"
+        );
+    }
+
+    #[test]
+    fn edit_summary_describes_each_rule_operation() {
+        let cases = [
+            (RuleOperation::Append, "Appended wikitext"),
+            (RuleOperation::Prepend, "Prepended wikitext"),
+            (RuleOperation::CategoryAdd, "Added category New"),
+            (RuleOperation::CategoryRemove, "Removed category Old"),
+            (
+                RuleOperation::CategoryReplace,
+                "Replaced category Old with New",
+            ),
+            (RuleOperation::TemplateRename, "Renamed template Old to New"),
+            (
+                RuleOperation::TemplateParameterSet,
+                "Set parameter key in template Old to New",
+            ),
+            (
+                RuleOperation::TemplateParameterRemove,
+                "Removed parameter key from template Old",
+            ),
+        ];
+        for (operation, expected) in cases {
+            let rule = ReplacementRule {
+                operation,
+                find: "Old".to_owned(),
+                replace: "New".to_owned(),
+                parameter: "key".to_owned(),
+                ..Default::default()
+            };
+            assert_eq!(suggested_edit_summary(&[rule]), expected);
+        }
+        let rules = vec![
+            ReplacementRule {
+                operation: RuleOperation::CategoryAdd,
+                replace: "New".to_owned(),
+                ..Default::default()
+            },
+            ReplacementRule {
+                find: "Old".to_owned(),
+                replace: "New".to_owned(),
+                ..Default::default()
+            },
+        ];
+        assert_eq!(suggested_edit_summary(&rules), "Added category New");
+        let empty_value = [ReplacementRule {
+            operation: RuleOperation::TemplateParameterSet,
+            find: "Example".to_owned(),
+            parameter: "key".to_owned(),
+            ..Default::default()
+        }];
+        assert_eq!(
+            suggested_edit_summary(&empty_value),
+            "Set parameter key in template Example to (empty)"
+        );
+    }
+
+    #[test]
+    fn edit_summary_falls_back_when_rule_text_is_too_long() {
+        let rules = vec![ReplacementRule {
+            find: "a".repeat(500),
+            replace: "b".to_owned(),
+            ..Default::default()
+        }];
+        assert_eq!(suggested_edit_summary(&rules), "Autoreplacement");
+        let multiline = [ReplacementRule {
+            find: "a\nb".to_owned(),
+            replace: "c".to_owned(),
+            ..Default::default()
+        }];
+        assert_eq!(suggested_edit_summary(&multiline), "Autoreplacement");
+        assert!(complete_edit_summary(&"a".repeat(500)).is_err());
+        let allowed = "ї".repeat(500 - EDIT_SUMMARY_SUFFIX.chars().count());
+        assert_eq!(
+            complete_edit_summary(&allowed).unwrap().chars().count(),
+            500
+        );
+        assert!(complete_edit_summary(&format!("{allowed}ї")).is_err());
+        assert!(complete_edit_summary("custom [[User:RLuts/FS|Findsmith]]").is_err());
+        assert!(complete_edit_summary("custom\nreason").is_err());
+    }
 
     #[test]
     fn source_parser_adds_missing_mediawiki_prefixes() {

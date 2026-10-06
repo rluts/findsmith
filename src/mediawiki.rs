@@ -487,6 +487,7 @@ pub async fn edit_existing_page(
     revision_id: u64,
     revision_timestamp: &str,
     start_timestamp: &str,
+    summary: &str,
     minor: bool,
     bot: bool,
 ) -> Result<u64, mwapi::Error> {
@@ -521,7 +522,7 @@ pub async fn edit_existing_page(
         ("action".to_owned(), "edit".to_owned()),
         ("title".to_owned(), title.to_owned()),
         ("text".to_owned(), text.to_owned()),
-        ("summary".to_owned(), "Autoreplacement".to_owned()),
+        ("summary".to_owned(), summary.to_owned()),
         ("assertuser".to_owned(), username.to_owned()),
         ("baserevid".to_owned(), revision_id.to_string()),
         ("basetimestamp".to_owned(), revision_timestamp.to_owned()),
