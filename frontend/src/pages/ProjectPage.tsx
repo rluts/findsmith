@@ -46,6 +46,7 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
   const [error, setError] = useState('')
   const [busy, setBusy] = useState('')
   const [previewMode, setPreviewMode] = useState<'diff' | 'preview'>('diff')
+  const [rulesTab, setRulesTab] = useState<'rules' | 'status'>('rules')
   const [rendered, setRendered] = useState<{ projectId: string; requestedTitle: string; requestedText: string; data: RenderedPreviewData } | null>(null)
   const [renderBusy, setRenderBusy] = useState<string | null>(null)
   const [renderError, setRenderError] = useState<{ title: string; message: string } | null>(null)
@@ -273,7 +274,8 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
       </section>
 
       <section className="pane rules-pane">
-        <div className="tabs"><span className="active">Rules</span><span className="inactive" aria-disabled="true">Options</span></div>
+        <div className="tabs"><button type="button" className={rulesTab === 'rules' || !review ? 'active' : ''} onClick={() => setRulesTab('rules')}>Rules</button><span className="inactive" aria-disabled="true">Options</span>{review && <button type="button" className={rulesTab === 'status' ? 'active' : ''} onClick={() => setRulesTab('status')}>Status</button>}</div>
+        {(!review || rulesTab === 'rules') && <>
         <label>Project name<input value={project.project_name} maxLength={255} onChange={event => update({project_name: event.target.value})} /></label>
         <fieldset><legend>Wikimedia account</legend><p>User Groups: {session ? (session.groups.length ? session.groups.join(', ') : 'none reported') : (groupsError ? 'unavailable' : 'loading…')}</p>{session?.groups_error && <p className="error">{session.groups_error}</p>}{groupsError && <p className="error">{groupsError}</p>}</fieldset>
         {review && <>{active && (review.preparse_active ? <div className="generation"><progress value={review.preparse_cursor} max={review.total || 1} /><p>Pre-parsing {review.preparse_cursor} of {review.total} pages. Pages without changes are skipped; pages with changes remain for review.</p>{preparseError && <ErrorBox message={preparseError} />}<button className="danger" disabled={!!busy} onClick={() => reviewAction('preparse_stop')}>Stop pre-parse</button></div> : <><div className="review-buttons"><button disabled={!!busy} onClick={() => reviewAction('previous')}>Previous</button><button disabled={!!busy} onClick={() => reviewAction('skip')}>Skip</button><button className="danger" disabled={!!busy} onClick={() => reviewAction('stop')}>Stop review</button><button className="primary" disabled={!!busy} onClick={() => reviewAction('next')}>Next</button></div><p className="keyboard-hint">Shortcuts when no field is focused: N next · P previous · S skip</p><label className="preparse-option"><input type="checkbox" checked={renderEquivalence} onChange={event => setRenderEquivalence(event.target.checked)} />Also skip pages whose rendered output is unchanged (slower)</label><button disabled={!!busy} onClick={() => reviewAction('preparse_start')}>Pre-parse queue</button></>)}{review.status === 'stopped' && <button className="primary resume-review" disabled={!!busy} onClick={() => reviewAction('resume')}>Resume review</button>}<p className="read-only">Review only: “Next” records the result but does not edit Wikimedia.</p></>}
@@ -302,9 +304,11 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
         </fieldset>
         {configurationDirty && <p className="unsaved-note">Configuration changed. Apply rules to refresh the current review.</p>}
         <div className="command-stack"><button className="primary" disabled={!!busy} onClick={() => submitProject(`/api/projects/${projectId}`, review ? 'Applying rules…' : 'Saving…', Boolean(review))}>{review ? 'Apply rules' : 'Save configuration'}</button><button className="danger" onClick={removeProject}>Delete project</button></div>
-        {review && <><fieldset><legend>Review progress</legend><dl><dt>Status</dt><dd>{review.status}</dd><dt>Pending</dt><dd>{review.pending}</dd><dt>Reviewed</dt><dd>{review.reviewed}</dd><dt>Skipped</dt><dd>{review.skipped}</dd><dt>Unavailable</dt><dd>{review.unavailable}</dd></dl></fieldset>
-          <details className="decision-history"><summary>Decision history</summary>{review.queue.filter(entry => entry.status !== 'pending').length ? <ol>{review.queue.filter(entry => entry.status !== 'pending').map((entry, index) => <li key={`${entry.title}-${index}`}><strong>{entry.title}</strong> — {entry.status}{entry.reason ? `: ${entry.reason}` : ''}{entry.replacement_count !== null ? ` · ${entry.replacement_count} replacements` : ''}</li>)}</ol> : <p className="empty">No decisions recorded yet.</p>}</details>
-          {review.current && <fieldset><legend>Current page</legend><strong>{review.current.title}</strong><p>Namespace: {review.current.namespace ?? '—'}</p><p>{review.current.reason}</p></fieldset>}</>}
+        </>}
+        {review && rulesTab === 'status' && <>
+          <fieldset><legend>Review progress</legend><dl><dt>Status</dt><dd>{review.status}</dd><dt>Pending</dt><dd>{review.pending}</dd><dt>Reviewed</dt><dd>{review.reviewed}</dd><dt>Skipped</dt><dd>{review.skipped}</dd><dt>Unavailable</dt><dd>{review.unavailable}</dd></dl></fieldset>
+          <fieldset className="decision-history"><legend>Decision history</legend>{review.queue.filter(entry => entry.status !== 'pending').length ? <ol>{review.queue.filter(entry => entry.status !== 'pending').map((entry, index) => <li key={`${entry.title}-${index}`}><strong>{entry.title}</strong> — {entry.status}{entry.reason ? `: ${entry.reason}` : ''}{entry.replacement_count !== null ? ` · ${entry.replacement_count} replacements` : ''}</li>)}</ol> : <p className="empty">No decisions recorded yet.</p>}</fieldset>
+        </>}
         {busy && <p className="busy">{busy}</p>}
       </section>
 
@@ -314,7 +318,7 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
           {review.page_error && <ErrorBox message={review.page_error} />}
           {review.page ? <>
             <div className="page-heading"><a href={review.page.full_url} target="_blank" rel="noreferrer">{review.current?.title ?? 'Current revision'}</a><strong title="Comparison with the current wiki revision; no wiki edit has been made.">{review.page.changed ? 'Proposed changes' : 'No proposed changes'}</strong></div>
-            <div className="meta-strip"><span>Revision {review.page.revision_id}</span><span>{review.page.content_model}</span><span>{review.page.editable ? 'Editable' : 'Not editable'}</span><span>Protection: {review.page.protection}</span></div>
+            <div className="meta-strip"><span>Revision {review.page.revision_id}</span><span>NS {review.current?.namespace ?? '—'}</span><span>{review.page.content_model}</span><span>{review.page.editable ? 'Editable' : 'Not editable'}</span><span>Protection: {review.page.protection}</span></div>
             <details className="wikitext-accordion"><summary>Proposed wikitext{textDirty ? ' · modified' : ''}</summary><textarea className="editor" value={text} maxLength={4194304} onChange={event => { setText(event.target.value); setTextDirty(true) }} /><button onClick={recompute} disabled={!!busy}>Recompute diff</button></details>
             <div className="view-switch"><button className={previewMode === 'diff' ? 'active' : ''} onClick={() => setPreviewMode('diff')}>Diff</button><button className={previewMode === 'preview' ? 'active' : ''} onClick={() => showRendered(review.current?.title ?? '', text)}>Preview</button></div>
             {previewMode === 'preview' ? renderPanel() : <><div className="rule-counts">{review.page.rules.map((rule, index) => <span className={rule.changed ? 'changed' : ''} key={index}>Rule {index + 1}: {rule.count}</span>)}</div>{review.page.changed ? <><SideDiff lines={review.page.side_by_side_diff} /><details><summary>Unified diff</summary><UnifiedDiff lines={review.page.unified_diff} /></details></> : <div className="no-diff">No diff — the proposed wikitext matches the current revision.</div>}</>}
