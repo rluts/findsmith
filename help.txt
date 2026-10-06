@@ -42,4 +42,6 @@ The '''Status''' tab shows review progress and decision history, including saved
 
 == Limitations ==
 
-FindSmith supports a Wikimedia wiki only after someone adds it to the shared list. To add it, the wiki must have a <code>Project:AutoWikiBrowser/CheckPageJSON</code> page protected from editing by non-admins, using the JSON content model and containing <code>enabledusers</code> and <code>enabledbots</code> lists. To save edits, your account must appear in one of those lists and have the required edit rights on that wiki. You can still review pages if your account is not listed, but you cannot save them. There is no unattended editing; each '''Save''' submits at most one reviewed page. The interface is currently in English; this help page is also available in Ukrainian.
+FindSmith supports a Wikimedia wiki only after someone adds it to the shared list. To add it, the wiki must have a <code>Project:AutoWikiBrowser/CheckPageJSON</code> page protected from editing by non-admins, using the JSON content model and containing <code>enabledusers</code> and <code>enabledbots</code> lists. To save edits, your account must appear in one of those lists and have the required edit rights on that wiki. You can still review pages if your account is not listed, but you cannot save them. There is no unattended editing; each '''Save''' submits at most one reviewed page. The interface is currently in English.
+
+[[uk:Користувач:RLuts/FindSmith/Help]]
