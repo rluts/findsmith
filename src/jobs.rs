@@ -349,19 +349,26 @@ impl JobState {
     }
 
     pub fn advance(&mut self, status: QueueEntryStatus, reason: Option<String>) {
+        let after_save = status == QueueEntryStatus::Saved;
         if let Some(entry) = self.queue.get_mut(self.position)
             && (entry.status.is_pending()
-                || (status == QueueEntryStatus::Saved
-                    && entry.status == QueueEntryStatus::Reviewed))
+                || (after_save && entry.status == QueueEntryStatus::Reviewed))
         {
             entry.status = status;
             entry.reason = reason;
         }
         let next = (self.position + 1..self.queue.len())
             .chain(0..self.position)
-            .find(|&index| self.queue[index].status.is_pending());
+            .find(|&index| {
+                let entry = &self.queue[index];
+                entry.status.is_pending()
+                    || (after_save && entry.status == QueueEntryStatus::Reviewed)
+            });
         if let Some(index) = next {
             self.position = index;
+            if after_save && !self.queue.iter().any(|entry| entry.status.is_pending()) {
+                self.status = JobStatus::Complete;
+            }
         } else {
             self.status = JobStatus::Complete;
         }
@@ -621,14 +628,43 @@ mod tests {
         assert_eq!(state.status, JobStatus::Complete);
         assert_eq!(state.queue[0].status, QueueEntryStatus::Saved);
         assert_eq!(state.counters().saved, 1);
-        assert!(!state.can_save_current());
-        assert!(state.select(1));
+        assert_eq!(state.position, 1);
         assert!(state.can_save_current());
+        state.advance(QueueEntryStatus::Saved, None);
+        assert_eq!(state.queue[1].status, QueueEntryStatus::Saved);
+        assert!(!state.can_save_current());
+        state.queue[1].status = QueueEntryStatus::Reviewed;
         state.status = JobStatus::Stopped;
         assert!(!state.can_save_current());
         state.status = JobStatus::Complete;
         state.queue[1].status = QueueEntryStatus::Skipped;
         assert!(!state.can_save_current());
+    }
+
+    #[test]
+    fn saving_moves_to_next_reviewed_or_pending_page_and_wraps() {
+        let mut state = JobState::new(vec![
+            entry("Reviewed first"),
+            entry("Skipped"),
+            entry("Pending"),
+            entry("Reviewed last"),
+        ]);
+        state.queue[0].status = QueueEntryStatus::Reviewed;
+        state.queue[1].status = QueueEntryStatus::Skipped;
+        state.queue[3].status = QueueEntryStatus::Reviewed;
+        state.advance(QueueEntryStatus::Saved, None);
+        assert_eq!(state.position, 2);
+        assert_eq!(state.status, JobStatus::Active);
+        state.advance(QueueEntryStatus::Saved, None);
+        assert_eq!(state.position, 3);
+        assert_eq!(state.status, JobStatus::Complete);
+        assert!(state.can_save_current());
+
+        state.queue[0].status = QueueEntryStatus::Reviewed;
+        state.advance(QueueEntryStatus::Saved, None);
+        assert_eq!(state.position, 0);
+        assert_eq!(state.status, JobStatus::Complete);
+        assert_eq!(state.queue[3].status, QueueEntryStatus::Saved);
     }
 
     #[test]
