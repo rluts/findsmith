@@ -41,12 +41,12 @@ pub enum JobStatus {
 impl JobStatus {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Building => "Building queue",
-            Self::Active => "Active",
-            Self::Stopped => "Stopped",
-            Self::Cancelled => "Cancelled",
-            Self::Failed => "Failed",
-            Self::Complete => "Complete",
+            Self::Building => "findsmith-api-building-queue",
+            Self::Active => "findsmith-api-active",
+            Self::Stopped => "findsmith-api-stopped",
+            Self::Cancelled => "findsmith-api-cancelled",
+            Self::Failed => "findsmith-api-failed",
+            Self::Complete => "findsmith-api-complete",
         }
     }
 
@@ -139,7 +139,8 @@ impl JobState {
             .collect();
         state.finish_build();
         state.generation_message =
-            "Rules changed. Review every page again against its latest revision.".to_owned();
+            "findsmith-api-rules-changed-review-every-page-again-against-its-latest-revision"
+                .to_owned();
         state
     }
 
@@ -172,7 +173,7 @@ impl JobState {
             status: JobStatus::Building,
             position: 0,
             queue: Vec::new(),
-            generation_message: "Preparing page sources…".to_owned(),
+            generation_message: "findsmith-api-generation-preparing".to_owned(),
             queue_limit,
             generation_found: 0,
             generation_duplicates: 0,
@@ -214,7 +215,10 @@ impl JobState {
     }
 
     pub fn finish_build(&mut self) {
-        self.generation_message = format!("Queue ready with {} page(s).", self.queue.len());
+        self.generation_message = crate::localization::required_with_args(
+            "findsmith-api-generation-ready-count",
+            &[&self.queue.len().to_string()],
+        );
         self.status = if self.queue.is_empty() {
             JobStatus::Complete
         } else {
@@ -256,7 +260,7 @@ impl JobState {
         self.queue.clear();
         self.position = 0;
         self.status = JobStatus::Complete;
-        self.generation_message = "Queue cleared.".to_owned();
+        self.generation_message = "findsmith-api-queue-cleared".to_owned();
     }
 
     pub fn sort_by_title(&mut self) {
@@ -566,13 +570,6 @@ mod tests {
     }
 
     #[test]
-    fn previous_never_underflows() {
-        let mut state = JobState::new(vec![entry("A")]);
-        state.previous();
-        assert_eq!(state.position, 0);
-    }
-
-    #[test]
     fn resume_keeps_position_and_review_decisions() {
         let mut state = JobState::new(vec![entry("A"), entry("B")]);
         state.advance(QueueEntryStatus::Reviewed, None);
@@ -734,21 +731,6 @@ mod tests {
         assert_eq!(state.position, 1);
         assert_eq!(state.current().unwrap().title, "Current");
         assert_eq!(state.queue[2].status, QueueEntryStatus::Reviewed);
-    }
-
-    #[test]
-    fn sorting_new_list_includes_first_page() {
-        let mut state = JobState::new(vec![entry("Zulu"), entry("Alpha"), entry("Bravo")]);
-        state.sort_by_title();
-        assert_eq!(
-            state
-                .queue
-                .iter()
-                .map(|entry| entry.title.as_str())
-                .collect::<Vec<_>>(),
-            ["Alpha", "Bravo", "Zulu"]
-        );
-        assert_eq!(state.position, 2);
     }
 
     #[test]

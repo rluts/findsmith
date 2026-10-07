@@ -9,6 +9,7 @@ mod diff;
 mod entities;
 mod jobs;
 mod lists;
+mod localization;
 mod masking;
 mod mediawiki;
 mod migration;

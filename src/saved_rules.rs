@@ -17,7 +17,7 @@ pub struct SavedRuleView {
 pub fn validate(rule: &ReplacementRule) -> Result<(), String> {
     let name = rule.name.trim();
     if name.is_empty() || name.chars().count() > 255 {
-        return Err("Rule name must contain between 1 and 255 characters.".to_owned());
+        return Err("findsmith-api-rule-name-must-contain-between-1-and-255-characters".to_owned());
     }
     RuleEngine::compile(std::slice::from_ref(rule)).map_err(|error| error.to_string())?;
     Ok(())
@@ -61,7 +61,7 @@ pub async fn save(
             .one(database)
             .await
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| "Saved rule not found.".to_owned())?;
+            .ok_or_else(|| "findsmith-api-saved-rule-unavailable".to_owned())?;
         let mut active: saved_rule::ActiveModel = row.into();
         active.name = Set(rule.name.clone());
         active.rule_json = Set(value);

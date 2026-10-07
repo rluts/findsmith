@@ -100,21 +100,6 @@ impl PageSourceKind {
             Self::RedirectsToPage => "redirects_to_page",
         }
     }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Manual => "Manual titles",
-            Self::Category => "Category",
-            Self::Backlinks => "Backlinks",
-            Self::Transclusions => "Template transclusions",
-            Self::Search => "Wiki search",
-            Self::Watchlist => "My watchlist",
-            Self::Contributions => "User contributions",
-            Self::LinksOnPage => "Links on a page",
-            Self::CategoriesOnPage => "Categories on a page",
-            Self::RedirectsToPage => "Redirects to a page",
-        }
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
