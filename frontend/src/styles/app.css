@@ -10,6 +10,7 @@ button.primary, .button.primary { background: linear-gradient(#f8ffff, #b9efdd);
 button.danger { background: linear-gradient(#fff, #f1ceca); border-color: #a14c43; }
 input, select, textarea { width: 100%; border: 1px solid #929292; background: white; padding: 5px 6px; }
 textarea { resize: vertical; }
+.language-choice { display: inline-flex; align-items: center; gap: 5px; }.language-choice select { width: auto; padding: 1px 4px; }
 label { display: block; margin: 7px 0; }
 label > input, label > select, label > textarea { margin-top: 3px; }
 fieldset { border: 1px solid #aaa; margin: 10px 0; padding: 8px; }
@@ -18,7 +19,7 @@ a { color: #0645ad; }
 h1, h2 { font-size: 16px; margin: 0 0 12px; }
 .app-shell { min-height: 100vh; display: flex; flex-direction: column; border: 1px solid #6b7175; background: #ececec; }
 .titlebar { height: 29px; padding: 5px 9px; color: white; background: linear-gradient(90deg, #0862a1, #74a8c9); text-shadow: 0 1px #345; }
-.app-icon { color: #89e66d; margin-right: 7px; }
+.app-icon { color: #89e66d; margin-inline-end: 7px; }
 .menubar { height: 29px; display: flex; align-items: center; gap: 25px; padding: 0 12px; background: #f3f3f3; border-bottom: 1px solid #aaa; }
 .menubar a, .menubar span { color: #111; text-decoration: none; }
 .menubar a:first-letter, .menubar span:first-letter { text-decoration: underline; }
@@ -29,7 +30,7 @@ h1, h2 { font-size: 16px; margin: 0 0 12px; }
 main { flex: 1; }
 .panel, .pane { background: #eee; border: 1px solid #9d9d9d; box-shadow: inset 0 0 0 1px white; padding: 10px; }
 .home { display: grid; grid-template-columns: 1fr; gap: 10px; padding: 28px; max-width: 760px; width: 100%; margin: auto; text-align: center; }
-.welcome { padding: 28px; }.welcome h1 { font-size: 36px; }.lead { font-size: 18px; line-height: 1.5; max-width: 610px; margin-left: auto; margin-right: auto; }
+.welcome { padding: 28px; }.welcome h1 { font-size: 36px; }.lead { font-size: 18px; line-height: 1.5; max-width: 610px; margin-inline: auto; }
 .notice { border: 1px solid #c99322; background: #fff9d6; padding: 12px; margin-top: 24px; }
 .app-shell > .notice { margin: 4px; }
 .login { padding: 20px; }.login .button { display: block; max-width: 350px; margin: 9px auto 0; }.online { color: #176b34; }
@@ -39,7 +40,7 @@ main { flex: 1; }
 .project-row:hover { background: #d8edff; }.compact-form { align-self: start; }.compact-form button { width: 100%; margin-top: 8px; }
 .awb-workspace { display: grid; grid-template-columns: minmax(240px, 25%) minmax(260px, 27%) minmax(420px, 48%); gap: 4px; padding: 4px; min-height: calc(100vh - 112px); }
 .pane { min-width: 0; overflow: auto; }.pane-title { font-weight: 600; font-size: 14px; padding-bottom: 6px; display: flex; justify-content: space-between; }
-.tabs { display: flex; height: 27px; align-items: end; border-bottom: 1px solid #888; margin: -7px -7px 8px; padding-left: 3px; overflow: hidden; }
+.tabs { display: flex; height: 27px; align-items: end; border-bottom: 1px solid #888; margin: -7px -7px 8px; padding-inline-start: 3px; overflow: hidden; }
 .tabs span, .tabs button { white-space: nowrap; border: 1px solid #aaa; border-bottom: 0; border-radius: 0; background: #ddd; color: inherit; padding: 5px 8px; height: 25px; font: inherit; }
 .tabs button { cursor: pointer; }
 .tabs .active { background: white; height: 27px; font-weight: 600; }

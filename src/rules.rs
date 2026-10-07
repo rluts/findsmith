@@ -34,67 +34,78 @@ pub enum RuleError {
 
 impl fmt::Display for RuleError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let write_message = |formatter: &mut fmt::Formatter<'_>, key: &str, args: &[&str]| {
+            formatter.write_str(
+                &crate::localization::message_with_args(key, args)
+                    .expect("English rule error message exists"),
+            )
+        };
         match self {
-            Self::TooManyRules => write!(formatter, "At most {MAX_RULES} rules are allowed."),
-            Self::EmptyPattern { index } => {
-                write!(formatter, "Rule {} must have a find value.", index + 1)
-            }
-            Self::EmptyValue { index } => {
-                write!(
-                    formatter,
-                    "Rule {} must have an operation value.",
-                    index + 1
-                )
-            }
-            Self::InvalidCategory { index } => {
-                write!(
-                    formatter,
-                    "Rule {} has an invalid category name.",
-                    index + 1
-                )
-            }
-            Self::InvalidGroup { index } => write!(
+            Self::TooManyRules => write_message(
                 formatter,
-                "Rule {} needs a group name and text condition.",
-                index + 1
+                "findsmith-api-rule-limit",
+                &[&MAX_RULES.to_string()],
             ),
-            Self::ConflictingGroup { index } => write!(
+            Self::EmptyPattern { index } => write_message(
                 formatter,
-                "Rule {} has a different condition from other rules in its group.",
-                index + 1
+                "findsmith-api-rule-find-required",
+                &[&(index + 1).to_string()],
             ),
-            Self::InvalidTemplate { index } => write!(
+            Self::EmptyValue { index } => write_message(
                 formatter,
-                "Rule {} needs a valid template name and parameter name.",
-                index + 1
+                "findsmith-api-rule-value-required",
+                &[&(index + 1).to_string()],
             ),
-            Self::StructuralRequiresWiki => {
-                formatter.write_str("Template rules require the selected wiki's Parsoid service.")
-            }
-            Self::PatternTooLarge { index } => {
-                write!(
-                    formatter,
-                    "The find value in rule {} is too large.",
-                    index + 1
-                )
-            }
-            Self::ReplacementTooLarge { index } => write!(
+            Self::InvalidCategory { index } => write_message(
                 formatter,
-                "The replacement value in rule {} is too large.",
-                index + 1
+                "findsmith-api-rule-category-invalid",
+                &[&(index + 1).to_string()],
             ),
-            Self::InvalidRegex { index, message } => {
-                write!(
-                    formatter,
-                    "Rule {} has an invalid regex: {message}",
-                    index + 1
-                )
-            }
-            Self::InputTooLarge => formatter.write_str("The input text is too large."),
-            Self::OutputTooLarge => formatter.write_str("The transformed text is too large."),
-            Self::TooManyReplacements => write!(
+            Self::InvalidGroup { index } => write_message(
                 formatter,
-                "At most {MAX_TOTAL_REPLACEMENTS} replacements are allowed."
+                "findsmith-api-rule-group-incomplete",
+                &[&(index + 1).to_string()],
+            ),
+            Self::ConflictingGroup { index } => write_message(
+                formatter,
+                "findsmith-api-rule-group-conflict",
+                &[&(index + 1).to_string()],
+            ),
+            Self::InvalidTemplate { index } => write_message(
+                formatter,
+                "findsmith-api-rule-template-invalid",
+                &[&(index + 1).to_string()],
+            ),
+            Self::StructuralRequiresWiki => write_message(
+                formatter,
+                "findsmith-api-rule-template-parsoid-required",
+                &[],
+            ),
+            Self::PatternTooLarge { index } => write_message(
+                formatter,
+                "findsmith-api-rule-find-too-large",
+                &[&(index + 1).to_string()],
+            ),
+            Self::ReplacementTooLarge { index } => write_message(
+                formatter,
+                "findsmith-api-rule-replacement-too-large",
+                &[&(index + 1).to_string()],
+            ),
+            Self::InvalidRegex { index, message } => write_message(
+                formatter,
+                "findsmith-api-rule-regex-invalid",
+                &[&(index + 1).to_string(), message],
+            ),
+            Self::InputTooLarge => {
+                write_message(formatter, "findsmith-api-structural-input-too-large", &[])
+            }
+            Self::OutputTooLarge => {
+                write_message(formatter, "findsmith-api-structural-output-too-large", &[])
+            }
+            Self::TooManyReplacements => write_message(
+                formatter,
+                "findsmith-api-rule-replacement-limit",
+                &[&MAX_TOTAL_REPLACEMENTS.to_string()],
             ),
         }
     }

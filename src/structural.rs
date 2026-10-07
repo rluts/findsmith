@@ -1,11 +1,17 @@
 use parsoid::prelude::*;
 
 use crate::{
+    localization,
     projects::{ReplacementRule, RuleOperation},
     rules::{
         MAX_INPUT_BYTES, MAX_OUTPUT_BYTES, MAX_TOTAL_REPLACEMENTS, RuleEngine, TransformationResult,
     },
 };
+
+fn parsoid_error(key: &str, error: &impl std::fmt::Display) -> String {
+    localization::message_with_args(key, &[&error.to_string()])
+        .expect("English Parsoid error message exists")
+}
 
 pub async fn apply_with_wiki(
     rules: &[ReplacementRule],
@@ -17,7 +23,7 @@ pub async fn apply_with_wiki(
     RuleEngine::compile_with_category_prefix(rules, category_prefix)
         .map_err(|error| error.to_string())?;
     if input.len() > MAX_INPUT_BYTES {
-        return Err("The input text is too large.".to_owned());
+        return Err("findsmith-api-structural-input-too-large".to_owned());
     }
     let mut text = input.to_owned();
     let mut counts = Vec::with_capacity(rules.len());
@@ -51,11 +57,11 @@ pub async fn apply_with_wiki(
             (result.text, result.total_replacements)
         };
         if next.len() > MAX_OUTPUT_BYTES {
-            return Err("The transformed text is too large.".to_owned());
+            return Err("findsmith-api-structural-output-too-large".to_owned());
         }
         total += count;
         if total > MAX_TOTAL_REPLACEMENTS {
-            return Err("Too many replacements.".to_owned());
+            return Err("findsmith-api-structural-too-many-replacements".to_owned());
         }
         text = next;
         counts.push(count);
@@ -84,13 +90,13 @@ async fn apply_structural_rule(
     }
     let rest_url = wiki_url
         .strip_suffix("api.php")
-        .ok_or_else(|| "The selected wiki has no supported Parsoid endpoint.".to_owned())?;
+        .ok_or_else(|| "findsmith-api-parsoid-endpoint-unsupported".to_owned())?;
     let client = ParsoidClient::new(&format!("{rest_url}rest.php"), user_agent)
-        .map_err(|error| format!("Could not connect to Parsoid: {error}"))?;
+        .map_err(|error| parsoid_error("findsmith-api-parsoid-connect", &error))?;
     let html = client
         .transform_to_html(input)
         .await
-        .map_err(|error| format!("Parsoid could not parse wikitext: {error}"))?;
+        .map_err(|error| parsoid_error("findsmith-api-parsoid-parse", &error))?;
     let (code, count) = {
         let code = html.into_mutable();
         let templates = if matches!(
@@ -100,7 +106,7 @@ async fn apply_structural_rule(
                 | RuleOperation::TemplateParameterRemove
         ) {
             code.filter_templates()
-                .map_err(|error| format!("Could not inspect templates: {error}"))?
+                .map_err(|error| parsoid_error("findsmith-api-parsoid-inspect-templates", &error))?
         } else {
             Vec::new()
         };
@@ -194,7 +200,7 @@ async fn apply_structural_rule(
     let output = client
         .transform_to_wikitext(&code)
         .await
-        .map_err(|error| format!("Parsoid could not serialize wikitext: {error}"))?;
+        .map_err(|error| parsoid_error("findsmith-api-parsoid-serialize", &error))?;
     if output == input {
         Ok((input.to_owned(), 0))
     } else {

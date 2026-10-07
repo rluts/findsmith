@@ -23,13 +23,15 @@ use crate::{
     web::{
         OwnerState, WebState, healthz, owner_add_wiki, owner_build_project, owner_create_project,
         owner_delete_project, owner_delete_saved_rule, owner_index, owner_job_action,
-        owner_job_queue_action, owner_job_recompute, owner_job_review, owner_page_preview,
-        owner_project, owner_render_preview, owner_save_rule, owner_saved_rules, owner_start_job,
-        owner_update_project, owner_update_saved_rule, owner_wikis, owner_workspace, web_add_wiki,
-        web_build_project, web_create_project, web_delete_project, web_delete_saved_rule,
-        web_job_action, web_job_queue_action, web_job_recompute, web_job_review, web_oauth_index,
-        web_page_preview, web_project, web_render_preview, web_save_rule, web_saved_rules,
-        web_start_job, web_update_project, web_update_saved_rule, web_wikis, web_workspace,
+        owner_job_queue_action, owner_job_recompute, owner_job_review, owner_language_middleware,
+        owner_page_preview, owner_project, owner_render_preview, owner_save_rule,
+        owner_saved_rules, owner_set_language, owner_start_job, owner_update_project,
+        owner_update_saved_rule, owner_wikis, owner_workspace, translation_languages, translations,
+        web_add_wiki, web_build_project, web_create_project, web_delete_project,
+        web_delete_saved_rule, web_job_action, web_job_queue_action, web_job_recompute,
+        web_job_review, web_language_middleware, web_oauth_index, web_page_preview, web_project,
+        web_render_preview, web_save_rule, web_saved_rules, web_set_language, web_start_job,
+        web_update_project, web_update_saved_rule, web_wikis, web_workspace,
     },
 };
 
@@ -53,6 +55,9 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
                 .layer(axum::middleware::from_fn(disable_frontend_cache));
             Ok(oauth_routes()
                 .route("/api/session", get(web_oauth_index))
+                .route("/api/language", axum::routing::post(web_set_language))
+                .route("/api/translations", get(translation_languages))
+                .route("/api/translations/{language}", get(translations))
                 .route("/api/workspace", get(web_workspace))
                 .route("/api/wikis", get(web_wikis).post(web_add_wiki))
                 .route("/api/rules", get(web_saved_rules).post(web_save_rule))
@@ -110,6 +115,10 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
                 .route_service("/add-wiki", frontend.clone())
                 .route_service("/projects/{id}", frontend.clone())
                 .route_service("/projects/{id}/jobs/{job_id}", frontend)
+                .layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    web_language_middleware,
+                ))
                 .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
                 .layer(axum::middleware::from_fn_with_state(
                     state.oauth.clone(),
@@ -137,6 +146,9 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
                 .layer(axum::middleware::from_fn(disable_frontend_cache));
             Ok(Router::new()
                 .route("/api/session", get(owner_index))
+                .route("/api/language", axum::routing::post(owner_set_language))
+                .route("/api/translations", get(translation_languages))
+                .route("/api/translations/{language}", get(translations))
                 .route("/api/workspace", get(owner_workspace))
                 .route("/api/wikis", get(owner_wikis).post(owner_add_wiki))
                 .route("/api/rules", get(owner_saved_rules).post(owner_save_rule))
@@ -194,6 +206,10 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
                 .route_service("/add-wiki", frontend.clone())
                 .route_service("/projects/{id}", frontend.clone())
                 .route_service("/projects/{id}/jobs/{job_id}", frontend)
+                .layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    owner_language_middleware,
+                ))
                 .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
                 .layer(TimeoutLayer::with_status_code(
                     StatusCode::REQUEST_TIMEOUT,
@@ -217,8 +233,8 @@ async fn api_not_found() -> (StatusCode, axum::Json<serde_json::Value>) {
     (
         StatusCode::NOT_FOUND,
         axum::Json(serde_json::json!({
-            "title": "API endpoint not found",
-            "message": "The requested API endpoint does not exist."
+            "title": crate::localization::required("findsmith-api-endpoint-not-found"),
+            "message": crate::localization::required("findsmith-api-endpoint-not-found-message")
         })),
     )
 }

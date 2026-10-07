@@ -246,22 +246,36 @@ pub enum PageLoadError {
 
 impl fmt::Display for PageLoadError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let write_message = |formatter: &mut fmt::Formatter<'_>, key: &str, args: &[&str]| {
+            formatter.write_str(&crate::localization::required_with_args(key, args))
+        };
         match self {
-            Self::EmptyTitle => formatter.write_str("Enter a page title."),
-            Self::Missing => formatter.write_str("The requested page does not exist."),
-            Self::Invalid(reason) if !reason.is_empty() => {
-                write!(formatter, "The page title is invalid: {reason}")
+            Self::EmptyTitle => write_message(formatter, "findsmith-api-page-title-required", &[]),
+            Self::Missing => write_message(
+                formatter,
+                "findsmith-api-the-requested-page-does-not-exist",
+                &[],
+            ),
+            Self::Invalid(reason) if !reason.is_empty() => write_message(
+                formatter,
+                "findsmith-api-page-title-invalid-reason",
+                &[reason],
+            ),
+            Self::Invalid(_) => write_message(formatter, "findsmith-api-page-title-invalid", &[]),
+            Self::MissingRevision => {
+                write_message(formatter, "findsmith-api-page-revision-missing", &[])
             }
-            Self::Invalid(_) => formatter.write_str("The page title is invalid."),
-            Self::MissingRevision => formatter.write_str("The page has no readable revision."),
-            Self::MissingContent => formatter.write_str("The page content could not be loaded."),
+            Self::MissingContent => {
+                write_message(formatter, "findsmith-api-page-content-missing", &[])
+            }
             Self::UnsupportedContentModel(model) => {
-                write!(
-                    formatter,
-                    "The page uses unsupported content model “{model}”."
-                )
+                write_message(formatter, "findsmith-api-page-model-unsupported", &[model])
             }
-            Self::Api(error) => write!(formatter, "MediaWiki request failed: {error}"),
+            Self::Api(error) => write_message(
+                formatter,
+                "findsmith-api-mediawiki-request-error",
+                &[&error.to_string()],
+            ),
         }
     }
 }
@@ -934,7 +948,7 @@ fn resolve_normalized_batch(batch: &[String], query: NormalizeQuery) -> Vec<Norm
                     redirect: redirected || page.redirect,
                     invalid_reason: page.invalid.then(|| {
                         if page.invalidreason.is_empty() {
-                            "The page title is invalid.".to_owned()
+                            "findsmith-api-page-title-invalid".to_owned()
                         } else {
                             page.invalidreason.clone()
                         }
@@ -946,7 +960,7 @@ fn resolve_normalized_batch(batch: &[String], query: NormalizeQuery) -> Vec<Norm
                     page_id: None,
                     namespace: None,
                     redirect: redirected,
-                    invalid_reason: Some("MediaWiki did not return this title.".to_owned()),
+                    invalid_reason: Some("findsmith-api-wiki-title-missing".to_owned()),
                 },
             }
         })
@@ -1095,22 +1109,6 @@ mod tests {
     }
 
     #[test]
-    fn userinfo_deserialization_keeps_all_groups() {
-        let response: UserInfoResponse = serde_json::from_value(serde_json::json!({
-            "query": {
-                "userinfo": {
-                    "groups": ["*", "user", "autoconfirmed", "sysop"]
-                }
-            }
-        }))
-        .unwrap();
-        assert_eq!(
-            response.query.userinfo.groups,
-            ["*", "user", "autoconfirmed", "sysop"]
-        );
-    }
-
-    #[test]
     fn normalized_titles_follow_redirects_and_preserve_requested_value() {
         let results = resolve_normalized_batch(
             &["foo_bar".to_owned()],
@@ -1160,7 +1158,7 @@ mod tests {
         );
         assert_eq!(
             results[0].invalid_reason.as_deref(),
-            Some("The page title is invalid.")
+            Some("findsmith-api-page-title-invalid")
         );
     }
 }

@@ -2,8 +2,9 @@ use std::collections::HashSet;
 
 use axum::{
     Json,
-    extract::{FromRef, Path, Query, State},
+    extract::{FromRef, Path, Query, Request, State},
     http::{StatusCode, header},
+    middleware::Next,
     response::{IntoResponse, Response},
 };
 use axum_extra::extract::{Form, cookie::PrivateCookieJar};
@@ -20,6 +21,7 @@ use crate::{
         JobConfigV1, JobError, JobRepository, JobState, JobStatus, QueueEntry, QueueEntryStatus,
     },
     lists::{queue_from_normalized, source_values, validate_namespaces, validate_queue_limit},
+    localization,
     mediawiki::{
         ApiPageListKind, EditFailureKind, PageListKind, PageSnapshot, api_page_list,
         bot_edit_allowed, classify_edit_error, edit_existing_page, edit_permissions, load_page,
@@ -72,12 +74,173 @@ impl FromRef<OwnerState> for Key {
     }
 }
 
+pub async fn web_language_middleware(
+    State(state): State<WebState>,
+    user: Option<AxumUser>,
+    jar: PrivateCookieJar,
+    request: Request,
+    next: Next,
+) -> Response {
+    if !request.uri().path().starts_with("/api/")
+        || request.uri().path() == "/api/translations"
+        || request.uri().path().starts_with("/api/translations/")
+    {
+        return next.run(request).await;
+    }
+    let owner = user
+        .as_ref()
+        .map(|user| user.profile().central_id().to_owned());
+    match localization::preferred_language(&state.database, owner.as_deref(), &jar).await {
+        Ok(language) => localization::in_language(language, next.run(request)).await,
+        Err(error) => internal_error(error),
+    }
+}
+
+pub async fn owner_language_middleware(
+    State(state): State<OwnerState>,
+    jar: PrivateCookieJar,
+    request: Request,
+    next: Next,
+) -> Response {
+    if !request.uri().path().starts_with("/api/")
+        || request.uri().path() == "/api/translations"
+        || request.uri().path().starts_with("/api/translations/")
+    {
+        return next.run(request).await;
+    }
+    match localization::preferred_language(&state.database, Some(&state.central_id), &jar).await {
+        Ok(language) => localization::in_language(language, next.run(request)).await,
+        Err(error) => internal_error(error),
+    }
+}
+
 #[derive(Serialize)]
 struct SessionResponse<'a> {
     username: Option<&'a str>,
     groups: Vec<String>,
     groups_error: Option<String>,
     can_logout: bool,
+    language: &'a str,
+    csrf_token: &'a str,
+}
+
+#[derive(Deserialize)]
+pub struct LanguageForm {
+    language: String,
+    csrf_token: String,
+}
+
+#[derive(Serialize)]
+struct LanguageResponse<'a> {
+    language: &'a str,
+}
+
+pub async fn translations(Path(language): Path<String>) -> Response {
+    match localization::catalog(&language) {
+        Some(catalog) => (
+            [
+                (header::CACHE_CONTROL, "public, max-age=300"),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            ],
+            Json(catalog),
+        )
+            .into_response(),
+        None => error_page(
+            StatusCode::NOT_FOUND,
+            "findsmith-api-unknown-language",
+            "findsmith-api-no-translation-catalog-exists-for-this-language",
+            "/",
+        ),
+    }
+}
+
+pub async fn translation_languages() -> Response {
+    (
+        [
+            (header::CACHE_CONTROL, "public, max-age=300"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        Json(localization::available_languages()),
+    )
+        .into_response()
+}
+
+async fn set_language(
+    database: &DatabaseConnection,
+    owner: Option<&str>,
+    jar: PrivateCookieJar,
+    secure: bool,
+    form: LanguageForm,
+) -> (PrivateCookieJar, Response) {
+    if csrf::verify(&jar, &form.csrf_token).is_err() {
+        return (jar, csrf_error("/"));
+    }
+    let language = form.language.to_ascii_lowercase();
+    if !localization::valid_language(&language) {
+        return (
+            jar,
+            error_page(
+                StatusCode::BAD_REQUEST,
+                "findsmith-api-invalid-language",
+                "findsmith-api-use-a-valid-language-code",
+                "/",
+            ),
+        );
+    }
+    if !localization::available_language(&language) {
+        return (
+            jar,
+            error_page(
+                StatusCode::BAD_REQUEST,
+                "findsmith-api-language-not-available",
+                "findsmith-api-this-interface-language-is-not-available-yet",
+                "/",
+            ),
+        );
+    }
+    if let Err(error) = localization::save_language(database, owner, &language).await {
+        return (jar, internal_error(error));
+    }
+    (
+        localization::set_cookie(jar, &language, secure),
+        render(LanguageResponse {
+            language: &language,
+        }),
+    )
+}
+
+pub async fn web_set_language(
+    State(state): State<WebState>,
+    user: Option<AxumUser>,
+    jar: PrivateCookieJar,
+    Form(form): Form<LanguageForm>,
+) -> (PrivateCookieJar, Response) {
+    let owner = user
+        .as_ref()
+        .map(|user| user.profile().central_id().to_owned());
+    set_language(
+        &state.database,
+        owner.as_deref(),
+        jar,
+        state.csrf_secure,
+        form,
+    )
+    .await
+}
+
+pub async fn owner_set_language(
+    State(state): State<OwnerState>,
+    jar: PrivateCookieJar,
+    Form(form): Form<LanguageForm>,
+) -> (PrivateCookieJar, Response) {
+    set_language(
+        &state.database,
+        Some(&state.central_id),
+        jar,
+        state.csrf_secure,
+        form,
+    )
+    .await
 }
 
 #[derive(Default, Deserialize)]
@@ -118,7 +281,7 @@ struct ProjectResponse<'a> {
     csrf_token: &'a str,
     page_title: &'a str,
     page_preview: Option<&'a PagePreviewView>,
-    page_preview_error: Option<&'a str>,
+    page_preview_error: Option<String>,
     latest_job_id: &'a str,
     latest_job_status: &'a str,
     latest_job_message: &'a str,
@@ -133,7 +296,7 @@ struct ProjectResponse<'a> {
 #[derive(Serialize)]
 struct PageSourceView {
     kind: &'static str,
-    label: &'static str,
+    label: String,
     value: String,
     summary: String,
 }
@@ -198,17 +361,17 @@ struct ReviewResponse<'a> {
     rule_count: usize,
     suggested_edit_summary: String,
     edit_summary_suffix: &'static str,
-    generation_message: &'a str,
+    generation_message: String,
     preparse_active: bool,
     preparse_cursor: usize,
     preparse_render_equivalent: bool,
     edit_in_flight: bool,
     edit_policy_blocked: bool,
     policy_acknowledged: bool,
-    queue: &'a [QueueEntry],
-    current: Option<&'a QueueEntry>,
+    queue: Vec<QueueEntry>,
+    current: Option<QueueEntry>,
     page: Option<&'a ReviewPageView>,
-    page_error: Option<&'a str>,
+    page_error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -222,7 +385,7 @@ struct ReviewPageView {
     can_edit: bool,
     can_minor: bool,
     can_bot: bool,
-    edit_access_message: Option<&'static str>,
+    edit_access_message: Option<String>,
     protection: String,
     total_replacements: usize,
     changed: bool,
@@ -232,11 +395,18 @@ struct ReviewPageView {
     side_by_side_diff: Vec<SideBySideLine>,
 }
 
+fn localize_queue_entry(mut entry: QueueEntry) -> QueueEntry {
+    entry.reason = entry.reason.map(|reason| {
+        localization::message(&reason).unwrap_or_else(|| localization::from_source(&reason))
+    });
+    entry
+}
+
 #[derive(Serialize)]
-struct ErrorResponse<'a> {
-    title: &'a str,
-    message: &'a str,
-    back_href: &'a str,
+struct ErrorResponse {
+    title: String,
+    message: String,
+    back_href: String,
 }
 
 #[derive(Serialize)]
@@ -368,8 +538,11 @@ pub struct JobActionForm {
 }
 
 const EDIT_SUMMARY_SUFFIX: &str = " using [[User:RLuts/FS|Findsmith]]";
-const EDIT_SUMMARY_FALLBACK: &str = "Autoreplacement";
 const MAX_EDIT_SUMMARY_CHARS: usize = 500;
+
+fn summary_message(key: &str, args: &[&str]) -> String {
+    localization::message_with_args(key, args).expect("English edit summary message exists")
+}
 
 fn suggested_edit_summary(rules: &[ReplacementRule]) -> String {
     let candidate = rules
@@ -378,39 +551,48 @@ fn suggested_edit_summary(rules: &[ReplacementRule]) -> String {
         .map(|rule| match rule.operation {
             RuleOperation::Replace => {
                 let replacement = if rule.replace.is_empty() {
-                    "(removed)"
+                    localization::message("findsmith-edit-summary-removed")
+                        .expect("English edit summary message exists")
                 } else {
-                    &rule.replace
+                    rule.replace.clone()
                 };
-                format!("Autoreplacement: {} -> {replacement}", rule.find)
+                summary_message(
+                    "findsmith-edit-summary-replacement",
+                    &[&rule.find, &replacement],
+                )
             }
-            RuleOperation::Append => "Appended wikitext".to_owned(),
-            RuleOperation::Prepend => "Prepended wikitext".to_owned(),
-            RuleOperation::CategoryAdd => format!("Added category {}", rule.replace),
-            RuleOperation::CategoryRemove => format!("Removed category {}", rule.find),
-            RuleOperation::CategoryReplace => {
-                format!("Replaced category {} with {}", rule.find, rule.replace)
+            RuleOperation::Append => summary_message("findsmith-edit-summary-append", &[]),
+            RuleOperation::Prepend => summary_message("findsmith-edit-summary-prepend", &[]),
+            RuleOperation::CategoryAdd => {
+                summary_message("findsmith-edit-summary-category-add", &[&rule.replace])
             }
-            RuleOperation::TemplateRename => {
-                format!("Renamed template {} to {}", rule.find, rule.replace)
+            RuleOperation::CategoryRemove => {
+                summary_message("findsmith-edit-summary-category-remove", &[&rule.find])
             }
+            RuleOperation::CategoryReplace => summary_message(
+                "findsmith-edit-summary-category-replace",
+                &[&rule.find, &rule.replace],
+            ),
+            RuleOperation::TemplateRename => summary_message(
+                "findsmith-edit-summary-template-rename",
+                &[&rule.find, &rule.replace],
+            ),
             RuleOperation::TemplateParameterSet => {
                 let value = if rule.replace.is_empty() {
-                    "(empty)"
+                    localization::message("findsmith-edit-summary-empty")
+                        .expect("English edit summary message exists")
                 } else {
-                    &rule.replace
+                    rule.replace.clone()
                 };
-                format!(
-                    "Set parameter {} in template {} to {value}",
-                    rule.parameter, rule.find
+                summary_message(
+                    "findsmith-edit-summary-parameter-set",
+                    &[&rule.parameter, &rule.find, &value],
                 )
             }
-            RuleOperation::TemplateParameterRemove => {
-                format!(
-                    "Removed parameter {} from template {}",
-                    rule.parameter, rule.find
-                )
-            }
+            RuleOperation::TemplateParameterRemove => summary_message(
+                "findsmith-edit-summary-parameter-remove",
+                &[&rule.parameter, &rule.find],
+            ),
         });
     candidate
         .filter(|prefix| {
@@ -419,26 +601,22 @@ fn suggested_edit_summary(rules: &[ReplacementRule]) -> String {
                 && (prefix.chars().count() + EDIT_SUMMARY_SUFFIX.chars().count()
                     <= MAX_EDIT_SUMMARY_CHARS)
         })
-        .unwrap_or_else(|| EDIT_SUMMARY_FALLBACK.to_owned())
+        .unwrap_or_else(|| summary_message("findsmith-edit-summary-autoreplacement", &[]))
 }
 
 fn complete_edit_summary(prefix: &str) -> Result<String, &'static str> {
     let prefix = prefix.trim();
     if prefix.is_empty() {
-        return Err("Enter an edit summary before saving.");
+        return Err("findsmith-api-summary-required");
     }
     if prefix.contains("[[User:RLuts/FS|Findsmith]]") {
-        return Err(
-            "The Findsmith attribution is added automatically; do not include it in the editable summary.",
-        );
+        return Err("findsmith-api-summary-attribution-automatic");
     }
     if prefix.chars().any(char::is_control) {
-        return Err("The edit summary must be one line.");
+        return Err("findsmith-api-summary-one-line");
     }
     if prefix.chars().count() + EDIT_SUMMARY_SUFFIX.chars().count() > MAX_EDIT_SUMMARY_CHARS {
-        return Err(
-            "The edit summary, including the required Findsmith attribution, must be at most 500 characters.",
-        );
+        return Err("findsmith-api-summary-max-length");
     }
     Ok(format!("{prefix}{EDIT_SUMMARY_SUFFIX}"))
 }
@@ -533,8 +711,8 @@ async fn render_preview_response(
         Ok(None) => {
             return error_page(
                 StatusCode::NOT_FOUND,
-                "Project not found",
-                "This project does not exist or you do not have access to it.",
+                "findsmith-api-project-not-found",
+                "findsmith-api-this-project-does-not-exist-or-you-do-not-have-access-to-it",
                 "/workspace",
             );
         }
@@ -546,8 +724,8 @@ async fn render_preview_response(
     {
         return error_page(
             StatusCode::BAD_REQUEST,
-            "Invalid preview",
-            "The title, wiki, or proposed wikitext is invalid.",
+            "findsmith-api-invalid-preview",
+            "findsmith-api-the-title-wiki-or-proposed-wikitext-is-invalid",
             &back_href,
         );
     }
@@ -564,7 +742,7 @@ async fn render_preview_response(
         Err(error) => {
             return error_page(
                 StatusCode::BAD_GATEWAY,
-                "Could not render preview",
+                "findsmith-api-could-not-render-preview",
                 &error.to_string(),
                 &back_href,
             );
@@ -607,7 +785,7 @@ async fn saved_rules_response(database: &DatabaseConnection, owner: &str) -> Res
         Ok(rules) => Json(rules).into_response(),
         Err(message) => error_page(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "Saved rules unavailable",
+            "findsmith-api-saved-rules-unavailable",
             &message,
             "/workspace",
         ),
@@ -679,8 +857,8 @@ async fn save_rule_response(
         Err(_) => {
             return error_page(
                 StatusCode::BAD_REQUEST,
-                "Invalid rule",
-                "Rule data is invalid.",
+                "findsmith-api-invalid-rule",
+                "findsmith-api-rule-data-is-invalid",
                 "/workspace",
             );
         }
@@ -688,12 +866,12 @@ async fn save_rule_response(
     match saved_rules::save(database, owner, id, rule).await {
         Ok(saved) => Json(saved).into_response(),
         Err(message) => error_page(
-            if message == "Saved rule not found." {
+            if message == "findsmith-api-saved-rule-unavailable" {
                 StatusCode::NOT_FOUND
             } else {
                 StatusCode::BAD_REQUEST
             },
-            "Could not save rule",
+            "findsmith-api-could-not-save-rule",
             &message,
             "/workspace",
         ),
@@ -734,13 +912,13 @@ async fn delete_saved_rule_response(
         Ok(true) => Json(serde_json::json!({"ok": true})).into_response(),
         Ok(false) => error_page(
             StatusCode::NOT_FOUND,
-            "Saved rule not found",
-            "Saved rule not found.",
+            "findsmith-api-saved-rule-not-found",
+            "findsmith-api-saved-rule-unavailable",
             "/workspace",
         ),
         Err(message) => error_page(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "Could not delete rule",
+            "findsmith-api-could-not-delete-rule",
             &message,
             "/workspace",
         ),
@@ -751,39 +929,74 @@ pub async fn web_oauth_index(
     State(state): State<WebState>,
     user: Option<AxumUser>,
     Query(query): Query<SessionQuery>,
-) -> Response {
+    jar: PrivateCookieJar,
+) -> (PrivateCookieJar, Response) {
     let owner = user
         .as_ref()
         .map(|user| user.profile().central_id().to_owned());
     let authentication = user.map(|user| Authentication::WebOAuth(Box::new(user)));
-    render_index(
+    let language =
+        match localization::preferred_language(&state.database, owner.as_deref(), &jar).await {
+            Ok(language) => language,
+            Err(error) => return (jar, internal_error(error)),
+        };
+    let jar = if localization::cookie_language(&jar).as_deref() != Some(&language) {
+        localization::set_cookie(jar, &language, state.csrf_secure)
+    } else {
+        jar
+    };
+    let (jar, csrf_token) = csrf::token(jar, state.csrf_secure);
+    let response = render_index(
         authentication.as_ref(),
         owner.as_deref(),
         &state.database,
         &state.user_agent,
         query.include_groups,
         query.wiki_id.as_deref(),
+        &language,
+        &csrf_token,
     )
-    .await
+    .await;
+    (jar, response)
 }
 
 pub async fn owner_index(
     State(state): State<OwnerState>,
     Query(query): Query<SessionQuery>,
-) -> Response {
+    jar: PrivateCookieJar,
+) -> (PrivateCookieJar, Response) {
+    let language = match localization::preferred_language(
+        &state.database,
+        Some(&state.central_id),
+        &jar,
+    )
+    .await
+    {
+        Ok(language) => language,
+        Err(error) => return (jar, internal_error(error)),
+    };
+    let jar = if localization::cookie_language(&jar).as_deref() != Some(&language) {
+        localization::set_cookie(jar, &language, state.csrf_secure)
+    } else {
+        jar
+    };
+    let (jar, csrf_token) = csrf::token(jar, state.csrf_secure);
     let authentication = Authentication::OwnerToken {
         username: state.username.clone(),
         access_token: state.access_token.clone(),
     };
-    render_index(
+    let response = render_index(
         Some(&authentication),
         Some(&state.central_id),
         &state.database,
         &state.user_agent,
         query.include_groups,
         query.wiki_id.as_deref(),
+        &language,
+        &csrf_token,
     )
-    .await
+    .await;
+    (jar, response)
 }
 
 pub async fn web_wikis(
@@ -845,7 +1058,7 @@ async fn add_wiki_response(
         Ok(wiki) => action_response("/workspace".into(), Some(wiki.id)),
         Err(message) => error_page(
             StatusCode::BAD_REQUEST,
-            "Could not add wiki",
+            "findsmith-api-could-not-add-wiki",
             &message,
             "/add-wiki",
         ),
@@ -1350,8 +1563,8 @@ async fn create_project_response(
     }) else {
         return error_page(
             StatusCode::BAD_REQUEST,
-            "Unsupported wiki",
-            "Select one of the available wikis.",
+            "findsmith-api-unsupported-wiki",
+            "findsmith-api-select-one-of-the-available-wikis",
             "/workspace",
         );
     };
@@ -1416,7 +1629,13 @@ async fn project_response(
                                 Ok(state) => state,
                                 Err(error) => return internal_error(error),
                             };
-                            let preview = job_state.queue.iter().take(10).cloned().collect();
+                            let preview = job_state
+                                .queue
+                                .iter()
+                                .take(10)
+                                .cloned()
+                                .map(localize_queue_entry)
+                                .collect();
                             (
                                 job.id,
                                 job_state.status.label().to_owned(),
@@ -1441,6 +1660,8 @@ async fn project_response(
                             Vec::new(),
                         ),
                     };
+                    let latest_job_status = localization::from_source(&latest_job_status);
+                    let latest_job_message = localization::from_source(&latest_job_message);
                     render_project(ProjectResponse {
                         project_id: &project.id,
                         project_name: &project.name,
@@ -1471,8 +1692,8 @@ async fn project_response(
         }
         Ok(None) => error_page(
             StatusCode::NOT_FOUND,
-            "Project not found",
-            "This project does not exist or you do not have access to it.",
+            "findsmith-api-project-not-found",
+            "findsmith-api-this-project-does-not-exist-or-you-do-not-have-access-to-it",
             "/workspace",
         ),
         Err(error) => project_error_response(error, "/workspace"),
@@ -1493,8 +1714,8 @@ async fn page_preview_response(
         Ok(None) => {
             return error_page(
                 StatusCode::NOT_FOUND,
-                "Project not found",
-                "This project does not exist or you do not have access to it.",
+                "findsmith-api-project-not-found",
+                "findsmith-api-this-project-does-not-exist-or-you-do-not-have-access-to-it",
                 "/workspace",
             );
         }
@@ -1514,7 +1735,7 @@ async fn page_preview_response(
                 id,
                 &form,
                 &rules,
-                "Select one of the available wikis.",
+                "findsmith-api-select-one-of-the-available-wikis",
             )
             .await;
         }
@@ -1592,8 +1813,8 @@ async fn start_job_response(
         Ok(None) => {
             return error_page(
                 StatusCode::NOT_FOUND,
-                "Project not found",
-                "This project does not exist or you do not have access to it.",
+                "findsmith-api-project-not-found",
+                "findsmith-api-this-project-does-not-exist-or-you-do-not-have-access-to-it",
                 "/workspace",
             );
         }
@@ -1606,7 +1827,7 @@ async fn start_job_response(
     if let Err(error) = RuleEngine::compile(&state.rules) {
         return error_page(
             StatusCode::BAD_REQUEST,
-            "Invalid replacement rules",
+            "findsmith-api-invalid-replacement-rules",
             &error.to_string(),
             &back_href,
         );
@@ -1614,7 +1835,7 @@ async fn start_job_response(
     if let Err(message) = validate_project_sources(&state) {
         return error_page(
             StatusCode::BAD_REQUEST,
-            "Cannot start review",
+            "findsmith-api-cannot-start-review",
             &message,
             &back_href,
         );
@@ -1622,8 +1843,8 @@ async fn start_job_response(
     if !state.has_sources() {
         return error_page(
             StatusCode::BAD_REQUEST,
-            "Cannot start review",
-            "Add at least one page source.",
+            "findsmith-api-cannot-start-review",
+            "findsmith-api-add-at-least-one-page-source",
             &back_href,
         );
     }
@@ -1632,7 +1853,7 @@ async fn start_job_response(
         Err(message) => {
             return error_page(
                 StatusCode::BAD_REQUEST,
-                "Cannot start review",
+                "findsmith-api-cannot-start-review",
                 &message,
                 &back_href,
             );
@@ -1658,7 +1879,8 @@ async fn start_job_response(
             let job_id = job.id.clone();
             let access_token = access_token.to_owned();
             let user_agent = user_agent.to_owned();
-            tokio::spawn(async move {
+            let language = localization::current_language();
+            tokio::spawn(localization::in_language(language, async move {
                 build_job_queue(
                     database,
                     owner,
@@ -1671,7 +1893,7 @@ async fn start_job_response(
                     state,
                 )
                 .await;
-            });
+            }));
             action_response(redirect, Some(job.id))
         }
         Err(error) => job_error_response(error, &back_href),
@@ -1698,7 +1920,10 @@ async fn build_job_queue(
                 &owner,
                 &project_id,
                 &job_id,
-                &format!("Could not initialize the MediaWiki page generator: {error}"),
+                &localization::required_with_args(
+                    "findsmith-api-generation-init-failed",
+                    &[&error.to_string()],
+                ),
             )
             .await;
             return;
@@ -1712,7 +1937,7 @@ async fn build_job_queue(
                 &project_id,
                 &job_id,
                 Vec::new(),
-                "Loading manual titles…",
+                "findsmith-api-generation-loading-manual",
                 false,
                 false,
             )
@@ -1726,7 +1951,10 @@ async fn build_job_queue(
             match normalize_titles(&wiki_url, &user_agent, &access_token, &source.values).await {
                 Ok(mut pages) => {
                     filter_namespaces(&mut pages, &state.namespaces);
-                    let message = format!("Loaded {} manual title(s).", pages.len());
+                    let message = localization::required_with_args(
+                        "findsmith-api-generation-loaded-manual",
+                        &[&pages.len().to_string()],
+                    );
                     if update_generation(
                         &database,
                         &owner,
@@ -1751,7 +1979,10 @@ async fn build_job_queue(
                         &owner,
                         &project_id,
                         &job_id,
-                        &format!("Manual title lookup failed: {error}"),
+                        &localization::required_with_args(
+                            "findsmith-api-generation-manual-failed",
+                            &[&error.to_string()],
+                        ),
                     )
                     .await;
                     return;
@@ -1761,17 +1992,30 @@ async fn build_job_queue(
         }
 
         let (kind, label) = match source.kind {
-            PageSourceKind::Category => (Some(PageListKind::CategoryMembers), "category members"),
-            PageSourceKind::Backlinks => (Some(PageListKind::Backlinks), "backlinks"),
-            PageSourceKind::Transclusions => (Some(PageListKind::Transclusions), "transclusions"),
-            PageSourceKind::Search => (Some(PageListKind::Search), "search results"),
-            PageSourceKind::Watchlist => (None, "watchlist pages"),
-            PageSourceKind::Contributions => (None, "contribution pages"),
-            PageSourceKind::LinksOnPage => (None, "linked pages"),
-            PageSourceKind::CategoriesOnPage => (None, "categories on page"),
-            PageSourceKind::RedirectsToPage => (None, "redirect pages"),
+            PageSourceKind::Category => (
+                Some(PageListKind::CategoryMembers),
+                "findsmith-api-source-category-members",
+            ),
+            PageSourceKind::Backlinks => (
+                Some(PageListKind::Backlinks),
+                "findsmith-api-source-backlinks",
+            ),
+            PageSourceKind::Transclusions => (
+                Some(PageListKind::Transclusions),
+                "findsmith-api-source-transclusions",
+            ),
+            PageSourceKind::Search => (
+                Some(PageListKind::Search),
+                "findsmith-api-source-search-results",
+            ),
+            PageSourceKind::Watchlist => (None, "findsmith-api-source-watchlist-pages"),
+            PageSourceKind::Contributions => (None, "findsmith-api-source-contribution-pages"),
+            PageSourceKind::LinksOnPage => (None, "findsmith-api-source-linked-pages"),
+            PageSourceKind::CategoriesOnPage => (None, "findsmith-api-source-categories-on-page"),
+            PageSourceKind::RedirectsToPage => (None, "findsmith-api-source-redirect-pages"),
             PageSourceKind::Manual => unreachable!(),
         };
+        let label = localization::required(label);
         for value in &source.values {
             let current =
                 match current_generation_size(&database, &owner, &project_id, &job_id).await {
@@ -1781,7 +2025,10 @@ async fn build_job_queue(
             if current >= state.queue_limit {
                 break;
             }
-            let loading_message = format!("Loading {label} for “{value}”…");
+            let loading_message = localization::required_with_args(
+                "findsmith-api-generation-loading-source",
+                &[&label, value],
+            );
             if update_generation(
                 &database,
                 &owner,
@@ -1831,7 +2078,10 @@ async fn build_job_queue(
             };
             match pages {
                 Ok(pages) => {
-                    let message = format!("Loaded {label} for “{value}”.");
+                    let message = localization::required_with_args(
+                        "findsmith-api-generation-loaded-source",
+                        &[&label, value],
+                    );
                     if update_generation(
                         &database,
                         &owner,
@@ -1856,7 +2106,10 @@ async fn build_job_queue(
                         &owner,
                         &project_id,
                         &job_id,
-                        &format!("Could not load {label}: {error}"),
+                        &localization::required_with_args(
+                            "findsmith-api-generation-source-failed",
+                            &[&label, &error],
+                        ),
                     )
                     .await;
                     return;
@@ -1870,7 +2123,7 @@ async fn build_job_queue(
         &project_id,
         &job_id,
         Vec::new(),
-        "Queue ready.",
+        "findsmith-api-queue-ready",
         true,
         false,
     )
@@ -1994,8 +2247,8 @@ async fn review_response(
     if config.version != crate::jobs::JOB_CONFIG_VERSION {
         return error_page(
             StatusCode::CONFLICT,
-            "Unsupported review configuration",
-            "This review uses a configuration version that this release cannot open.",
+            "findsmith-api-unsupported-review-configuration",
+            "findsmith-api-this-review-uses-a-configuration-version-that-this-release-cannot-open",
             &format!("/projects/{project_id}"),
         );
     }
@@ -2044,17 +2297,22 @@ async fn review_response(
         rule_count: config.rules.len(),
         suggested_edit_summary: suggested_edit_summary(&config.rules),
         edit_summary_suffix: EDIT_SUMMARY_SUFFIX,
-        generation_message: &state.generation_message,
+        generation_message: localization::from_source(&state.generation_message),
         preparse_active: state.preparse_active,
         preparse_cursor: state.preparse_cursor,
         preparse_render_equivalent: state.preparse_render_equivalent,
         edit_in_flight: state.edit_in_flight,
         edit_policy_blocked: state.edit_policy_blocked,
         policy_acknowledged: state.policy_acknowledged,
-        queue: &state.queue,
-        current,
+        queue: state
+            .queue
+            .iter()
+            .cloned()
+            .map(localize_queue_entry)
+            .collect(),
+        current: current.cloned().map(localize_queue_entry),
         page: page.as_ref(),
-        page_error: page_error.as_deref(),
+        page_error: page_error.map(|message| localization::from_source(&message)),
     })
 }
 
@@ -2081,20 +2339,16 @@ async fn review_page_view(
     .await?;
     let proposed_text = proposed_text.unwrap_or_else(|| result.text.clone());
     if proposed_text.len() > crate::rules::MAX_OUTPUT_BYTES {
-        return Err("The proposed wikitext is too large.".to_owned());
+        return Err("findsmith-api-the-proposed-wikitext-is-too-large".to_owned());
     }
     let protection = protection_text(&snapshot);
     let permissions = edit_permissions(wiki_url, user_agent, access_token).await;
     let edit_access_message = match &permissions {
-        Err(_) => {
-            Some("Could not verify your edit rights on this wiki. Reload the review to try again.")
-        }
-        Ok(permissions) if permissions.blocked => Some("Your account is blocked on this wiki."),
-        Ok(permissions) if permissions.new_messages => {
-            Some("Read your new messages on this wiki before editing.")
-        }
+        Err(_) => Some("findsmith-api-access-rights-unverified"),
+        Ok(permissions) if permissions.blocked => Some("findsmith-api-account-blocked"),
+        Ok(permissions) if permissions.new_messages => Some("findsmith-api-new-messages"),
         Ok(permissions) if !permissions.can_read || !permissions.can_edit => {
-            Some("Your account lacks read or edit rights on this wiki.")
+            Some("findsmith-api-edit-rights-missing")
         }
         Ok(_) => None,
     };
@@ -2120,7 +2374,7 @@ async fn review_page_view(
         can_bot: permissions
             .as_ref()
             .is_some_and(|permissions| permissions.can_bot),
-        edit_access_message,
+        edit_access_message: edit_access_message.map(localization::from_source),
         protection,
         total_replacements: result.total_replacements,
         changed: snapshot.content != proposed_text,
@@ -2155,16 +2409,16 @@ async fn save_current_page(
     if !state.can_save_current() {
         return error_page(
             StatusCode::CONFLICT,
-            "Cannot save",
-            "Select a pending or reviewed page in an active or completed review.",
+            "findsmith-api-cannot-save",
+            "findsmith-api-select-a-pending-or-reviewed-page-in-an-active-or-completed-review",
             back_href,
         );
     }
     if state.edit_policy_blocked {
         return error_page(
             StatusCode::CONFLICT,
-            "Edit blocked",
-            "This job encountered a wiki policy warning. Start a new review after resolving it on the wiki.",
+            "findsmith-api-edit-blocked",
+            "findsmith-api-this-job-encountered-a-wiki-policy-warning-start-a-new-review-after-reso",
             back_href,
         );
     }
@@ -2173,24 +2427,24 @@ async fn save_current_page(
     else {
         return error_page(
             StatusCode::BAD_REQUEST,
-            "Cannot save",
-            "The reviewed text, base revision, and start timestamp are required.",
+            "findsmith-api-cannot-save",
+            "findsmith-api-the-reviewed-text-base-revision-and-start-timestamp-are-required",
             back_href,
         );
     };
     if !form.policy_acknowledged && !state.policy_acknowledged {
         return error_page(
             StatusCode::BAD_REQUEST,
-            "Policy acknowledgement required",
-            "Acknowledge the selected wiki's editing policies before saving.",
+            "findsmith-api-policy-acknowledgement-required",
+            "findsmith-api-acknowledge-the-selected-wiki-s-editing-policies-before-saving",
             back_href,
         );
     }
     if text.len() > crate::rules::MAX_OUTPUT_BYTES {
         return error_page(
             StatusCode::BAD_REQUEST,
-            "Cannot save",
-            "The proposed wikitext is too large.",
+            "findsmith-api-cannot-save",
+            "findsmith-api-the-proposed-wikitext-is-too-large",
             back_href,
         );
     }
@@ -2202,7 +2456,12 @@ async fn save_current_page(
     let summary = match complete_edit_summary(&summary_prefix) {
         Ok(summary) => summary,
         Err(message) => {
-            return error_page(StatusCode::BAD_REQUEST, "Cannot save", message, back_href);
+            return error_page(
+                StatusCode::BAD_REQUEST,
+                "findsmith-api-cannot-save",
+                message,
+                back_href,
+            );
         }
     };
     let title = state
@@ -2211,8 +2470,18 @@ async fn save_current_page(
         .unwrap_or_default();
     let access = wikis::access_unregistered(wiki_url, user_agent, username).await;
     if !access.is_some_and(|access| access.allowed == Some(true)) {
-        return pause_edit(repository, owner, project_id, job_id, state_version, state,
-            "permission", "This account is not approved in this wiki's AutoWikiBrowser CheckPageJSON, or access could not be verified.", back_href).await;
+        return pause_edit(
+            repository,
+            owner,
+            project_id,
+            job_id,
+            state_version,
+            state,
+            "permission",
+            "findsmith-api-save-awb-access",
+            back_href,
+        )
+        .await;
     }
     let permissions = match edit_permissions(wiki_url, user_agent, access_token).await {
         Ok(permissions) => permissions,
@@ -2225,7 +2494,7 @@ async fn save_current_page(
                 state_version,
                 state,
                 classify_edit_error(&error).label(),
-                "Could not verify local Wikimedia edit permissions.",
+                "findsmith-api-save-rights-unverified",
                 back_href,
             )
             .await;
@@ -2237,17 +2506,11 @@ async fn save_current_page(
         || permissions.new_messages
     {
         let (kind, message) = if permissions.blocked {
-            ("block", "This account is blocked on the selected wiki.")
+            ("block", "findsmith-api-save-account-blocked")
         } else if permissions.new_messages {
-            (
-                "permission",
-                "Read your new messages on the selected wiki before editing.",
-            )
+            ("permission", "findsmith-api-save-new-messages")
         } else {
-            (
-                "permission",
-                "This account lacks read or edit rights on the selected wiki.",
-            )
+            ("permission", "findsmith-api-save-rights-missing")
         };
         return pause_edit(
             repository,
@@ -2271,7 +2534,7 @@ async fn save_current_page(
             state_version,
             state,
             "permission",
-            "The selected minor or bot flag is not permitted for this account.",
+            "findsmith-api-save-flags-denied",
             back_href,
         )
         .await;
@@ -2287,7 +2550,10 @@ async fn save_current_page(
                 state_version,
                 state,
                 "conflict",
-                &format!("Reload and review this page again: {error}"),
+                &localization::required_with_args(
+                    "findsmith-api-save-reload-page",
+                    &[&error.to_string()],
+                ),
                 back_href,
             )
             .await;
@@ -2302,7 +2568,7 @@ async fn save_current_page(
             state_version,
             state,
             "conflict",
-            "The page revision changed. Reload and review the latest revision before saving.",
+            "findsmith-api-save-revision-changed",
             back_href,
         )
         .await;
@@ -2316,7 +2582,7 @@ async fn save_current_page(
             state_version,
             state,
             "protection",
-            "This page is not editable by the current account.",
+            "findsmith-api-save-page-protected",
             back_href,
         )
         .await;
@@ -2333,7 +2599,7 @@ async fn save_current_page(
                 state_version,
                 state,
                 "bot exclusion",
-                "This page excludes automated edits with {{bots}} or {{nobots}}.",
+                "findsmith-api-save-bot-excluded",
                 back_href,
             )
             .await;
@@ -2347,7 +2613,7 @@ async fn save_current_page(
                 state_version,
                 state,
                 "bot exclusion",
-                "Could not verify this page's bot-exclusion templates.",
+                "findsmith-api-save-bot-check-failed",
                 back_href,
             )
             .await;
@@ -2356,8 +2622,8 @@ async fn save_current_page(
     if snapshot.content == *text {
         return error_page(
             StatusCode::CONFLICT,
-            "No changes",
-            "The proposed wikitext matches the current revision.",
+            "findsmith-api-no-changes",
+            "findsmith-api-the-proposed-wikitext-matches-the-current-revision",
             back_href,
         );
     }
@@ -2366,7 +2632,7 @@ async fn save_current_page(
     state.status = JobStatus::Stopped;
     if let Some(entry) = state.queue.get_mut(state.position) {
         entry.edit_result = Some("in_flight".to_owned());
-        entry.reason = Some("Edit outcome unknown until Wikimedia responds; do not retry this job if the request is interrupted.".to_owned());
+        entry.reason = Some("findsmith-api-edit-outcome-unknown-reason".to_owned());
     }
     if let Err(error) = repository
         .update_state(owner, project_id, job_id, state, state_version)
@@ -2424,17 +2690,13 @@ async fn save_current_page(
             if let Some(entry) = state.queue.get_mut(state.position) {
                 entry.edit_result = Some(kind.label().to_owned());
                 entry.reason = Some(if ambiguous {
-                    "The edit outcome is unknown. Check the wiki page and start a new review; this job cannot retry it.".to_owned()
+                    "findsmith-api-save-outcome-ambiguous".to_owned()
                 } else if kind == EditFailureKind::Conflict {
-                    "Edit conflict. Reload and review the current revision before trying again."
-                        .to_owned()
+                    "findsmith-api-save-conflict".to_owned()
                 } else if kind == EditFailureKind::AbuseFilter {
-                    "The wiki's abuse filter warned or blocked this edit. Review it on the wiki; FindSmith will not confirm it automatically.".to_owned()
+                    "findsmith-api-save-abuse-filter".to_owned()
                 } else {
-                    format!(
-                        "MediaWiki rejected the edit ({}). Review the page before resuming.",
-                        kind.label()
-                    )
+                    localization::required_with_args("findsmith-api-save-rejected", &[kind.label()])
                 });
             }
         }
@@ -2474,6 +2736,7 @@ async fn pause_edit(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn job_action_response(
     database: &DatabaseConnection,
     owner: &str,
@@ -2508,16 +2771,17 @@ async fn job_action_response(
     if state.edit_in_flight {
         return error_page(
             StatusCode::CONFLICT,
-            "Edit outcome unknown",
-            "An edit request may have reached Wikimedia. Start a new review after checking the page; this job cannot retry it.",
+            &localization::message("findsmith-api-edit-outcome-unknown")
+                .expect("English edit outcome message exists"),
+            "findsmith-api-an-edit-request-may-have-reached-wikimedia-start-a-new-review-after-chec",
             &back_href,
         );
     }
     if state.edit_policy_blocked && form.action != "stop" {
         return error_page(
             StatusCode::CONFLICT,
-            "Edit blocked",
-            "This job encountered a wiki policy warning. Start a new review after resolving it on the wiki.",
+            "findsmith-api-edit-blocked",
+            "findsmith-api-this-job-encountered-a-wiki-policy-warning-start-a-new-review-after-reso",
             &back_href,
         );
     }
@@ -2547,8 +2811,8 @@ async fn job_action_response(
     {
         return error_page(
             StatusCode::CONFLICT,
-            "Pre-parse is running",
-            "Stop pre-parse before reviewing pages.",
+            "findsmith-api-pre-parse-is-running",
+            "findsmith-api-stop-pre-parse-before-reviewing-pages",
             &back_href,
         );
     }
@@ -2557,8 +2821,8 @@ async fn job_action_response(
     {
         return error_page(
             StatusCode::CONFLICT,
-            "Review stopped",
-            "Resume the review before navigating its pages.",
+            "findsmith-api-review-stopped",
+            "findsmith-api-resume-the-review-before-navigating-its-pages",
             &back_href,
         );
     }
@@ -2567,8 +2831,8 @@ async fn job_action_response(
             if state.status != JobStatus::Active {
                 return error_page(
                     StatusCode::CONFLICT,
-                    "Cannot pre-parse",
-                    "Start or resume a review first.",
+                    "findsmith-api-cannot-pre-parse",
+                    "findsmith-api-start-or-resume-a-review-first",
                     &back_href,
                 );
             }
@@ -2597,8 +2861,8 @@ async fn job_action_response(
             if !state.preparse_active {
                 return error_page(
                     StatusCode::CONFLICT,
-                    "Pre-parse stopped",
-                    "Start pre-parse before scanning pages.",
+                    "findsmith-api-pre-parse-stopped",
+                    "findsmith-api-start-pre-parse-before-scanning-pages",
                     &back_href,
                 );
             }
@@ -2628,7 +2892,7 @@ async fn job_action_response(
                                     if result.text == snapshot.content {
                                         entry.status = QueueEntryStatus::Skipped;
                                         entry.reason =
-                                            Some("No changes after rules (pre-parse).".to_owned());
+                                            Some("findsmith-api-preparse-no-changes".to_owned());
                                     }
                                 }
                                 if result.text != snapshot.content
@@ -2657,23 +2921,30 @@ async fn job_action_response(
                                             state.queue.get_mut(state.preparse_cursor)
                                     {
                                         entry.status = QueueEntryStatus::Skipped;
-                                        entry.reason = Some(
-                                            "Rendered output is unchanged (pre-parse).".to_owned(),
-                                        );
+                                        entry.reason =
+                                            Some("findsmith-api-preparse-same-render".to_owned());
                                     }
                                 }
                             }
                             Err(error) => {
                                 if let Some(entry) = state.queue.get_mut(state.preparse_cursor) {
-                                    entry.reason =
-                                        Some(format!("Pre-parse transformation failed: {error}"));
+                                    entry.reason = Some(
+                                        localization::message_with_args(
+                                            "findsmith-api-preparse-transformation-failed",
+                                            &[&localization::from_source(&error)],
+                                        )
+                                        .expect("English pre-parse error message exists"),
+                                    );
                                 }
                             }
                         }
                     }
                     Err(error) => {
                         if let Some(entry) = state.queue.get_mut(state.preparse_cursor) {
-                            entry.reason = Some(format!("Pre-parse could not load page: {error}"));
+                            entry.reason = Some(localization::required_with_args(
+                                "findsmith-api-preparse-page-load-failed",
+                                &[&error.to_string()],
+                            ));
                         }
                     }
                 }
@@ -2686,8 +2957,8 @@ async fn job_action_response(
             if !state.resume() {
                 return error_page(
                     StatusCode::CONFLICT,
-                    "Cannot resume review",
-                    "Only a stopped review with a saved queue can be resumed.",
+                    "findsmith-api-cannot-resume-review",
+                    "findsmith-api-only-a-stopped-review-with-a-saved-queue-can-be-resumed",
                     &back_href,
                 );
             }
@@ -2700,12 +2971,12 @@ async fn job_action_response(
                 JobStatus::Stopped
             };
             if state.status == JobStatus::Cancelled {
-                state.generation_message = "Queue generation cancelled.".to_owned();
+                state.generation_message = "findsmith-api-queue-generation-cancelled".to_owned();
             }
         }
         "skip" => state.advance(
             QueueEntryStatus::Skipped,
-            Some("Skipped during manual review.".to_owned()),
+            Some("findsmith-api-manual-skip".to_owned()),
         ),
         "next" => {
             if let Some(entry) = state.current().filter(|entry| entry.status.is_pending()) {
@@ -2731,12 +3002,24 @@ async fn job_action_response(
                         }
                         Err(error) => state.advance(
                             QueueEntryStatus::Skipped,
-                            Some(format!("Transformation failed: {error}")),
+                            Some(
+                                localization::message_with_args(
+                                    "findsmith-api-transformation-failed",
+                                    &[&localization::from_source(&error)],
+                                )
+                                .expect("English transformation error message exists"),
+                            ),
                         ),
                     },
                     Err(error) => state.advance(
                         QueueEntryStatus::Skipped,
-                        Some(format!("Page load failed: {error}")),
+                        Some(
+                            localization::message_with_args(
+                                "findsmith-api-page-load-failed",
+                                &[&error.to_string()],
+                            )
+                            .expect("English page load error message exists"),
+                        ),
                     ),
                 }
             } else {
@@ -2746,8 +3029,8 @@ async fn job_action_response(
         _ => {
             return error_page(
                 StatusCode::BAD_REQUEST,
-                "Invalid review action",
-                "Choose Previous, Skip, Stop, Resume, Next, or Pre-parse.",
+                "findsmith-api-invalid-review-action",
+                "findsmith-api-choose-previous-skip-stop-resume-next-or-pre-parse",
                 &back_href,
             );
         }
@@ -2788,24 +3071,24 @@ async fn queue_action_response(
     if state.edit_in_flight || state.edit_policy_blocked {
         return error_page(
             StatusCode::CONFLICT,
-            "Queue locked",
-            "This job is paused after an edit attempt. Start a new review after checking the wiki page.",
+            "findsmith-api-queue-locked",
+            "findsmith-api-this-job-is-paused-after-an-edit-attempt-start-a-new-review-after-checki",
             &back_href,
         );
     }
     if state.status == JobStatus::Building {
         return error_page(
             StatusCode::CONFLICT,
-            "Queue is still building",
-            "Cancel generation or wait for it to finish before changing the queue.",
+            "findsmith-api-queue-is-still-building",
+            "findsmith-api-cancel-generation-or-wait-for-it-to-finish-before-changing-the-queue",
             &back_href,
         );
     }
     if state.preparse_active {
         return error_page(
             StatusCode::CONFLICT,
-            "Pre-parse is running",
-            "Stop pre-parse before changing the queue.",
+            "findsmith-api-pre-parse-is-running",
+            "findsmith-api-stop-pre-parse-before-changing-the-queue",
             &back_href,
         );
     }
@@ -2814,8 +3097,8 @@ async fn queue_action_response(
             if !state.select(form.index) {
                 return error_page(
                     StatusCode::BAD_REQUEST,
-                    "Cannot select page",
-                    "Choose a page in the current list after generation finishes.",
+                    "findsmith-api-cannot-select-page",
+                    "findsmith-api-choose-a-page-in-the-current-list-after-generation-finishes",
                     &back_href,
                 );
             }
@@ -2826,20 +3109,23 @@ async fn queue_action_response(
         "clear" => state.clear(),
         "sort_by_title" | "sort_remaining" => state.sort_by_title(),
         "append" => {
-            let titles = match source_values(&split_lines(&form.titles), "Appended pages") {
+            let titles = match source_values(
+                &split_lines(&form.titles),
+                &localization::required("findsmith-api-source-appended-pages"),
+            ) {
                 Ok(titles) if !titles.is_empty() => titles,
                 Ok(_) => {
                     return error_page(
                         StatusCode::BAD_REQUEST,
-                        "No pages to append",
-                        "Enter at least one page title.",
+                        "findsmith-api-no-pages-to-append",
+                        "findsmith-api-enter-at-least-one-page-title",
                         &back_href,
                     );
                 }
                 Err(message) => {
                     return error_page(
                         StatusCode::BAD_REQUEST,
-                        "Cannot append pages",
+                        "findsmith-api-cannot-append-pages",
                         &message,
                         &back_href,
                     );
@@ -2851,8 +3137,11 @@ async fn queue_action_response(
                     Err(error) => {
                         return error_page(
                             StatusCode::BAD_GATEWAY,
-                            "Could not append pages",
-                            &format!("MediaWiki request failed: {error}"),
+                            "findsmith-api-could-not-append-pages",
+                            &localization::required_with_args(
+                                "findsmith-api-mediawiki-request-error",
+                                &[&error.to_string()],
+                            ),
                             &back_href,
                         );
                     }
@@ -2873,8 +3162,8 @@ async fn queue_action_response(
         _ => {
             return error_page(
                 StatusCode::BAD_REQUEST,
-                "Invalid queue action",
-                "Choose select, append, move, remove, sort, or clear.",
+                "findsmith-api-invalid-queue-action",
+                "findsmith-api-choose-select-append-move-remove-sort-or-clear",
                 &back_href,
             );
         }
@@ -2891,8 +3180,8 @@ async fn queue_action_response(
 fn job_not_found(project_id: &str) -> Response {
     error_page(
         StatusCode::NOT_FOUND,
-        "Review not found",
-        "This review does not exist or you do not have access to it.",
+        "findsmith-api-review-not-found",
+        "findsmith-api-this-review-does-not-exist-or-you-do-not-have-access-to-it",
         &format!("/projects/{project_id}"),
     )
 }
@@ -2901,8 +3190,8 @@ fn job_error_response(error: JobError, back_href: &str) -> Response {
     match error {
         JobError::Conflict => error_page(
             StatusCode::CONFLICT,
-            "Review changed elsewhere",
-            "Reload the review to get the latest progress, then try again.",
+            "findsmith-api-review-changed-elsewhere",
+            "findsmith-api-reload-the-review-to-get-the-latest-progress-then-try-again",
             back_href,
         ),
         JobError::Database(error) => internal_error(error),
@@ -2935,7 +3224,7 @@ async fn render_page_preview_error(
         csrf_token: &form.csrf_token,
         page_title: &form.page_title,
         page_preview: None,
-        page_preview_error: Some(message),
+        page_preview_error: Some(localization::from_source(message)),
         latest_job_id: "",
         latest_job_status: "",
         latest_job_message: "",
@@ -2984,7 +3273,12 @@ fn protection_text(snapshot: &PageSnapshot) -> String {
         snapshot
             .protection
             .iter()
-            .map(|item| format!("{}: {} until {}", item.kind, item.level, item.expiry))
+            .map(|item| {
+                localization::required_with_args(
+                    "findsmith-api-protection-until",
+                    &[&item.kind, &item.level, &item.expiry],
+                )
+            })
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -3006,16 +3300,16 @@ async fn update_project_response(
         if state.edit_in_flight || state.edit_policy_blocked {
             return error_page(
                 StatusCode::CONFLICT,
-                "Review is paused",
-                "Check the wiki page and build a new list before changing rules after an uncertain or policy-sensitive edit.",
+                "findsmith-api-review-is-paused",
+                "findsmith-api-check-the-wiki-page-and-build-a-new-list-before-changing-rules-after-an",
                 &format!("/projects/{id}"),
             );
         }
         if state.preparse_active || state.status.is_building() {
             return error_page(
                 StatusCode::CONFLICT,
-                "Review is busy",
-                "Wait for list generation or stop pre-parse before changing the rules.",
+                "findsmith-api-review-is-busy",
+                "findsmith-api-wait-for-list-generation-or-stop-pre-parse-before-changing-the-rules",
                 &format!("/projects/{id}"),
             );
         }
@@ -3080,7 +3374,7 @@ async fn save_project(
         Err(message) => {
             return Err(Box::new(error_page(
                 StatusCode::BAD_REQUEST,
-                "Invalid replacement rules",
+                "findsmith-api-invalid-replacement-rules",
                 &message,
                 &back_href,
             )));
@@ -3089,7 +3383,7 @@ async fn save_project(
     if let Err(error) = RuleEngine::compile(&rules) {
         return Err(Box::new(error_page(
             StatusCode::BAD_REQUEST,
-            "Invalid replacement rules",
+            "findsmith-api-invalid-replacement-rules",
             &error.to_string(),
             &back_href,
         )));
@@ -3099,8 +3393,8 @@ async fn save_project(
         Ok(None) => {
             return Err(Box::new(error_page(
                 StatusCode::BAD_REQUEST,
-                "Unsupported wiki",
-                "Select one of the available wikis.",
+                "findsmith-api-unsupported-wiki",
+                "findsmith-api-select-one-of-the-available-wikis",
                 &back_href,
             )));
         }
@@ -3111,7 +3405,7 @@ async fn save_project(
         Err(message) => {
             return Err(Box::new(error_page(
                 StatusCode::BAD_REQUEST,
-                "Invalid queue limit",
+                "findsmith-api-invalid-queue-limit",
                 &message,
                 &back_href,
             )));
@@ -3123,33 +3417,31 @@ async fn save_project(
             Err(message) => {
                 return Err(Box::new(error_page(
                     StatusCode::BAD_REQUEST,
-                    "Invalid namespaces",
+                    "findsmith-api-invalid-namespaces",
                     &message,
                     &back_href,
                 )));
             }
         };
-    if let Ok(Some(wiki)) = wikis::by_id(database, &form.wiki_id).await {
-        if let Ok(available) = wikis::namespaces(&wiki) {
-            if namespaces
-                .iter()
-                .any(|id| !available.iter().any(|entry| entry.id == *id))
-            {
-                return Err(Box::new(error_page(
-                    StatusCode::BAD_REQUEST,
-                    "Invalid namespaces",
-                    "Select namespaces available on this wiki.",
-                    &back_href,
-                )));
-            }
-        }
+    if let Ok(Some(wiki)) = wikis::by_id(database, &form.wiki_id).await
+        && let Ok(available) = wikis::namespaces(&wiki)
+        && namespaces
+            .iter()
+            .any(|id| !available.iter().any(|entry| entry.id == *id))
+    {
+        return Err(Box::new(error_page(
+            StatusCode::BAD_REQUEST,
+            "findsmith-api-invalid-namespaces",
+            "findsmith-api-select-namespaces-available-on-this-wiki",
+            &back_href,
+        )));
     }
     let sources = match page_sources_from_form(form) {
         Ok(sources) => sources,
         Err(message) => {
             return Err(Box::new(error_page(
                 StatusCode::BAD_REQUEST,
-                "Invalid page sources",
+                "findsmith-api-invalid-page-sources",
                 &message,
                 &back_href,
             )));
@@ -3170,7 +3462,7 @@ async fn save_project(
     if let Err(message) = validate_project_sources(&state) {
         return Err(Box::new(error_page(
             StatusCode::BAD_REQUEST,
-            "Invalid page sources",
+            "findsmith-api-invalid-page-sources",
             &message,
             &back_href,
         )));
@@ -3191,8 +3483,8 @@ async fn save_project(
         Ok(Some(project)) => Ok((project, saved_rules)),
         Ok(None) => Err(Box::new(error_page(
             StatusCode::NOT_FOUND,
-            "Project not found",
-            "This project does not exist or you do not have access to it.",
+            "findsmith-api-project-not-found",
+            "findsmith-api-this-project-does-not-exist-or-you-do-not-have-access-to-it",
             "/workspace",
         ))),
         Err(error) => Err(Box::new(project_error_response(error, &back_href))),
@@ -3210,10 +3502,10 @@ fn split_lines(value: &str) -> Vec<String> {
 
 fn page_sources_from_form(form: &UpdateProjectForm) -> Result<Vec<PageSource>, String> {
     if form.source_kind.len() != form.source_value.len() {
-        return Err("The submitted page sources are incomplete. Reload and try again.".to_owned());
+        return Err("findsmith-api-sources-incomplete".to_owned());
     }
     if form.source_kind.len() > 100 {
-        return Err("A project can contain at most 100 page sources.".to_owned());
+        return Err("findsmith-api-sources-limit".to_owned());
     }
 
     form.source_kind
@@ -3241,7 +3533,7 @@ fn parse_page_source(kind: &str, mut values: Vec<String>) -> Result<PageSource, 
         "links_on_page" => PageSourceKind::LinksOnPage,
         "categories_on_page" => PageSourceKind::CategoriesOnPage,
         "redirects_to_page" => PageSourceKind::RedirectsToPage,
-        _ => return Err("A page source has an unsupported type.".to_owned()),
+        _ => return Err("findsmith-api-source-type-unsupported".to_owned()),
     };
     if kind == PageSourceKind::Watchlist {
         values = vec!["My watchlist".to_owned()];
@@ -3261,7 +3553,7 @@ fn parse_page_source(kind: &str, mut values: Vec<String>) -> Result<PageSource, 
             }
         }
     }
-    source_values(&values, kind.label())?;
+    source_values(&values, &source_label(kind))?;
     Ok(PageSource { kind, values })
 }
 
@@ -3301,18 +3593,28 @@ fn page_source_views(sources: &[PageSource]) -> Vec<PageSourceView> {
                 .map(String::as_str)
                 .unwrap_or_default();
             let summary = if source.values.len() > 1 {
-                format!("{first} and {} more", source.values.len() - 1)
+                localization::required_with_args(
+                    "findsmith-api-source-more",
+                    &[first, &(source.values.len() - 1).to_string()],
+                )
             } else {
                 first.to_owned()
             };
             PageSourceView {
                 kind: source.kind.form_value(),
-                label: source.kind.label(),
+                label: source_label(source.kind),
                 value: source.values.join("\n"),
                 summary,
             }
         })
         .collect()
+}
+
+fn source_label(kind: PageSourceKind) -> String {
+    localization::required(&format!(
+        "findsmith-project-source-{}",
+        kind.form_value().replace('_', "-"),
+    ))
 }
 
 fn namespace_options(available: &[wikis::Namespace], selected: &[i64]) -> Vec<NamespaceOption> {
@@ -3392,17 +3694,16 @@ async fn resolve_project_wiki_url(
     if let Ok(Some(project)) = ProjectRepository::new(database)
         .get(owner, project_id)
         .await
+        && wiki_id == project.wiki_url
     {
-        if wiki_id == project.wiki_url {
-            return Ok(Some(project.wiki_url));
-        }
+        return Ok(Some(project.wiki_url));
     }
     Ok(None)
 }
 
 fn validate_project_sources(state: &ProjectState) -> Result<(), String> {
     for source in state.ordered_sources() {
-        source_values(&source.values, source.kind.label())?;
+        source_values(&source.values, &source_label(source.kind))?;
     }
     Ok(())
 }
@@ -3412,8 +3713,9 @@ fn parse_namespaces(values: &[String]) -> Result<Vec<i64>, String> {
         .iter()
         .map(String::as_str)
         .map(|item| {
-            item.parse::<i64>()
-                .map_err(|_| format!("“{item}” is not a namespace ID."))
+            item.parse::<i64>().map_err(|_| {
+                localization::required_with_args("findsmith-api-namespace-id-invalid", &[item])
+            })
         })
         .collect()
 }
@@ -3430,9 +3732,7 @@ fn replacement_rules(form: &UpdateProjectForm) -> Result<Vec<ReplacementRule>, S
         || (!form.rule_parameter.is_empty() && form.rule_parameter.len() != count)
         || (!form.rule_name.is_empty() && form.rule_name.len() != count)
     {
-        return Err(
-            "The submitted rule fields are incomplete. Reload the page and try again.".to_owned(),
-        );
+        return Err("findsmith-api-rules-incomplete".to_owned());
     }
 
     let enabled = rule_indexes(&form.rule_enabled, count)?;
@@ -3450,7 +3750,10 @@ fn replacement_rules(form: &UpdateProjectForm) -> Result<Vec<ReplacementRule>, S
     for index in 0..count {
         let name = form.rule_name.get(index).map(String::as_str).unwrap_or("");
         if name.chars().count() > 255 {
-            return Err(format!("Rule {} name is too long.", index + 1));
+            return Err(localization::required_with_args(
+                "findsmith-api-rule-name-too-long",
+                &[&(index + 1).to_string()],
+            ));
         }
         if form.rule_find[index].is_empty() && form.rule_replace[index].is_empty() {
             continue;
@@ -3470,25 +3773,40 @@ fn replacement_rules(form: &UpdateProjectForm) -> Result<Vec<ReplacementRule>, S
             "template_rename" => RuleOperation::TemplateRename,
             "template_parameter_set" => RuleOperation::TemplateParameterSet,
             "template_parameter_remove" => RuleOperation::TemplateParameterRemove,
-            _ => return Err(format!("Rule {} has an invalid operation.", index + 1)),
+            _ => {
+                return Err(localization::required_with_args(
+                    "findsmith-api-rule-operation-invalid",
+                    &[&(index + 1).to_string()],
+                ));
+            }
         };
         let regex = match form.rule_type[index].as_str() {
             "plain" => false,
             "regex" => true,
-            _ => return Err(format!("Rule {} has an invalid type.", index + 1)),
+            _ => {
+                return Err(localization::required_with_args(
+                    "findsmith-api-rule-type-invalid",
+                    &[&(index + 1).to_string()],
+                ));
+            }
         };
         let case_sensitive = match form.rule_case[index].as_str() {
             "sensitive" => true,
             "insensitive" => false,
-            _ => return Err(format!("Rule {} has an invalid case option.", index + 1)),
+            _ => {
+                return Err(localization::required_with_args(
+                    "findsmith-api-rule-case-invalid",
+                    &[&(index + 1).to_string()],
+                ));
+            }
         };
         let replace_all = match form.rule_scope[index].as_str() {
             "all" => true,
             "first" => false,
             _ => {
-                return Err(format!(
-                    "Rule {} has an invalid replacement scope.",
-                    index + 1
+                return Err(localization::required_with_args(
+                    "findsmith-api-rule-scope-invalid",
+                    &[&(index + 1).to_string()],
                 ));
             }
         };
@@ -3531,12 +3849,12 @@ fn rule_indexes(values: &[String], count: usize) -> Result<HashSet<usize>, Strin
         .map(|value| {
             value
                 .parse::<usize>()
-                .map_err(|_| "A submitted rule index is invalid.".to_owned())
+                .map_err(|_| "findsmith-api-rule-index-invalid".to_owned())
                 .and_then(|index| {
                     if index < count {
                         Ok(index)
                     } else {
-                        Err("A submitted rule index is out of range.".to_owned())
+                        Err("findsmith-api-rule-index-range".to_owned())
                     }
                 })
         })
@@ -3553,8 +3871,8 @@ async fn delete_project_response(
     if form.confirmation.as_deref() != Some("delete") {
         return error_page(
             StatusCode::BAD_REQUEST,
-            "Deletion not confirmed",
-            "Confirm that you want to permanently delete this project.",
+            "findsmith-api-deletion-not-confirmed",
+            "findsmith-api-confirm-that-you-want-to-permanently-delete-this-project",
             &back_href,
         );
     }
@@ -3563,14 +3881,15 @@ async fn delete_project_response(
         Ok(true) => action_response("/workspace".to_owned(), Some(id.to_owned())),
         Ok(false) => error_page(
             StatusCode::NOT_FOUND,
-            "Project not found",
-            "This project does not exist or you do not have access to it.",
+            "findsmith-api-project-not-found",
+            "findsmith-api-this-project-does-not-exist-or-you-do-not-have-access-to-it",
             "/workspace",
         ),
         Err(error) => project_error_response(error, &back_href),
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn render_index(
     authentication: Option<&Authentication>,
     owner: Option<&str>,
@@ -3578,6 +3897,8 @@ async fn render_index(
     user_agent: &str,
     include_groups: bool,
     requested_wiki_id: Option<&str>,
+    language: &str,
+    csrf_token: &str,
 ) -> Response {
     if let Some(authentication) = authentication {
         debug_assert!(!authentication.access_token().is_empty());
@@ -3605,10 +3926,13 @@ async fn render_index(
                 return render(SessionResponse {
                     username: Some(authentication.username()),
                     groups: Vec::new(),
-                    groups_error: Some(format!(
-                        "Could not load groups: unsupported wiki {requested_wiki_id}."
+                    groups_error: Some(localization::required_with_args(
+                        "findsmith-api-groups-unsupported",
+                        &[requested_wiki_id],
                     )),
                     can_logout: authentication.can_logout(),
+                    language,
+                    csrf_token,
                 });
             };
             match crate::mediawiki::user_groups(
@@ -3621,8 +3945,9 @@ async fn render_index(
                 Ok(groups) => (groups, None),
                 Err(error) => (
                     Vec::new(),
-                    Some(format!(
-                        "Could not load groups for {requested_wiki_id}: {error}"
+                    Some(localization::required_with_args(
+                        "findsmith-api-groups-load",
+                        &[requested_wiki_id, &error.to_string()],
                     )),
                 ),
             }
@@ -3634,6 +3959,8 @@ async fn render_index(
         groups,
         groups_error,
         can_logout: authentication.is_some_and(Authentication::can_logout),
+        language,
+        csrf_token,
     })
 }
 
@@ -3641,20 +3968,20 @@ fn project_error_response(error: ProjectError, back_href: &str) -> Response {
     match error {
         ProjectError::InvalidName => error_page(
             StatusCode::BAD_REQUEST,
-            "Invalid project name",
-            "Project name must contain between 1 and 255 characters.",
+            "findsmith-api-invalid-project-name",
+            "findsmith-api-project-name-must-contain-between-1-and-255-characters",
             back_href,
         ),
         ProjectError::DuplicateName => error_page(
             StatusCode::CONFLICT,
-            "Project name already exists",
-            "Choose a different name for this project.",
+            "findsmith-api-project-name-already-exists",
+            "findsmith-api-choose-a-different-name-for-this-project",
             back_href,
         ),
         ProjectError::Conflict => error_page(
             StatusCode::CONFLICT,
-            "Project changed elsewhere",
-            "Reload the project to get the latest version, then apply your changes again.",
+            "findsmith-api-project-changed-elsewhere",
+            "findsmith-api-reload-the-project-to-get-the-latest-version-then-apply-your-changes-aga",
             back_href,
         ),
         ProjectError::Database(error) => internal_error(error),
@@ -3665,8 +3992,8 @@ fn project_error_response(error: ProjectError, back_href: &str) -> Response {
 fn csrf_error(back_href: &str) -> Response {
     error_page(
         StatusCode::FORBIDDEN,
-        "Request could not be verified",
-        "Reload the page and try again. No changes were made.",
+        "findsmith-api-request-could-not-be-verified",
+        "findsmith-api-reload-the-page-and-try-again-no-changes-were-made",
         back_href,
     )
 }
@@ -3675,9 +4002,9 @@ fn error_page(status: StatusCode, title: &str, message: &str, back_href: &str) -
     render_with_status(
         status,
         ErrorResponse {
-            title,
-            message,
-            back_href,
+            title: localization::from_source(title),
+            message: localization::from_source(message),
+            back_href: back_href.to_owned(),
         },
     )
 }
@@ -3708,9 +4035,9 @@ fn error_page_without_rendering() -> Response {
     render_with_status(
         StatusCode::INTERNAL_SERVER_ERROR,
         ErrorResponse {
-            title: "Unexpected error",
-            message: "An unexpected error occurred.",
-            back_href: "/",
+            title: localization::from_source("findsmith-api-unexpected-error"),
+            message: localization::from_source("findsmith-api-an-unexpected-error-occurred"),
+            back_href: "/".to_owned(),
         },
     )
 }
@@ -3832,9 +4159,12 @@ mod tests {
         let category = parse_page_source("category", vec!["Scientists".to_owned()]).unwrap();
         let template =
             parse_page_source("transclusions", vec!["Infobox person".to_owned()]).unwrap();
+        let backlinks = parse_page_source("backlinks", vec!["Example".to_owned()]).unwrap();
 
         assert_eq!(category.values, ["Category:Scientists"]);
         assert_eq!(template.values, ["Template:Infobox person"]);
+        assert_eq!(template.kind.form_value(), "transclusions");
+        assert_eq!(backlinks.kind.form_value(), "backlinks");
     }
 
     #[test]

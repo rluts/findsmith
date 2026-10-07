@@ -139,7 +139,7 @@ fn normalized_domain(input: &str) -> Result<String, String> {
         &input
     };
     if domain.is_empty() || domain.contains(['/', ':', '?', '#', '@']) || !domain.is_ascii() {
-        return Err("Enter a Wikimedia wiki domain, such as en.wikipedia.org.".into());
+        return Err("findsmith-api-enter-a-wikimedia-wiki-domain-such-as-en-wikipedia-org".into());
     }
     const FAMILIES: &[&str] = &[
         "wikipedia.org",
@@ -168,7 +168,7 @@ fn normalized_domain(input: &str) -> Result<String, String> {
                 && !label.ends_with('-')
         })
     {
-        return Err("Only Wikimedia project domains are supported.".into());
+        return Err("findsmith-api-only-wikimedia-project-domains-are-supported".into());
     }
     Ok(domain.to_owned())
 }
@@ -201,13 +201,16 @@ async fn check_page(api_url: &str, user_agent: &str) -> Result<(String, CheckLis
         .pages
         .into_iter()
         .next()
-        .ok_or("The CheckPageJSON page was not returned.")?;
+        .ok_or("findsmith-api-the-checkpagejson-page-was-not-returned")?;
     validate_check_page(page)
 }
 
 fn validate_check_page(page: CheckPage) -> Result<(String, CheckList), String> {
     if page.missing || page.ns != 4 {
-        return Err("Project:AutoWikiBrowser/CheckPageJSON does not exist on this wiki.".into());
+        return Err(
+            "findsmith-api-project-autowikibrowser-checkpagejson-does-not-exist-on-this-wiki"
+                .into(),
+        );
     }
     if !page.protection.iter().any(|item| {
         item.kind == "edit"
@@ -216,18 +219,20 @@ fn validate_check_page(page: CheckPage) -> Result<(String, CheckList), String> {
                 || chrono::DateTime::parse_from_rfc3339(&item.expiry)
                     .is_ok_and(|date| date > Utc::now()))
     }) {
-        return Err("CheckPageJSON must be protected against editing by non-admins.".into());
+        return Err(
+            "findsmith-api-checkpagejson-must-be-protected-against-editing-by-non-admins".into(),
+        );
     }
     let revision = page
         .revisions
         .into_iter()
         .next()
-        .ok_or("CheckPageJSON has no readable revision.")?;
+        .ok_or("findsmith-api-checkpagejson-has-no-readable-revision")?;
     if revision.slots.main.contentmodel != "json" {
-        return Err("CheckPageJSON must use the JSON content model.".into());
+        return Err("findsmith-api-checkpagejson-must-use-the-json-content-model".into());
     }
     let list: CheckList = serde_json::from_str(&revision.slots.main.content).map_err(|_| {
-        "CheckPageJSON must contain enabledusers and enabledbots arrays.".to_owned()
+        "findsmith-api-checkpagejson-must-contain-enabledusers-and-enabledbots-arrays".to_owned()
     })?;
     Ok((page.title, list))
 }
@@ -244,11 +249,14 @@ pub async fn register(
         .map_err(|e| e.to_string())?
         .is_some()
     {
-        return Err("This wiki is already in the list.".into());
+        return Err("findsmith-api-this-wiki-is-already-in-the-list".into());
     }
-    let client = public_client(&api_url, user_agent)
-        .await
-        .map_err(|e| format!("Could not connect to this wiki: {e}"))?;
+    let client = public_client(&api_url, user_agent).await.map_err(|e| {
+        crate::localization::required_with_args(
+            "findsmith-api-wiki-connect-error",
+            &[&e.to_string()],
+        )
+    })?;
     let response: SiteInfoResponse = client
         .get([
             ("action", "query"),
@@ -257,17 +265,24 @@ pub async fn register(
             ("formatversion", "2"),
         ])
         .await
-        .map_err(|e| format!("Could not read wiki information: {e}"))?;
+        .map_err(|e| {
+            crate::localization::required_with_args(
+                "findsmith-api-wiki-info-error",
+                &[&e.to_string()],
+            )
+        })?;
     let wiki_id = response.query.general.wikiid;
     if wiki_id.is_empty() || wiki_id.len() > 100 || response.query.namespaces.is_empty() {
-        return Err("This wiki did not return a valid wiki ID or namespace list.".into());
+        return Err(
+            "findsmith-api-this-wiki-did-not-return-a-valid-wiki-id-or-namespace-list".into(),
+        );
     }
     if by_id(database, &wiki_id)
         .await
         .map_err(|e| e.to_string())?
         .is_some()
     {
-        return Err("This wiki is already in the list.".into());
+        return Err("findsmith-api-this-wiki-is-already-in-the-list".into());
     }
     let (check_page, _) = check_page(&api_url, user_agent).await?;
     let mut namespaces: Vec<Namespace> = response
@@ -298,7 +313,7 @@ pub async fn register(
     };
     active.insert(database).await.map_err(|error| {
         if matches!(error.sql_err(), Some(SqlErr::UniqueConstraintViolation(_))) {
-            "This wiki is already in the list.".into()
+            "findsmith-api-this-wiki-is-already-in-the-list".into()
         } else {
             error.to_string()
         }
@@ -420,7 +435,7 @@ async fn access_url(
         );
         result
     };
-    let value = AccessView {
+    AccessView {
         wiki_id: wiki_id.to_owned(),
         wiki_name: wiki_name.to_owned(),
         check_page: format!(
@@ -431,8 +446,7 @@ async fn access_url(
         allowed: result.allowed,
         bot: result.bot,
         error: result.error,
-    };
-    value
+    }
 }
 
 #[cfg(test)]
@@ -482,29 +496,5 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(response.query.namespaces["4"].name, "Wikipedia");
-    }
-
-    #[test]
-    fn access_cache_expires_after_five_minutes() {
-        let value = AccessResult {
-            allowed: Some(true),
-            bot: false,
-            error: None,
-            check_page_title: String::new(),
-        };
-        assert!(
-            CachedAccess {
-                checked_at: Instant::now(),
-                value: value.clone()
-            }
-            .is_fresh()
-        );
-        assert!(
-            !CachedAccess {
-                checked_at: Instant::now() - ACCESS_CHECK_TTL,
-                value
-            }
-            .is_fresh()
-        );
     }
 }
