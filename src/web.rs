@@ -3592,7 +3592,9 @@ fn page_source_views(sources: &[PageSource]) -> Vec<PageSourceView> {
                 .first()
                 .map(String::as_str)
                 .unwrap_or_default();
-            let summary = if source.values.len() > 1 {
+            let summary = if source.kind == PageSourceKind::Watchlist {
+                localization::required("findsmith-project-source-watchlist")
+            } else if source.values.len() > 1 {
                 localization::required_with_args(
                     "findsmith-api-source-more",
                     &[first, &(source.values.len() - 1).to_string()],
