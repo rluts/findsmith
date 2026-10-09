@@ -265,6 +265,7 @@
   "findsmith-project-confirm-delete-named-project": "Delete “$1” permanently?",
   "findsmith-preview-frame-title": "Rendered preview of $1",
   "findsmith-edit-summary-autoreplacement": "Autoreplacement",
+  "findsmith-edit-summary-with-attribution": "$1 using $2",
   "findsmith-edit-summary-replacement": "Autoreplacement: $1 -> $2",
   "findsmith-edit-summary-removed": "(removed)",
   "findsmith-edit-summary-empty": "(empty)",

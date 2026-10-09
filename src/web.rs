@@ -360,7 +360,7 @@ struct ReviewResponse<'a> {
     unavailable: usize,
     rule_count: usize,
     suggested_edit_summary: String,
-    edit_summary_suffix: &'static str,
+    edit_summary_attribution_link: &'static str,
     generation_message: String,
     preparse_active: bool,
     preparse_cursor: usize,
@@ -537,7 +537,7 @@ pub struct JobActionForm {
     edit_summary: Option<String>,
 }
 
-const EDIT_SUMMARY_SUFFIX: &str = " using [[User:RLuts/FS|Findsmith]]";
+const EDIT_SUMMARY_ATTRIBUTION_LINK: &str = "[[User:RLuts/FS|Findsmith]]";
 const MAX_EDIT_SUMMARY_CHARS: usize = 500;
 
 fn summary_message(key: &str, args: &[&str]) -> String {
@@ -595,12 +595,7 @@ fn suggested_edit_summary(rules: &[ReplacementRule]) -> String {
             ),
         });
     candidate
-        .filter(|prefix| {
-            !prefix.chars().any(char::is_control)
-                && !prefix.contains("[[User:RLuts/FS|Findsmith]]")
-                && (prefix.chars().count() + EDIT_SUMMARY_SUFFIX.chars().count()
-                    <= MAX_EDIT_SUMMARY_CHARS)
-        })
+        .filter(|prefix| complete_edit_summary(prefix).is_ok())
         .unwrap_or_else(|| summary_message("findsmith-edit-summary-autoreplacement", &[]))
 }
 
@@ -609,16 +604,20 @@ fn complete_edit_summary(prefix: &str) -> Result<String, &'static str> {
     if prefix.is_empty() {
         return Err("findsmith-api-summary-required");
     }
-    if prefix.contains("[[User:RLuts/FS|Findsmith]]") {
+    if prefix.contains(EDIT_SUMMARY_ATTRIBUTION_LINK) {
         return Err("findsmith-api-summary-attribution-automatic");
     }
     if prefix.chars().any(char::is_control) {
         return Err("findsmith-api-summary-one-line");
     }
-    if prefix.chars().count() + EDIT_SUMMARY_SUFFIX.chars().count() > MAX_EDIT_SUMMARY_CHARS {
+    let summary = summary_message(
+        "findsmith-edit-summary-with-attribution",
+        &[prefix, EDIT_SUMMARY_ATTRIBUTION_LINK],
+    );
+    if summary.chars().count() > MAX_EDIT_SUMMARY_CHARS {
         return Err("findsmith-api-summary-max-length");
     }
-    Ok(format!("{prefix}{EDIT_SUMMARY_SUFFIX}"))
+    Ok(summary)
 }
 
 #[derive(Deserialize)]
@@ -2296,7 +2295,7 @@ async fn review_response(
         unavailable: counters.unavailable,
         rule_count: config.rules.len(),
         suggested_edit_summary: suggested_edit_summary(&config.rules),
-        edit_summary_suffix: EDIT_SUMMARY_SUFFIX,
+        edit_summary_attribution_link: EDIT_SUMMARY_ATTRIBUTION_LINK,
         generation_message: localization::from_source(&state.generation_message),
         preparse_active: state.preparse_active,
         preparse_cursor: state.preparse_cursor,
@@ -4146,7 +4145,8 @@ mod tests {
         }];
         assert_eq!(suggested_edit_summary(&multiline), "Autoreplacement");
         assert!(complete_edit_summary(&"a".repeat(500)).is_err());
-        let allowed = "ї".repeat(500 - EDIT_SUMMARY_SUFFIX.chars().count());
+        let attribution_length = complete_edit_summary("a").unwrap().chars().count() - 1;
+        let allowed = "ї".repeat(500 - attribution_length);
         assert_eq!(
             complete_edit_summary(&allowed).unwrap().chars().count(),
             500

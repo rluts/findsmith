@@ -265,6 +265,7 @@
   "findsmith-project-confirm-delete-named-project": "Confirmation before permanently deleting a project. $1 is the project name. Example values: $1 = “My project”.",
   "findsmith-preview-frame-title": "Accessible title of an iframe containing a rendered wiki page. $1 is the page title. Example values: $1 = “Help:Example”.",
   "findsmith-edit-summary-autoreplacement": "Fallback edit summary before the required Findsmith attribution.",
+  "findsmith-edit-summary-with-attribution": "Complete edit summary sent to Wikimedia and shown below the editable summary field. $1 is the user-editable summary; $2 is the required, non-translatable wiki link to Findsmith help page. Translators may reorder the parameters but must retain both.",
   "findsmith-edit-summary-replacement": "Suggested edit summary for a text replacement. $1 is the text to find; $2 is its replacement. Example values: $1 = “old text”, $2 = “new text”.",
   "findsmith-edit-summary-removed": "Placeholder in a suggested edit summary when replacement text is empty.",
   "findsmith-edit-summary-empty": "Placeholder in a suggested edit summary when a template parameter value is empty.",
