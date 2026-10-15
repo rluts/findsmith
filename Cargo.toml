@@ -28,6 +28,7 @@ url = "2.5.8"
 uuid = { version = "1.18.1", features = ["v4"] }
 icu_locale = "2.3.1"
 icu_plurals = { version = "2.3.0", features = ["compiled_data"] }
+fixed_decimal = "0.7.2"
 
 [build-dependencies]
 regex = "1.12.3"

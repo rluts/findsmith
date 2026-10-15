@@ -1214,6 +1214,7 @@ dependencies = [
  "base64",
  "chrono",
  "configparser",
+ "fixed_decimal",
  "icu_locale",
  "icu_plurals",
  "mwapi",

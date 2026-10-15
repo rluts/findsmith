@@ -1,9 +1,12 @@
 import { useState } from 'react'
-import { useI18n } from '../lib/i18n'
+import { useI18n, type LanguageOption } from '../lib/i18n'
 
-function languageName(code: string): string {
+function languageName({ code, locale }: LanguageOption): string {
+  // Intl rejects private-use subtags such as de-x-formal, so name the base language.
+  const [base, privateUse] = locale.split('-x-')
   try {
-    return new Intl.DisplayNames([code], { type: 'language' }).of(code) ?? code
+    const name = new Intl.DisplayNames([base], { type: 'language' }).of(base) ?? code
+    return privateUse ? `${name} (${privateUse})` : name
   } catch {
     return code
   }
@@ -19,7 +22,7 @@ export function Shell({ children, title, subtitle, authenticated = true }: { chi
     </nav>
     {subtitle && <div className="contextbar">{subtitle}</div>}
     {children}
-    <footer className="statusbar"><span>{t('findsmith-footer-development')}</span><label className="language-choice">{t('findsmith-language-label')} <select value={language} onChange={event => { setLanguageError(''); void setLanguage(event.target.value).catch(error => setLanguageError(error instanceof Error ? error.message : String(error))) }}>{languages.map(code => <option key={code} value={code}>{languageName(code)}</option>)}</select></label>{languageError && <span role="alert">{languageError}</span>}<span>{t('findsmith-footer-license')} <a href="https://www.gnu.org/licenses/gpl-3.0.txt" target="_blank" rel="noreferrer">GPL-3.0-or-later</a></span></footer>
+    <footer className="statusbar"><span>{t('findsmith-footer-development')}</span><label className="language-choice">{t('findsmith-language-label')} <select value={language} onChange={event => { setLanguageError(''); void setLanguage(event.target.value).catch(error => setLanguageError(error instanceof Error ? error.message : String(error))) }}>{languages.map(option => <option key={option.code} value={option.code} lang={option.locale}>{languageName(option)}</option>)}</select></label>{languageError && <span role="alert">{languageError}</span>}<span>{t('findsmith-footer-license')} <a href="https://www.gnu.org/licenses/gpl-3.0.txt" target="_blank" rel="noreferrer">GPL-3.0-or-later</a></span></footer>
   </div>
 }
 
