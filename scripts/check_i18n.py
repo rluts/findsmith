@@ -3,6 +3,7 @@
 from collections import defaultdict
 import json
 import re
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,33 +25,29 @@ english = read_catalog(ROOT / "i18n/en.json")
 documentation = read_catalog(ROOT / "i18n/qqq.json")
 english_keys = set(english) - {"@metadata"}
 documented_keys = set(documentation) - {"@metadata"}
-plural = re.compile(r"\{\{PLURAL:\$([1-9][0-9]*)\|([^{}]*)\}\}")
+plural = re.compile(r"\{\{PLURAL:\s*\$([1-9][0-9]*)\s*\|([^{}]*)\}\}", re.IGNORECASE)
+explicit_form = re.compile(r"[0-9]+=")
 placeholder = re.compile(r"\$([1-9][0-9]*)")
-plural_categories = {"zero", "one", "two", "few", "many", "other"}
 
 
-def validate_message(path: Path, key: str, value: str) -> set[str]:
+def message_problem(value: object) -> str | None:
+    """Mirror build.rs: MediaWiki PLURAL forms are positional, with optional N= forms."""
     if not isinstance(value, str) or not value:
-        raise SystemExit(f"{path}: {key} must be a non-empty string")
+        return "must be a non-empty string"
     for match in plural.finditer(value):
-        forms = match[2].split("|")
-        categories = []
-        for form in forms:
-            category, separator, text = form.partition("=")
-            if not separator or not text or category not in plural_categories:
-                raise SystemExit(f"{path}: {key} has invalid plural form {form!r}")
-            categories.append(category)
-        if "other" not in categories or len(categories) != len(set(categories)):
-            raise SystemExit(f"{path}: {key} needs one 'other' form and no duplicate categories")
-    remainder = plural.sub("", value)
-    if "{{PLURAL:" in remainder:
-        raise SystemExit(f"{path}: {key} has malformed or nested plural syntax")
-    return set(placeholder.findall(value))
+        if all(explicit_form.match(form) for form in match[2].split("|")):
+            return "PLURAL needs at least one form without a number"
+    if "{{PLURAL:" in plural.sub("", value).upper():
+        return "has malformed or nested PLURAL syntax"
+    return None
 
 
 english_path = ROOT / "i18n/en.json"
 for key in english_keys:
-    validate_message(english_path, key, english[key])
+    if problem := message_problem(english[key]):
+        raise SystemExit(f"{english_path}: {key} {problem}")
+# Translations come from translatewiki.net. build.rs drops defective messages
+# so English covers them, so report them without failing the check.
 for path in sorted((ROOT / "i18n").glob("*.json")):
     if path.name in {"en.json", "qqq.json"}:
         continue
@@ -58,16 +55,18 @@ for path in sorted((ROOT / "i18n").glob("*.json")):
     if not re.fullmatch(r"[a-z]{2,8}(?:-[a-z0-9]{1,16})*", code):
         raise SystemExit(f"{path}: invalid language code")
     translated = read_catalog(path)
-    unknown = set(translated) - english_keys - {"@metadata"}
-    if unknown:
-        raise SystemExit(f"{path}: unknown translation keys: {sorted(unknown)}")
     for key, value in translated.items():
         if key == "@metadata":
             continue
-        expected = set(placeholder.findall(english[key]))
-        actual = validate_message(path, key, value)
-        if actual != expected:
-            raise SystemExit(f"{path}: {key} placeholders {sorted(actual)} differ from English {sorted(expected)}")
+        if key not in english_keys:
+            problem = "is not in the English catalog"
+        else:
+            problem = message_problem(value)
+            extra = set(placeholder.findall(value)) - set(placeholder.findall(english[key])) if not problem else set()
+            if extra:
+                problem = f"uses placeholders missing from English: {sorted(extra)}"
+        if problem:
+            print(f"warning: {path}: {key} {problem}; English will be used", file=sys.stderr)
 if english_keys != documented_keys:
     raise SystemExit(
         f"Catalog documentation mismatch: missing {sorted(english_keys - documented_keys)}, "

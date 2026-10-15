@@ -1,6 +1,7 @@
 use std::{collections::HashMap, future::Future, sync::LazyLock};
 
 use axum_extra::extract::cookie::{Cookie, PrivateCookieJar, SameSite};
+use fixed_decimal::Decimal;
 use icu_locale::Locale;
 use icu_plurals::PluralRules;
 use sea_orm::{ActiveModelTrait, ActiveValue::Set, DatabaseConnection, EntityTrait};
@@ -36,12 +37,111 @@ static TRANSLATED_MESSAGES: LazyLock<HashMap<&'static str, HashMap<String, Strin
             .collect()
     });
 
-fn merged_messages(translations: Option<&HashMap<String, String>>) -> HashMap<String, String> {
+/// Layers are ordered from most to least preferred; English fills any gaps.
+fn merged_messages(layers: &[&HashMap<String, String>]) -> HashMap<String, String> {
     let mut messages = ENGLISH_MESSAGES.clone();
-    if let Some(translations) = translations {
-        messages.extend(translations.clone());
+    for layer in layers.iter().rev() {
+        messages.extend((*layer).clone());
     }
     messages
+}
+
+/// MediaWiki fallbacks that the primary-subtag rule cannot derive.
+const EXPLICIT_FALLBACKS: &[(&str, &[&str])] = &[
+    ("zh", &["zh-hans"]),
+    ("zh-hant", &["zh-hans"]),
+    ("zh-hk", &["zh-hant", "zh-hans"]),
+    ("zh-tw", &["zh-hant", "zh-hans"]),
+];
+
+/// Languages to consult for `language`, most preferred first, excluding
+/// English, which always backs every chain.
+fn fallback_candidates(language: &str) -> Vec<&str> {
+    let explicit = EXPLICIT_FALLBACKS
+        .iter()
+        .find(|(code, _)| *code == language)
+        .map(|(_, fallbacks)| *fallbacks)
+        .unwrap_or_default();
+    let primary = language.split('-').next().unwrap_or(language);
+    let mut chain = Vec::new();
+    for candidate in [language]
+        .into_iter()
+        .chain(explicit.iter().copied())
+        .chain([primary])
+    {
+        if candidate != DEFAULT_LANGUAGE && !chain.contains(&candidate) {
+            chain.push(candidate);
+        }
+    }
+    chain
+}
+
+fn fallback_chain(language: &str) -> Vec<&'static str> {
+    fallback_candidates(language)
+        .into_iter()
+        .filter_map(|candidate| {
+            BUNDLED_CATALOGS
+                .iter()
+                .find(|(code, _)| *code == candidate)
+                .map(|(code, _)| *code)
+        })
+        .collect()
+}
+
+/// MediaWiki codes whose BCP 47 form is not just a change of letter case.
+const NON_STANDARD_CODES: &[(&str, &str)] = &[
+    ("als", "gsw"),
+    ("bat-smg", "sgs"),
+    ("be-x-old", "be-tarask"),
+    ("cbk-zam", "cbk"),
+    ("de-formal", "de-x-formal"),
+    ("eml", "egl"),
+    ("es-formal", "es-x-formal"),
+    ("fiu-vro", "vro"),
+    ("hu-formal", "hu-x-formal"),
+    ("map-bms", "jv-x-bms"),
+    ("mo", "ro-Cyrl-MD"),
+    ("nl-informal", "nl-x-informal"),
+    ("nrm", "nrf"),
+    ("roa-rup", "rup"),
+    ("roa-tara", "nap-x-tara"),
+    ("simple", "en-simple"),
+    ("sr-ec", "sr-Cyrl"),
+    ("sr-el", "sr-Latn"),
+    ("zh-classical", "lzh"),
+    ("zh-min-nan", "nan"),
+    ("zh-yue", "yue"),
+];
+
+/// Converts a MediaWiki language code to a BCP 47 tag usable by ICU, `Intl`
+/// and the HTML `lang` attribute.
+pub fn locale_tag(language: &str) -> String {
+    let language = language.to_ascii_lowercase();
+    if let Some((_, tag)) = NON_STANDARD_CODES
+        .iter()
+        .find(|(code, _)| *code == language)
+    {
+        return (*tag).to_owned();
+    }
+    let mut private = false;
+    language
+        .split('-')
+        .enumerate()
+        .map(|(index, part)| {
+            let tag = if index == 0 || private {
+                part.to_owned()
+            } else if part.len() == 2 {
+                part.to_ascii_uppercase()
+            } else if part.len() == 4 {
+                part[..1].to_ascii_uppercase() + &part[1..]
+            } else {
+                part.to_owned()
+            };
+            private |= part.len() == 1;
+            tag
+        })
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 static SOURCE_KEYS: LazyLock<HashMap<String, String>> = LazyLock::new(|| {
@@ -54,23 +154,50 @@ static SOURCE_KEYS: LazyLock<HashMap<String, String>> = LazyLock::new(|| {
 static PLACEHOLDER: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"\$([1-9][0-9]*)").expect("valid placeholder pattern"));
 static PLURAL: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"\{\{PLURAL:\$([1-9][0-9]*)\|([^{}]*)\}\}").expect("valid plural pattern")
+    regex::Regex::new(r"(?i)\{\{PLURAL:\s*\$([1-9][0-9]*)\s*\|([^{}]*)\}\}")
+        .expect("valid plural pattern")
 });
 
-fn plural_category(language: &str, count: &str) -> String {
-    let locale = language
-        .parse::<Locale>()
-        .or_else(|_| DEFAULT_LANGUAGE.parse::<Locale>());
-    let Ok(locale) = locale else {
-        return "other".to_owned();
+fn plural_rules(language: &str) -> Option<PluralRules> {
+    let tag = locale_tag(language);
+    let primary = tag.split('-').next().unwrap_or(DEFAULT_LANGUAGE);
+    [tag.as_str(), primary, DEFAULT_LANGUAGE]
+        .into_iter()
+        .filter_map(|candidate| candidate.parse::<Locale>().ok())
+        .find_map(|locale| PluralRules::try_new_cardinal(locale.into()).ok())
+}
+
+/// Picks a form the way MediaWiki does: an explicit `N=` form matching the
+/// count wins, otherwise forms follow the language's CLDR category order and
+/// the last form covers any categories left out.
+fn plural_form<'a>(language: &str, count: &str, forms: &'a str) -> &'a str {
+    let count_number = count.parse::<u64>().ok();
+    let mut positional = Vec::new();
+    for form in forms.split('|') {
+        match form.split_once('=') {
+            Some((number, text))
+                if !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()) =>
+            {
+                if count_number.is_some() && number.parse::<u64>().ok() == count_number {
+                    return text;
+                }
+            }
+            _ => positional.push(form),
+        }
+    }
+    let Some(last) = positional.len().checked_sub(1) else {
+        return "";
     };
-    let Ok(rules) = PluralRules::try_new_cardinal(locale.into()) else {
-        return "other".to_owned();
-    };
-    count
-        .parse::<usize>()
-        .map(|count| format!("{:?}", rules.category_for(count)).to_ascii_lowercase())
-        .unwrap_or_else(|_| "other".to_owned())
+    let index = plural_rules(language)
+        .zip(count.parse::<Decimal>().ok())
+        .and_then(|(rules, count)| {
+            let category = rules.category_for(&count);
+            rules
+                .categories()
+                .position(|candidate| candidate == category)
+        })
+        .unwrap_or(last);
+    positional[index.min(last)]
 }
 
 fn render_template(template: &str, language: &str, args: &[&str]) -> String {
@@ -80,20 +207,10 @@ fn render_template(template: &str, language: &str, args: &[&str]) -> String {
             .checked_sub(1)
             .and_then(|index| args.get(index))
             .copied();
-        let Some(count) = count else {
-            return captures[0].to_owned();
-        };
-        let category = plural_category(language, count);
-        let forms: HashMap<_, _> = captures[2]
-            .split('|')
-            .filter_map(|form| form.split_once('='))
-            .collect();
-        forms
-            .get(category.as_str())
-            .or_else(|| forms.get("other"))
-            .copied()
-            .unwrap_or(&captures[0])
-            .to_owned()
+        match count {
+            Some(count) => plural_form(language, count.trim(), &captures[2]).to_owned(),
+            None => captures[0].to_owned(),
+        }
     });
     PLACEHOLDER
         .replace_all(&with_plurals, |captures: &regex::Captures<'_>| {
@@ -119,11 +236,12 @@ pub fn current_language() -> String {
 }
 
 pub fn message(key: &str) -> Option<String> {
-    let language = current_language();
-    let localized = TRANSLATED_MESSAGES
-        .get(language.as_str())
-        .and_then(|messages| messages.get(key));
-    localized.or_else(|| ENGLISH_MESSAGES.get(key)).cloned()
+    fallback_chain(&current_language())
+        .into_iter()
+        .filter_map(|language| TRANSLATED_MESSAGES.get(language))
+        .find_map(|messages| messages.get(key))
+        .or_else(|| ENGLISH_MESSAGES.get(key))
+        .cloned()
 }
 
 pub fn message_with_args(key: &str, args: &[&str]) -> Option<String> {
@@ -151,26 +269,33 @@ pub fn from_source(source: &str) -> String {
 #[derive(Serialize)]
 pub struct TranslationResponse {
     pub language: &'static str,
+    pub locale: String,
     pub messages: serde_json::Value,
+}
+
+#[derive(Serialize)]
+pub struct LanguageOption {
+    pub code: &'static str,
+    pub locale: String,
 }
 
 pub fn catalog(language: &str) -> Option<TranslationResponse> {
     if !valid_language(language) {
         return None;
     }
-    let selected = if available_language(language) {
-        language
-    } else {
-        DEFAULT_LANGUAGE
-    };
-    let messages = merged_messages(TRANSLATED_MESSAGES.get(selected));
+    let selected = BUNDLED_CATALOGS
+        .iter()
+        .find(|(code, _)| *code == language)
+        .map(|(code, _)| *code)
+        .unwrap_or(DEFAULT_LANGUAGE);
+    let layers = fallback_chain(selected)
+        .into_iter()
+        .filter_map(|language| TRANSLATED_MESSAGES.get(language))
+        .collect::<Vec<_>>();
     Some(TranslationResponse {
-        language: BUNDLED_CATALOGS
-            .iter()
-            .find(|(code, _)| *code == selected)
-            .map(|(code, _)| *code)
-            .unwrap_or(DEFAULT_LANGUAGE),
-        messages: serde_json::to_value(messages).expect("message map"),
+        language: selected,
+        locale: locale_tag(selected),
+        messages: serde_json::to_value(merged_messages(&layers)).expect("message map"),
     })
 }
 
@@ -178,8 +303,14 @@ pub fn available_language(language: &str) -> bool {
     BUNDLED_CATALOGS.iter().any(|(code, _)| *code == language)
 }
 
-pub fn available_languages() -> Vec<&'static str> {
-    BUNDLED_CATALOGS.iter().map(|(code, _)| *code).collect()
+pub fn available_languages() -> Vec<LanguageOption> {
+    BUNDLED_CATALOGS
+        .iter()
+        .map(|(code, _)| LanguageOption {
+            code,
+            locale: locale_tag(code),
+        })
+        .collect()
 }
 
 pub fn valid_language(language: &str) -> bool {
@@ -279,7 +410,11 @@ mod tests {
         assert!(english.messages.get("@metadata").is_none());
         assert_eq!(catalog("zz-unknown").unwrap().language, "en");
         assert!(catalog("../en").is_none());
-        assert!(available_languages().contains(&"en"));
+        assert!(
+            available_languages()
+                .iter()
+                .any(|option| option.code == "en" && option.locale == "en")
+        );
     }
 
     #[test]
@@ -303,9 +438,47 @@ mod tests {
     #[test]
     fn translated_messages_overlay_english() {
         let translated = HashMap::from([("findsmith-nav-home".to_owned(), "Головна".to_owned())]);
-        let messages = merged_messages(Some(&translated));
+        let messages = merged_messages(&[&translated]);
         assert_eq!(messages["findsmith-nav-home"], "Головна");
         assert_eq!(messages["findsmith-home-title"], "FindSmith");
+    }
+
+    #[test]
+    fn preferred_layers_win_over_fallbacks() {
+        let variant = HashMap::from([("findsmith-nav-home".to_owned(), "Start".to_owned())]);
+        let base = HashMap::from([
+            ("findsmith-nav-home".to_owned(), "Startseite".to_owned()),
+            ("findsmith-nav-help".to_owned(), "Hilfe".to_owned()),
+        ]);
+        let messages = merged_messages(&[&variant, &base]);
+        assert_eq!(messages["findsmith-nav-home"], "Start");
+        assert_eq!(messages["findsmith-nav-help"], "Hilfe");
+        assert_eq!(messages["findsmith-home-title"], "FindSmith");
+    }
+
+    #[test]
+    fn fallback_candidates_follow_mediawiki() {
+        assert_eq!(fallback_candidates("de-formal"), ["de-formal", "de"]);
+        assert_eq!(fallback_candidates("pt-br"), ["pt-br", "pt"]);
+        assert_eq!(
+            fallback_candidates("zh-hk"),
+            ["zh-hk", "zh-hant", "zh-hans", "zh"]
+        );
+        assert_eq!(fallback_candidates("uk"), ["uk"]);
+        assert_eq!(fallback_candidates("en-gb"), ["en-gb"]);
+        assert!(fallback_candidates("en").is_empty());
+    }
+
+    #[test]
+    fn mediawiki_codes_map_to_bcp47() {
+        assert_eq!(locale_tag("uk"), "uk");
+        assert_eq!(locale_tag("pt-br"), "pt-BR");
+        assert_eq!(locale_tag("zh-hans"), "zh-Hans");
+        assert_eq!(locale_tag("sr-ec"), "sr-Cyrl");
+        assert_eq!(locale_tag("zh-classical"), "lzh");
+        assert_eq!(locale_tag("de-formal"), "de-x-formal");
+        assert_eq!(locale_tag("be-tarask"), "be-tarask");
+        assert_eq!(locale_tag("en-x-piglatin"), "en-x-piglatin");
     }
 
     #[test]
@@ -362,12 +535,47 @@ mod tests {
 
     #[test]
     fn plural_forms_follow_selected_language() {
-        let template = "$1 {{PLURAL:$1|one=page|other=pages}}";
+        let template = "$1 {{PLURAL:$1|page|pages}}";
         assert_eq!(render_template(template, "en", &["1"]), "1 page");
         assert_eq!(render_template(template, "en", &["2"]), "2 pages");
-        let template = "$1 {{PLURAL:$1|one=one|few=few|many=many|other=other}}";
-        assert_eq!(render_template(template, "uk", &["1"]), "1 one");
-        assert_eq!(render_template(template, "uk", &["2"]), "2 few");
-        assert_eq!(render_template(template, "uk", &["5"]), "5 many");
+        let template = "$1 {{PLURAL:$1|сторінка|сторінки|сторінок}}";
+        assert_eq!(render_template(template, "uk", &["1"]), "1 сторінка");
+        assert_eq!(render_template(template, "uk", &["2"]), "2 сторінки");
+        assert_eq!(render_template(template, "uk", &["5"]), "5 сторінок");
+        assert_eq!(render_template(template, "uk", &["21"]), "21 сторінка");
+        assert_eq!(render_template(template, "uk", &["1.5"]), "1.5 сторінок");
+    }
+
+    #[test]
+    fn plural_forms_follow_mediawiki_conventions() {
+        let template = "{{PLURAL:$1|0=no pages|one page|$1 pages}}";
+        assert_eq!(render_template(template, "en", &["0"]), "no pages");
+        assert_eq!(render_template(template, "en", &["1"]), "one page");
+        assert_eq!(render_template(template, "en", &["3"]), "3 pages");
+        assert_eq!(
+            render_template("{{plural:$1|page|pages}}", "en", &["2"]),
+            "pages"
+        );
+        assert_eq!(
+            render_template("page{{PLURAL:$1||s}}", "en", &["2"]),
+            "pages"
+        );
+        assert_eq!(
+            render_template("{{PLURAL:$1|pages}}", "en", &["1"]),
+            "pages"
+        );
+        assert_eq!(render_template("{{PLURAL:$1|a=b|c}}", "en", &["1"]), "a=b");
+        assert_eq!(
+            render_template("{{PLURAL:$2|page|pages}}", "en", &["1"]),
+            "{{PLURAL:$2|page|pages}}"
+        );
+        assert_eq!(
+            render_template("$1 {{PLURAL:$1|页}}", "zh-classical", &["3"]),
+            "3 页"
+        );
+        assert_eq!(
+            render_template("$1 {{PLURAL:$1|a|b|c}}", "sr-ec", &["3"]),
+            "3 b"
+        );
     }
 }
