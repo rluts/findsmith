@@ -260,9 +260,8 @@ pub fn required_with_args(key: &str, args: &[&str]) -> String {
 }
 
 pub fn from_source(source: &str) -> String {
-    SOURCE_KEYS
-        .get(source)
-        .and_then(|key| message(key))
+    message(source)
+        .or_else(|| SOURCE_KEYS.get(source).and_then(|key| message(key)))
         .unwrap_or_else(|| source.to_owned())
 }
 
@@ -513,6 +512,10 @@ mod tests {
     fn backend_messages_resolve_from_catalog() {
         assert!(SOURCE_KEYS.contains_key("Project not found"));
         assert_eq!(from_source("Project not found"), "Project not found");
+        assert_eq!(
+            from_source("findsmith-api-new-messages"),
+            "Read your new messages on this wiki before editing."
+        );
         assert_eq!(
             SOURCE_KEYS.get("Edit outcome unknown").map(String::as_str),
             Some("findsmith-api-edit-outcome-unknown")
