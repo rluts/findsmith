@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useI18n, type LanguageOption } from '../lib/i18n'
+import logoUrl from '../assets/logo.svg'
 
 function languageName({ code, locale }: LanguageOption): string {
   // Intl rejects private-use subtags such as de-x-formal, so name the base language.
@@ -16,7 +17,7 @@ export function Shell({ children, title, subtitle, authenticated = true }: { chi
   const { t, language, languages, setLanguage } = useI18n()
   const [languageError, setLanguageError] = useState('')
   return <div className="app-shell">
-    <header className="titlebar"><span className="app-icon">◆</span><strong>FindSmith</strong>{title && <span> — {title}</span>}</header>
+    <header className="titlebar"><img className="app-icon" src={logoUrl} alt="" width="22" height="22" /><strong className="app-name">FindSmith</strong>{title && <span className="window-title">{title}</span>}</header>
     <nav className="menubar" aria-label={t('findsmith-nav-main-menu')}>
       <a href="/">{t('findsmith-nav-home')}</a>{authenticated ? <><a href="/workspace">{t('findsmith-nav-projects')}</a><a href="/add-wiki">{t('findsmith-nav-add-wiki')}</a></> : <><span className="inactive" aria-disabled="true">{t('findsmith-nav-projects')}</span><span className="inactive" aria-disabled="true">{t('findsmith-nav-add-wiki')}</span></>}<span className="inactive" aria-disabled="true">{t('findsmith-nav-help')}</span>
     </nav>
