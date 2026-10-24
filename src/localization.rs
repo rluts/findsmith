@@ -390,6 +390,7 @@ pub async fn save_language(
             user_preference::ActiveModel {
                 owner: Set(owner.to_owned()),
                 language: Set(language.to_owned()),
+                last_wiki_id: Set(None),
             }
             .insert(database)
             .await?;

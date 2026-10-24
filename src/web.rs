@@ -255,6 +255,7 @@ struct WorkspaceResponse<'a> {
     username: &'a str,
     projects: Vec<WorkspaceProjectView>,
     wikis: Vec<WikiView>,
+    default_wiki_id: Option<String>,
     csrf_token: &'a str,
 }
 
@@ -1519,6 +1520,10 @@ async fn workspace_response(
         Ok(items) => items,
         Err(error) => return internal_error(error),
     };
+    let default_wiki_id = match wikis::last_used(database, owner).await {
+        Ok(id) => id.filter(|id| wikis.iter().any(|wiki| &wiki.id == id)),
+        Err(error) => return internal_error(error),
+    };
     let repository = ProjectRepository::new(database);
     match repository.list(owner).await {
         Ok(projects) => render(WorkspaceResponse {
@@ -1545,6 +1550,7 @@ async fn workspace_response(
                 })
                 .collect(),
             wikis: wikis.into_iter().map(WikiView::from).collect(),
+            default_wiki_id,
             csrf_token,
         }),
         Err(error) => project_error_response(error, "/workspace"),
@@ -1569,7 +1575,12 @@ async fn create_project_response(
     };
     let repository = ProjectRepository::new(database);
     match repository.create(owner, form.name, wiki.api_url).await {
-        Ok(project) => action_response(format!("/projects/{}", project.id), Some(project.id)),
+        Ok(project) => {
+            if let Err(error) = wikis::save_last_used(database, owner, &wiki.id).await {
+                eprintln!("failed to remember last used wiki: {error}");
+            }
+            action_response(format!("/projects/{}", project.id), Some(project.id))
+        }
         Err(error) => project_error_response(error, "/workspace"),
     }
 }

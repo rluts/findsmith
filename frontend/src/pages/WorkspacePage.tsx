@@ -11,7 +11,7 @@ export function WorkspacePage() {
   const [name, setName] = useState('')
   const [wikiId, setWikiId] = useState('')
   const [error, setError] = useState('')
-  useEffect(() => { getJson<Workspace>('/api/workspace').then(result => { setData(result); setWikiId(result.wikis[0]?.id ?? '') }).catch(error => setError(error.message)) }, [])
+  useEffect(() => { getJson<Workspace>('/api/workspace').then(result => { setData(result); setWikiId(result.default_wiki_id ?? result.wikis[0]?.id ?? '') }).catch(error => setError(error.message)) }, [])
   async function create(event: React.FormEvent) {
     event.preventDefault(); if (!data) return
     setError('')

@@ -10,7 +10,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::entities::wiki;
+use crate::{
+    entities::{user_preference, wiki},
+    localization,
+};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Namespace {
@@ -115,6 +118,40 @@ pub async fn list(database: &DatabaseConnection) -> Result<Vec<wiki::Model>, DbE
 
 pub async fn by_id(database: &DatabaseConnection, id: &str) -> Result<Option<wiki::Model>, DbErr> {
     wiki::Entity::find_by_id(id).one(database).await
+}
+
+pub async fn last_used(
+    database: &DatabaseConnection,
+    owner: &str,
+) -> Result<Option<String>, DbErr> {
+    Ok(user_preference::Entity::find_by_id(owner)
+        .one(database)
+        .await?
+        .and_then(|preference| preference.last_wiki_id))
+}
+
+pub async fn save_last_used(
+    database: &DatabaseConnection,
+    owner: &str,
+    wiki_id: &str,
+) -> Result<(), DbErr> {
+    if let Some(existing) = user_preference::Entity::find_by_id(owner)
+        .one(database)
+        .await?
+    {
+        let mut active: user_preference::ActiveModel = existing.into();
+        active.last_wiki_id = Set(Some(wiki_id.to_owned()));
+        active.update(database).await?;
+    } else {
+        user_preference::ActiveModel {
+            owner: Set(owner.to_owned()),
+            language: Set(localization::current_language()),
+            last_wiki_id: Set(Some(wiki_id.to_owned())),
+        }
+        .insert(database)
+        .await?;
+    }
+    Ok(())
 }
 
 pub async fn by_url(

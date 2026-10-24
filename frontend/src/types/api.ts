@@ -1,7 +1,7 @@
 export type Session = { username: string | null; groups: string[]; groups_error: string | null; can_logout: boolean; language: string; csrf_token: string }
 export type Wiki = { id: string; domain: string; name: string; check_page: string }
 export type ProjectSummary = { id: string; name: string; state_version: number; updated_at: string; wiki_id: string }
-export type Workspace = { username: string; projects: ProjectSummary[]; wikis: Wiki[]; csrf_token: string }
+export type Workspace = { username: string; projects: ProjectSummary[]; wikis: Wiki[]; default_wiki_id: string | null; csrf_token: string }
 export type WikiAccess = { wiki_id: string; wiki_name: string; check_page: string; allowed: boolean | null; bot: boolean; error: string | null }
 export type Source = { kind: string; label: string; value: string; summary: string }
 export type RuleOperation = 'replace' | 'append' | 'prepend' | 'category_add' | 'category_remove' | 'category_replace' | 'template_rename' | 'template_parameter_set' | 'template_parameter_remove'

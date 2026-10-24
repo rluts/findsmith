@@ -6,6 +6,7 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub owner: String,
     pub language: String,
+    pub last_wiki_id: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
