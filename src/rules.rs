@@ -1,4 +1,4 @@
-use std::{collections::HashMap, error::Error, fmt};
+use std::{error::Error, fmt};
 
 use regex::{Regex, RegexBuilder};
 
@@ -20,8 +20,6 @@ pub enum RuleError {
     EmptyPattern { index: usize },
     EmptyValue { index: usize },
     InvalidCategory { index: usize },
-    InvalidGroup { index: usize },
-    ConflictingGroup { index: usize },
     InvalidTemplate { index: usize },
     StructuralRequiresWiki,
     PatternTooLarge { index: usize },
@@ -59,16 +57,6 @@ impl fmt::Display for RuleError {
             Self::InvalidCategory { index } => write_message(
                 formatter,
                 "findsmith-api-rule-category-invalid",
-                &[&(index + 1).to_string()],
-            ),
-            Self::InvalidGroup { index } => write_message(
-                formatter,
-                "findsmith-api-rule-group-incomplete",
-                &[&(index + 1).to_string()],
-            ),
-            Self::ConflictingGroup { index } => write_message(
-                formatter,
-                "findsmith-api-rule-group-conflict",
                 &[&(index + 1).to_string()],
             ),
             Self::InvalidTemplate { index } => write_message(
@@ -115,13 +103,11 @@ impl Error for RuleError {}
 
 pub struct RuleEngine {
     rules: Vec<CompiledRule>,
-    groups: HashMap<String, (String, bool)>,
 }
 
 struct CompiledRule {
     enabled: bool,
     operation: RuleOperation,
-    group_name: Option<String>,
     mask: RuleMask,
     replace: String,
     replace_all: bool,
@@ -152,31 +138,12 @@ impl RuleEngine {
         if rules.len() > MAX_RULES {
             return Err(RuleError::TooManyRules);
         }
-        let mut groups = HashMap::new();
-        for (index, rule) in rules.iter().enumerate() {
-            if rule.group_name.is_empty() && rule.group_contains.is_empty() {
-                continue;
-            }
-            if rule.group_name.trim().is_empty()
-                || rule.group_contains.is_empty()
-                || rule.group_name.chars().count() > 100
-                || rule.group_contains.len() > MAX_PATTERN_BYTES
-            {
-                return Err(RuleError::InvalidGroup { index });
-            }
-            let condition = (rule.group_contains.clone(), rule.group_invert);
-            if let Some(existing) = groups.insert(rule.group_name.clone(), condition.clone())
-                && existing != condition
-            {
-                return Err(RuleError::ConflictingGroup { index });
-            }
-        }
         let rules = rules
             .iter()
             .enumerate()
             .map(|(index, rule)| compile_rule(index, rule, category_prefix))
             .collect::<Result<_, _>>()?;
-        Ok(Self { rules, groups })
+        Ok(Self { rules })
     }
 
     #[cfg(test)]
@@ -202,11 +169,7 @@ impl RuleEngine {
         let mut total_replacements = 0;
 
         for rule in &self.rules {
-            let group_matches = rule.group_name.as_ref().is_none_or(|name| {
-                let (needle, invert) = self.groups.get(name).expect("compiled group");
-                input.contains(needle) != *invert
-            });
-            if !rule.enabled || !group_matches {
+            if !rule.enabled {
                 counts.push(0);
                 changed.push(false);
                 continue;
@@ -443,7 +406,6 @@ fn compile_rule(
     Ok(CompiledRule {
         enabled: rule.enabled,
         operation: rule.operation,
-        group_name: (!rule.group_name.is_empty()).then(|| rule.group_name.clone()),
         mask: rule.mask.clone(),
         replace: if matches!(
             rule.operation,
@@ -576,34 +538,6 @@ mod tests {
             .apply("Body\n[[Категорія:Старе]]\n[[Файл:Старе]]\n")
             .unwrap();
         assert_eq!(result.text, "Body\n[[Файл:Старе]]\n");
-    }
-
-    #[test]
-    fn conditional_group_uses_original_page_text() {
-        let mut first = plain("trigger", "gone");
-        first.group_name = "group".to_owned();
-        first.group_contains = "trigger".to_owned();
-        let mut second = plain("other", "changed");
-        second.group_name = "group".to_owned();
-        second.group_contains = "trigger".to_owned();
-        let engine = RuleEngine::compile(&[first, second]).unwrap();
-        let result = engine.apply("trigger other").unwrap();
-        assert_eq!(result.text, "gone changed");
-        assert_eq!(result.counts, vec![1, 1]);
-        assert_eq!(engine.apply("other").unwrap().counts, vec![0, 0]);
-    }
-
-    #[test]
-    fn conflicting_group_conditions_are_rejected() {
-        let mut first = plain("a", "b");
-        first.group_name = "group".to_owned();
-        first.group_contains = "a".to_owned();
-        let mut second = first.clone();
-        second.group_contains = "other".to_owned();
-        assert!(matches!(
-            RuleEngine::compile(&[first, second]),
-            Err(RuleError::ConflictingGroup { .. })
-        ));
     }
 
     #[test]

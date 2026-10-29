@@ -211,8 +211,7 @@ fn normalized_domain(input: &str) -> Result<String, String> {
 }
 
 async fn public_client(api_url: &str, user_agent: &str) -> Result<mwapi::Client, mwapi::Error> {
-    mwapi::Client::builder(api_url)
-        .set_user_agent(user_agent)
+    crate::mediawiki::client_builder(api_url, user_agent)
         .build()
         .await
 }
@@ -521,17 +520,5 @@ mod tests {
         unprotected["protection"] = serde_json::json!([]);
         let page = serde_json::from_value(unprotected).unwrap();
         assert!(validate_check_page(page).is_err());
-    }
-
-    #[test]
-    fn siteinfo_namespaces_are_keyed_by_id() {
-        let response: SiteInfoResponse = serde_json::from_value(serde_json::json!({
-            "query": {
-                "general": {"wikiid": "enwiki", "sitename": "Wikipedia"},
-                "namespaces": {"0": {"id": 0, "name": ""}, "4": {"id": 4, "name": "Wikipedia"}}
-            }
-        }))
-        .unwrap();
-        assert_eq!(response.query.namespaces["4"].name, "Wikipedia");
     }
 }

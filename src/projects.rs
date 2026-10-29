@@ -8,7 +8,7 @@ use sea_orm::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::entities::project;
+use crate::{entities::project, skip::SkipOptions};
 
 pub const DEFAULT_QUEUE_LIMIT: usize = 100;
 pub const MAX_QUEUE_LIMIT: usize = 500;
@@ -25,6 +25,7 @@ pub struct ProjectState {
     pub namespaces: Vec<i64>,
     pub queue_limit: usize,
     pub rules: Vec<ReplacementRule>,
+    pub skip: SkipOptions,
 }
 
 impl Default for ProjectState {
@@ -39,6 +40,7 @@ impl Default for ProjectState {
             namespaces: Vec::new(),
             queue_limit: DEFAULT_QUEUE_LIMIT,
             rules: Vec::new(),
+            skip: SkipOptions::default(),
         }
     }
 }
@@ -114,9 +116,6 @@ pub struct ReplacementRule {
     pub name: String,
     pub enabled: bool,
     pub operation: RuleOperation,
-    pub group_name: String,
-    pub group_contains: String,
-    pub group_invert: bool,
     pub parameter: String,
     pub mask: RuleMask,
     pub find: String,
@@ -134,9 +133,6 @@ impl Default for ReplacementRule {
             name: String::new(),
             enabled: true,
             operation: RuleOperation::Replace,
-            group_name: String::new(),
-            group_contains: String::new(),
-            group_invert: false,
             parameter: String::new(),
             mask: RuleMask::default(),
             find: String::new(),
@@ -276,6 +272,41 @@ impl<'a> ProjectRepository<'a> {
         Ok(active.insert(self.database).await?)
     }
 
+    /// Copies a project's configuration under the first free "(copy)" name. Review
+    /// jobs and their history stay with the original project.
+    pub async fn duplicate(
+        &self,
+        owner: &str,
+        id: &str,
+    ) -> Result<Option<project::Model>, ProjectError> {
+        let Some(source) = self.get(owner, id).await? else {
+            return Ok(None);
+        };
+        for attempt in 1..=MAX_COPY_ATTEMPTS {
+            let now = Utc::now();
+            let active = project::ActiveModel {
+                id: Set(Uuid::new_v4().to_string()),
+                owner: Set(owner.to_owned()),
+                name: Set(copy_name(&source.name, attempt)),
+                wiki_url: Set(source.wiki_url.clone()),
+                state_json: Set(source.state_json.clone()),
+                state_version: Set(1),
+                created_at: Set(now),
+                updated_at: Set(now),
+            };
+            match active
+                .insert(self.database)
+                .await
+                .map_err(ProjectError::from)
+            {
+                Ok(project) => return Ok(Some(project)),
+                Err(ProjectError::DuplicateName) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(ProjectError::DuplicateName)
+    }
+
     pub async fn update(
         &self,
         owner: &str,
@@ -322,9 +353,26 @@ impl<'a> ProjectRepository<'a> {
     }
 }
 
+const MAX_COPY_ATTEMPTS: usize = 20;
+const MAX_NAME_CHARS: usize = 255;
+
+fn copy_name(name: &str, attempt: usize) -> String {
+    let suffix = if attempt == 1 {
+        crate::localization::required("findsmith-api-project-copy-suffix")
+    } else {
+        crate::localization::required_with_args(
+            "findsmith-api-project-copy-number-suffix",
+            &[&attempt.to_string()],
+        )
+    };
+    let room = MAX_NAME_CHARS.saturating_sub(suffix.chars().count() + 1);
+    let base: String = name.chars().take(room).collect();
+    format!("{} {suffix}", base.trim_end())
+}
+
 fn validate_name(name: String) -> Result<String, ProjectError> {
     let name = name.trim();
-    if name.is_empty() || name.chars().count() > 255 {
+    if name.is_empty() || name.chars().count() > MAX_NAME_CHARS {
         return Err(ProjectError::InvalidName);
     }
     Ok(name.to_owned())
@@ -333,6 +381,16 @@ fn validate_name(name: String) -> Result<String, ProjectError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copy_names_stay_within_the_name_limit() {
+        assert_eq!(copy_name("Fixes", 1), "Fixes (copy)");
+        assert_eq!(copy_name("Fixes", 3), "Fixes (copy 3)");
+        let long = "x".repeat(MAX_NAME_CHARS);
+        let copy = copy_name(&long, 2);
+        assert_eq!(copy.chars().count(), MAX_NAME_CHARS);
+        assert!(copy.ends_with(" (copy 2)"));
+    }
 
     #[test]
     fn legacy_page_lists_become_ordered_sources() {

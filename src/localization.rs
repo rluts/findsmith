@@ -154,7 +154,7 @@ static SOURCE_KEYS: LazyLock<HashMap<String, String>> = LazyLock::new(|| {
 static PLACEHOLDER: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"\$([1-9][0-9]*)").expect("valid placeholder pattern"));
 static PLURAL: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"(?i)\{\{PLURAL:\s*\$([1-9][0-9]*)\s*\|([^{}]*)\}\}")
+    regex::Regex::new(r"(?i)\{\{PLURAL:\s*\$([1-9][0-9]*)\s*\|([^{}]*)}}")
         .expect("valid plural pattern")
 });
 

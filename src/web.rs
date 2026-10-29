@@ -17,22 +17,25 @@ use crate::{
     csrf,
     diff::{DiffLine, SideBySideLine, side_by_side_lines, unified_lines},
     entities::project,
+    error::{self, ApiFailureKind},
     jobs::{
         JobConfigV1, JobError, JobRepository, JobState, JobStatus, QueueEntry, QueueEntryStatus,
     },
     lists::{queue_from_normalized, source_values, validate_namespaces, validate_queue_limit},
     localization,
     mediawiki::{
-        ApiPageListKind, EditFailureKind, PageListKind, PageSnapshot, api_page_list,
-        bot_edit_allowed, classify_edit_error, edit_existing_page, edit_permissions, load_page,
-        normalize_titles, page_list, page_list_bot, parse_preview,
+        ApiPageListKind, PageListKind, PageLoadError, PageSnapshot, RecentRevision, api_page_list,
+        edit_existing_page, edit_permissions, load_page, normalize_titles, page_list,
+        page_list_bot, parse_preview, recent_revisions,
     },
+    policy,
     projects::{
         PageSource, PageSourceKind, ProjectError, ProjectRepository, ProjectState, ReplacementRule,
         RuleMask, RuleOperation,
     },
     rules::{RuleEngine, TransformationResult},
     saved_rules,
+    skip::{self, PageFacts, SkipMatcher, SkipOptions, SkipReason},
     structural::apply_with_wiki,
     wikis::{self, AccessView, WikiView},
 };
@@ -279,6 +282,7 @@ struct ProjectResponse<'a> {
     wiki_id: &'a str,
     awb_access: Option<&'a AccessView>,
     rules: &'a [ReplacementRule],
+    skip: &'a SkipOptions,
     csrf_token: &'a str,
     page_title: &'a str,
     page_preview: Option<&'a PagePreviewView>,
@@ -291,6 +295,7 @@ struct ProjectResponse<'a> {
     latest_job_duplicates: usize,
     latest_job_limit_reached: bool,
     latest_job_building: bool,
+    latest_job_outdated: bool,
     latest_queue_preview: &'a [QueueEntry],
 }
 
@@ -387,6 +392,7 @@ struct ReviewPageView {
     can_minor: bool,
     can_bot: bool,
     edit_access_message: Option<String>,
+    skip_reason: Option<String>,
     protection: String,
     total_replacements: usize,
     changed: bool,
@@ -461,10 +467,6 @@ pub struct UpdateProjectForm {
     #[serde(default)]
     rule_operation: Vec<String>,
     #[serde(default)]
-    rule_group: Vec<String>,
-    #[serde(default)]
-    rule_group_contains: Vec<String>,
-    #[serde(default)]
     rule_parameter: Vec<String>,
     #[serde(default)]
     rule_mask_comments: Vec<String>,
@@ -480,8 +482,6 @@ pub struct UpdateProjectForm {
     rule_mask_templates: Vec<String>,
     #[serde(default)]
     rule_mask_link_targets: Vec<String>,
-    #[serde(default)]
-    rule_group_invert: Vec<String>,
     #[serde(default)]
     rule_find: Vec<String>,
     #[serde(default)]
@@ -499,9 +499,51 @@ pub struct UpdateProjectForm {
     #[serde(default)]
     rule_dot_newline: Vec<String>,
     #[serde(default)]
+    skip_no_change: bool,
+    #[serde(default)]
+    skip_redirects: bool,
+    #[serde(default)]
+    skip_protected: bool,
+    #[serde(default)]
+    skip_outside_namespaces: bool,
+    #[serde(default)]
+    skip_contains: String,
+    #[serde(default)]
+    skip_not_contains: String,
+    #[serde(default)]
+    skip_regex: bool,
+    #[serde(default)]
+    skip_case_sensitive: bool,
+    #[serde(default)]
+    skip_min_replacements: usize,
+    #[serde(default)]
+    skip_max_replacements: usize,
+    #[serde(default)]
     page_title: String,
     state_version: i64,
     csrf_token: String,
+}
+
+impl UpdateProjectForm {
+    fn skip_options(&self) -> SkipOptions {
+        SkipOptions {
+            no_change: self.skip_no_change,
+            redirects: self.skip_redirects,
+            protected: self.skip_protected,
+            outside_namespaces: self.skip_outside_namespaces,
+            contains: self.skip_contains.clone(),
+            not_contains: self.skip_not_contains.clone(),
+            regex: self.skip_regex,
+            case_sensitive: self.skip_case_sensitive,
+            min_replacements: self.skip_min_replacements,
+            max_replacements: self.skip_max_replacements,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct AutosaveResponse {
+    state_version: i64,
 }
 
 #[derive(Deserialize)]
@@ -1321,6 +1363,7 @@ pub async fn web_job_review(
     let response = review_response(
         &state.database,
         user.profile().central_id(),
+        user.profile().username(),
         user.oauth2_token(),
         &state.user_agent,
         (&id, &job_id),
@@ -1340,6 +1383,7 @@ pub async fn owner_job_review(
     let response = review_response(
         &state.database,
         &state.central_id,
+        &state.username,
         &state.access_token,
         &state.user_agent,
         (&id, &job_id),
@@ -1363,6 +1407,7 @@ pub async fn web_job_recompute(
     review_response(
         &state.database,
         user.profile().central_id(),
+        user.profile().username(),
         user.oauth2_token(),
         &state.user_agent,
         (&id, &job_id),
@@ -1384,6 +1429,7 @@ pub async fn owner_job_recompute(
     review_response(
         &state.database,
         &state.central_id,
+        &state.username,
         &state.access_token,
         &state.user_agent,
         (&id, &job_id),
@@ -1506,6 +1552,56 @@ pub async fn owner_delete_project(
     delete_project_response(&state.database, &state.central_id, &id, form).await
 }
 
+pub async fn web_autosave_project(
+    State(state): State<WebState>,
+    user: AxumUser,
+    Path(id): Path<String>,
+    jar: PrivateCookieJar,
+    Form(form): Form<UpdateProjectForm>,
+) -> Response {
+    if csrf::verify(&jar, &form.csrf_token).is_err() {
+        return csrf_error(&format!("/projects/{id}"));
+    }
+    autosave_project_response(&state.database, user.profile().central_id(), &id, form).await
+}
+
+pub async fn owner_autosave_project(
+    State(state): State<OwnerState>,
+    Path(id): Path<String>,
+    jar: PrivateCookieJar,
+    Form(form): Form<UpdateProjectForm>,
+) -> Response {
+    if csrf::verify(&jar, &form.csrf_token).is_err() {
+        return csrf_error(&format!("/projects/{id}"));
+    }
+    autosave_project_response(&state.database, &state.central_id, &id, form).await
+}
+
+pub async fn web_duplicate_project(
+    State(state): State<WebState>,
+    user: AxumUser,
+    Path(id): Path<String>,
+    jar: PrivateCookieJar,
+    Form(form): Form<StartJobForm>,
+) -> Response {
+    if csrf::verify(&jar, &form.csrf_token).is_err() {
+        return csrf_error(&format!("/projects/{id}"));
+    }
+    duplicate_project_response(&state.database, user.profile().central_id(), &id).await
+}
+
+pub async fn owner_duplicate_project(
+    State(state): State<OwnerState>,
+    Path(id): Path<String>,
+    jar: PrivateCookieJar,
+    Form(form): Form<StartJobForm>,
+) -> Response {
+    if csrf::verify(&jar, &form.csrf_token).is_err() {
+        return csrf_error(&format!("/projects/{id}"));
+    }
+    duplicate_project_response(&state.database, &state.central_id, &id).await
+}
+
 pub async fn healthz() -> StatusCode {
     StatusCode::NO_CONTENT
 }
@@ -1585,6 +1681,39 @@ async fn create_project_response(
     }
 }
 
+/// Saves the project configuration only. Unlike an explicit save it never touches
+/// the review job, so typing in the form cannot restart a review.
+async fn autosave_project_response(
+    database: &DatabaseConnection,
+    owner: &str,
+    id: &str,
+    form: UpdateProjectForm,
+) -> Response {
+    match save_project(database, owner, id, &form).await {
+        Ok((project, _)) => render(AutosaveResponse {
+            state_version: project.state_version,
+        }),
+        Err(response) => *response,
+    }
+}
+
+async fn duplicate_project_response(
+    database: &DatabaseConnection,
+    owner: &str,
+    id: &str,
+) -> Response {
+    match ProjectRepository::new(database).duplicate(owner, id).await {
+        Ok(Some(project)) => action_response(format!("/projects/{}", project.id), Some(project.id)),
+        Ok(None) => error_page(
+            StatusCode::NOT_FOUND,
+            "findsmith-api-project-not-found",
+            "findsmith-api-this-project-does-not-exist-or-you-do-not-have-access-to-it",
+            "/workspace",
+        ),
+        Err(error) => project_error_response(error, &format!("/projects/{id}")),
+    }
+}
+
 async fn project_response(
     database: &DatabaseConnection,
     owner: &str,
@@ -1632,9 +1761,18 @@ async fn project_response(
                         latest_job_duplicates,
                         latest_job_limit_reached,
                         latest_job_building,
+                        latest_job_outdated,
                         latest_queue_preview,
                     ) = match latest_job {
                         Some(job) => {
+                            // Autosave updates the project, not the review: report when the
+                            // review still runs with an older configuration.
+                            let outdated = serde_json::from_value::<JobConfigV1>(job.config_json)
+                                .is_ok_and(|config| {
+                                    config.rules != state.rules
+                                        || config.skip != state.skip
+                                        || config.namespaces != state.namespaces
+                                });
                             let job_state: JobState = match serde_json::from_value(job.state_json) {
                                 Ok(state) => state,
                                 Err(error) => return internal_error(error),
@@ -1655,6 +1793,7 @@ async fn project_response(
                                 job_state.generation_duplicates,
                                 job_state.generation_limit_reached,
                                 job_state.status.is_building(),
+                                outdated,
                                 preview,
                             )
                         }
@@ -1665,6 +1804,7 @@ async fn project_response(
                             0,
                             0,
                             0,
+                            false,
                             false,
                             false,
                             Vec::new(),
@@ -1682,6 +1822,7 @@ async fn project_response(
                         wiki_id,
                         awb_access: awb_access.as_ref(),
                         rules: &state.rules,
+                        skip: &state.skip,
                         csrf_token,
                         page_title: "",
                         page_preview: None,
@@ -1694,6 +1835,7 @@ async fn project_response(
                         latest_job_duplicates,
                         latest_job_limit_reached,
                         latest_job_building,
+                        latest_job_outdated,
                         latest_queue_preview: &latest_queue_preview,
                     })
                 }
@@ -1774,6 +1916,7 @@ async fn page_preview_response(
         }
     };
     let page_preview = page_preview_view(snapshot, result);
+    let skip = form.skip_options();
     let sources = page_sources_from_form(&form).unwrap_or_default();
     let source_views = page_source_views(&sources);
     let selected_namespaces = parse_namespaces(&form.namespaces).unwrap_or_default();
@@ -1789,6 +1932,7 @@ async fn page_preview_response(
         wiki_id: &form.wiki_id,
         awb_access: None,
         rules: &rules,
+        skip: &skip,
         csrf_token: &form.csrf_token,
         page_title: &form.page_title,
         page_preview: Some(&page_preview),
@@ -1801,6 +1945,7 @@ async fn page_preview_response(
         latest_job_duplicates: 0,
         latest_job_limit_reached: false,
         latest_job_building: false,
+        latest_job_outdated: false,
         latest_queue_preview: &[],
     })
 }
@@ -1869,7 +2014,31 @@ async fn start_job_response(
             );
         }
     };
-    let config = JobConfigV1::new(state.rules.clone());
+    match edit_permissions(&project.wiki_url, user_agent, access_token).await {
+        Ok(permissions) => {
+            if let Some(message) = policy::job_start_blocker(&permissions) {
+                return error_page(
+                    StatusCode::FORBIDDEN,
+                    "findsmith-api-cannot-start-review",
+                    message,
+                    &back_href,
+                );
+            }
+        }
+        Err(_) => {
+            return error_page(
+                StatusCode::BAD_GATEWAY,
+                "findsmith-api-cannot-start-review",
+                "findsmith-api-start-rights-unverified",
+                &back_href,
+            );
+        }
+    }
+    let config = JobConfigV1::new(
+        state.rules.clone(),
+        state.skip.clone(),
+        state.namespaces.clone(),
+    );
     let job_state = JobState::building(queue_limit);
     match JobRepository::new(database)
         .create(owner, project_id, &project.wiki_url, config, job_state)
@@ -2224,9 +2393,11 @@ async fn fail_generation(
     .await;
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn review_response(
     database: &DatabaseConnection,
     owner: &str,
+    username: &str,
     access_token: &str,
     user_agent: &str,
     ids: (&str, &str),
@@ -2280,6 +2451,7 @@ async fn review_response(
             &job.wiki_url,
             user_agent,
             access_token,
+            username,
             entry,
             &config,
             proposed_text,
@@ -2326,18 +2498,34 @@ async fn review_response(
     })
 }
 
-async fn review_page_view(
+/// A loaded page, the rules' output for it, and the skip rule it meets, if any.
+struct PageEvaluation {
+    snapshot: PageSnapshot,
+    result: TransformationResult,
+    skip: Option<SkipReason>,
+}
+
+enum EvaluationError {
+    Load(PageLoadError),
+    Transform(String),
+}
+
+/// Loads a page and applies the skip options in a fixed order: page facts and
+/// content conditions, bot exclusions, then the rules' effect on the page.
+#[allow(clippy::too_many_arguments)]
+async fn evaluate_page(
     database: &DatabaseConnection,
     wiki_url: &str,
     user_agent: &str,
     access_token: &str,
-    entry: &QueueEntry,
+    username: &str,
     config: &JobConfigV1,
-    proposed_text: Option<String>,
-) -> Result<ReviewPageView, String> {
-    let snapshot = load_page(wiki_url, user_agent, access_token, &entry.title)
+    matcher: &SkipMatcher,
+    title: &str,
+) -> Result<PageEvaluation, EvaluationError> {
+    let snapshot = load_page(wiki_url, user_agent, access_token, title)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(EvaluationError::Load)?;
     let category_prefix = category_prefix_for_wiki(database, wiki_url).await;
     let result = apply_with_wiki(
         &config.rules,
@@ -2346,7 +2534,66 @@ async fn review_page_view(
         user_agent,
         &category_prefix,
     )
-    .await?;
+    .await
+    .map_err(EvaluationError::Transform)?;
+    let mut skip = matcher.before_rules(&PageFacts {
+        namespace: snapshot.namespace,
+        redirect: snapshot.redirect,
+        editable: snapshot.editable,
+        content: &snapshot.content,
+    });
+    // A failed exclusion check does not skip the page; saving checks it again.
+    if skip.is_none()
+        && policy::bot_edit_allowed(wiki_url, user_agent, username, &snapshot.content).await
+            == Ok(false)
+    {
+        skip = Some(SkipReason::BotExclusion);
+    }
+    let skip = skip.or_else(|| {
+        matcher.after_rules(&snapshot.content, &result.text, result.total_replacements)
+    });
+    Ok(PageEvaluation {
+        snapshot,
+        result,
+        skip,
+    })
+}
+
+fn skip_matcher(config: &JobConfigV1, options: &SkipOptions) -> Result<SkipMatcher, String> {
+    SkipMatcher::compile(options, &config.namespaces)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn review_page_view(
+    database: &DatabaseConnection,
+    wiki_url: &str,
+    user_agent: &str,
+    access_token: &str,
+    username: &str,
+    entry: &QueueEntry,
+    config: &JobConfigV1,
+    proposed_text: Option<String>,
+) -> Result<ReviewPageView, String> {
+    let matcher = skip_matcher(config, &config.skip)?;
+    let PageEvaluation {
+        snapshot,
+        result,
+        skip,
+    } = evaluate_page(
+        database,
+        wiki_url,
+        user_agent,
+        access_token,
+        username,
+        config,
+        &matcher,
+        &entry.title,
+    )
+    .await
+    .map_err(|error| match error {
+        EvaluationError::Load(error) => error.to_string(),
+        EvaluationError::Transform(error) => error,
+    })?;
     let proposed_text = proposed_text.unwrap_or_else(|| result.text.clone());
     if proposed_text.len() > crate::rules::MAX_OUTPUT_BYTES {
         return Err("findsmith-api-the-proposed-wikitext-is-too-large".to_owned());
@@ -2355,12 +2602,11 @@ async fn review_page_view(
     let permissions = edit_permissions(wiki_url, user_agent, access_token).await;
     let edit_access_message = match &permissions {
         Err(_) => Some("findsmith-api-access-rights-unverified"),
-        Ok(permissions) if permissions.blocked => Some("findsmith-api-account-blocked"),
-        Ok(permissions) if permissions.new_messages => Some("findsmith-api-new-messages"),
-        Ok(permissions) if !permissions.can_read || !permissions.can_edit => {
-            Some("findsmith-api-edit-rights-missing")
-        }
-        Ok(_) => None,
+        Ok(permissions) => policy::account_blocker(permissions).map(|blocker| match blocker {
+            policy::AccountBlocker::Blocked => "findsmith-api-account-blocked",
+            policy::AccountBlocker::NewMessages => "findsmith-api-new-messages",
+            policy::AccountBlocker::MissingRights => "findsmith-api-edit-rights-missing",
+        }),
     };
     let permissions = permissions.ok();
     let unified_diff = unified_lines(&snapshot.content, &proposed_text);
@@ -2372,12 +2618,9 @@ async fn review_page_view(
         server_timestamp: snapshot.server_timestamp,
         content_model: snapshot.content_model,
         editable: snapshot.editable,
-        can_edit: permissions.as_ref().is_some_and(|permissions| {
-            permissions.can_read
-                && permissions.can_edit
-                && !permissions.blocked
-                && !permissions.new_messages
-        }),
+        can_edit: permissions
+            .as_ref()
+            .is_some_and(|permissions| policy::account_blocker(permissions).is_none()),
         can_minor: permissions
             .as_ref()
             .is_some_and(|permissions| permissions.can_minor),
@@ -2385,6 +2628,7 @@ async fn review_page_view(
             .as_ref()
             .is_some_and(|permissions| permissions.can_bot),
         edit_access_message: edit_access_message.map(localization::from_source),
+        skip_reason: skip.map(|reason| localization::required(reason.message_key())),
         protection,
         total_replacements: result.total_replacements,
         changed: snapshot.content != proposed_text,
@@ -2503,24 +2747,19 @@ async fn save_current_page(
                 job_id,
                 state_version,
                 state,
-                classify_edit_error(&error).label(),
+                error::classify(&error).label(),
                 "findsmith-api-save-rights-unverified",
                 back_href,
             )
             .await;
         }
     };
-    if permissions.blocked
-        || !permissions.can_read
-        || !permissions.can_edit
-        || permissions.new_messages
-    {
-        let (kind, message) = if permissions.blocked {
-            ("block", "findsmith-api-save-account-blocked")
-        } else if permissions.new_messages {
-            ("permission", "findsmith-api-save-new-messages")
-        } else {
-            ("permission", "findsmith-api-save-rights-missing")
+    if let Some(blocker) = policy::account_blocker(&permissions) {
+        let kind = blocker.kind().label();
+        let message = match blocker {
+            policy::AccountBlocker::Blocked => "findsmith-api-save-account-blocked",
+            policy::AccountBlocker::NewMessages => "findsmith-api-save-new-messages",
+            policy::AccountBlocker::MissingRights => "findsmith-api-save-rights-missing",
         };
         return pause_edit(
             repository,
@@ -2597,7 +2836,7 @@ async fn save_current_page(
         )
         .await;
     }
-    match bot_edit_allowed(wiki_url, user_agent, username, &snapshot.content).await {
+    match policy::bot_edit_allowed(wiki_url, user_agent, username, &snapshot.content).await {
         Ok(true) => {}
         Ok(false) => {
             state.edit_policy_blocked = true;
@@ -2637,10 +2876,24 @@ async fn save_current_page(
             back_href,
         );
     }
+    if let Err(seconds) = policy::reserve_edit_slot(owner) {
+        return error_page(
+            StatusCode::TOO_MANY_REQUESTS,
+            "findsmith-api-cannot-save",
+            &localization::required_with_args(
+                "findsmith-api-save-too-fast",
+                &[&seconds.to_string()],
+            ),
+            back_href,
+        );
+    }
     state.policy_acknowledged = true;
     state.edit_in_flight = true;
     state.status = JobStatus::Stopped;
     if let Some(entry) = state.queue.get_mut(state.position) {
+        // The base revision lets an interrupted request be checked later.
+        entry.revision_id = Some(snapshot.revision_id);
+        entry.revision_timestamp = Some(snapshot.revision_timestamp.clone());
         entry.edit_result = Some("in_flight".to_owned());
         entry.reason = Some("findsmith-api-edit-outcome-unknown-reason".to_owned());
     }
@@ -2668,42 +2921,33 @@ async fn save_current_page(
     match outcome {
         Ok(new_revid) => {
             state.edit_in_flight = false;
+            state.consecutive_edit_failures = 0;
             state.status = JobStatus::Active;
             if let Some(entry) = state.queue.get_mut(state.position) {
-                entry.revision_id = Some(snapshot.revision_id);
-                entry.revision_timestamp = Some(snapshot.revision_timestamp);
                 entry.edit_revision_id = Some(new_revid);
                 entry.edit_result = Some("saved".to_owned());
             }
             state.advance(QueueEntryStatus::Saved, None);
         }
         Err(error) => {
-            let kind = classify_edit_error(&error);
+            let kind = error::classify(&error);
             // Transport failures and unrecognized responses can happen after MediaWiki committed the edit.
-            let ambiguous = matches!(
-                error,
-                mwapi::Error::HttpError(_)
-                    | mwapi::Error::InvalidJson(_)
-                    | mwapi::Error::Unknown(_)
-            );
+            let ambiguous = ApiFailureKind::is_ambiguous(&error);
             state.edit_in_flight = ambiguous;
-            state.edit_policy_blocked = matches!(
-                kind,
-                EditFailureKind::AbuseFilter
-                    | EditFailureKind::Captcha
-                    | EditFailureKind::Spam
-                    | EditFailureKind::Block
-                    | EditFailureKind::Protection
-                    | EditFailureKind::Permission
-                    | EditFailureKind::Unknown
-            );
+            state.consecutive_edit_failures += 1;
+            // An ambiguous outcome stays locked as in flight until it is checked instead.
+            state.edit_policy_blocked =
+                !ambiguous && policy::halts_editing(kind, state.consecutive_edit_failures);
+            let repeated = state.edit_policy_blocked && !kind.is_policy_sensitive();
             if let Some(entry) = state.queue.get_mut(state.position) {
                 entry.edit_result = Some(kind.label().to_owned());
                 entry.reason = Some(if ambiguous {
                     "findsmith-api-save-outcome-ambiguous".to_owned()
-                } else if kind == EditFailureKind::Conflict {
+                } else if repeated {
+                    "findsmith-api-save-repeated-failures".to_owned()
+                } else if kind == ApiFailureKind::Conflict {
                     "findsmith-api-save-conflict".to_owned()
-                } else if kind == EditFailureKind::AbuseFilter {
+                } else if kind == ApiFailureKind::AbuseFilter {
                     "findsmith-api-save-abuse-filter".to_owned()
                 } else {
                     localization::required_with_args("findsmith-api-save-rejected", &[kind.label()])
@@ -2746,6 +2990,97 @@ async fn pause_edit(
     }
 }
 
+/// Resolves an edit whose outcome is unknown, for example after a timeout or a
+/// server restart, by looking for the FindSmith revision in the page history.
+#[allow(clippy::too_many_arguments)]
+async fn verify_edit_response(
+    repository: &JobRepository<'_>,
+    owner: &str,
+    username: &str,
+    access_token: &str,
+    user_agent: &str,
+    ids: (&str, &str),
+    wiki_url: &str,
+    state_version: i64,
+    mut state: JobState,
+    back_href: &str,
+) -> Response {
+    let (project_id, job_id) = ids;
+    let Some(entry) = state.current().filter(|_| state.edit_in_flight) else {
+        return error_page(
+            StatusCode::CONFLICT,
+            "findsmith-api-no-edit-to-verify",
+            "findsmith-api-no-edit-to-verify-details",
+            back_href,
+        );
+    };
+    let base_revision = entry.revision_id;
+    let revisions = match recent_revisions(wiki_url, user_agent, access_token, &entry.title).await {
+        Ok(revisions) => revisions,
+        Err(error) => {
+            return error_page(
+                StatusCode::BAD_GATEWAY,
+                "findsmith-api-could-not-verify-edit",
+                &localization::required_with_args(
+                    "findsmith-api-mediawiki-request-error",
+                    &[error::classify(&error).label()],
+                ),
+                back_href,
+            );
+        }
+    };
+    state.edit_in_flight = false;
+    match find_own_revision(&revisions, base_revision, username) {
+        Some(revision_id) => {
+            state.consecutive_edit_failures = 0;
+            state.status = JobStatus::Active;
+            if let Some(entry) = state.queue.get_mut(state.position) {
+                entry.edit_revision_id = Some(revision_id);
+                entry.edit_result = Some("saved".to_owned());
+                entry.reason = None;
+            }
+            state.advance(QueueEntryStatus::Saved, None);
+        }
+        None => {
+            state.status = JobStatus::Stopped;
+            if let Some(entry) = state.queue.get_mut(state.position) {
+                entry.edit_result = Some("not_saved".to_owned());
+                entry.reason = Some("findsmith-api-edit-verified-not-saved".to_owned());
+            }
+        }
+    }
+    match repository
+        .update_state(owner, project_id, job_id, &state, state_version)
+        .await
+    {
+        Ok(()) => action_response(back_href.to_owned(), Some(job_id.to_owned())),
+        Err(error) => job_error_response(error, back_href),
+    }
+}
+
+/// Finds a revision by this account with the FindSmith attribution, newer than
+/// the base revision. Without a recorded base only the latest revision counts.
+fn find_own_revision(
+    revisions: &[RecentRevision],
+    base_revision: Option<u64>,
+    username: &str,
+) -> Option<u64> {
+    let normalize = |name: &str| name.replace('_', " ");
+    revisions
+        .iter()
+        .take(if base_revision.is_some() {
+            revisions.len()
+        } else {
+            1
+        })
+        .take_while(|revision| base_revision.is_none_or(|base| revision.revision_id > base))
+        .find(|revision| {
+            normalize(&revision.user) == normalize(username)
+                && revision.comment.contains(EDIT_SUMMARY_ATTRIBUTION_LINK)
+        })
+        .map(|revision| revision.revision_id)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn job_action_response(
     database: &DatabaseConnection,
@@ -2778,6 +3113,21 @@ async fn job_action_response(
         Ok(state) => state,
         Err(error) => return internal_error(error),
     };
+    if form.action == "verify_edit" {
+        return verify_edit_response(
+            &repository,
+            owner,
+            username,
+            access_token,
+            user_agent,
+            (project_id, job_id),
+            &job.wiki_url,
+            form.state_version,
+            state,
+            &back_href,
+        )
+        .await;
+    }
     if state.edit_in_flight {
         return error_page(
             StatusCode::CONFLICT,
@@ -2882,79 +3232,94 @@ async fn job_action_response(
                 .filter(|entry| entry.status.is_pending())
             {
                 let title = entry.title.clone();
-                match load_page(&job.wiki_url, user_agent, access_token, &title).await {
-                    Ok(snapshot) => {
-                        let prefix = category_prefix_for_wiki(database, &job.wiki_url).await;
-                        match apply_with_wiki(
-                            &config.rules,
-                            &snapshot.content,
+                // Pre-parsing always removes unchanged pages; that is its purpose.
+                let options = SkipOptions {
+                    no_change: true,
+                    ..config.skip.clone()
+                };
+                let evaluation = match skip_matcher(&config, &options) {
+                    Ok(matcher) => {
+                        evaluate_page(
+                            database,
                             &job.wiki_url,
                             user_agent,
-                            &prefix,
+                            access_token,
+                            username,
+                            &config,
+                            &matcher,
+                            &title,
                         )
                         .await
-                        {
-                            Ok(result) => {
-                                if let Some(entry) = state.queue.get_mut(state.preparse_cursor) {
-                                    entry.revision_id = Some(snapshot.revision_id);
-                                    entry.revision_timestamp = Some(snapshot.revision_timestamp);
-                                    entry.replacement_count = Some(result.total_replacements);
-                                    if result.text == snapshot.content {
-                                        entry.status = QueueEntryStatus::Skipped;
-                                        entry.reason =
-                                            Some("findsmith-api-preparse-no-changes".to_owned());
-                                    }
-                                }
-                                if result.text != snapshot.content
-                                    && state.preparse_render_equivalent
-                                {
-                                    let before = parse_preview(
-                                        &job.wiki_url,
-                                        user_agent,
-                                        access_token,
-                                        &snapshot.title,
-                                        &snapshot.content,
-                                    )
-                                    .await;
-                                    let after = parse_preview(
-                                        &job.wiki_url,
-                                        user_agent,
-                                        access_token,
-                                        &snapshot.title,
-                                        &result.text,
-                                    )
-                                    .await;
-                                    if let (Ok(before), Ok(after)) = (before, after)
-                                        && before.html == after.html
-                                        && before.module_styles == after.module_styles
-                                        && let Some(entry) =
-                                            state.queue.get_mut(state.preparse_cursor)
-                                    {
-                                        entry.status = QueueEntryStatus::Skipped;
-                                        entry.reason =
-                                            Some("findsmith-api-preparse-same-render".to_owned());
-                                    }
-                                }
+                    }
+                    Err(message) => Err(EvaluationError::Transform(message)),
+                };
+                let cursor = state.preparse_cursor;
+                match evaluation {
+                    Ok(evaluation) => {
+                        let mut skip = evaluation.skip.map(|reason| {
+                            match reason {
+                                SkipReason::NoChange => "findsmith-api-preparse-no-changes",
+                                reason => reason.message_key(),
                             }
-                            Err(error) => {
-                                if let Some(entry) = state.queue.get_mut(state.preparse_cursor) {
-                                    entry.reason = Some(
-                                        localization::message_with_args(
-                                            "findsmith-api-preparse-transformation-failed",
-                                            &[&localization::from_source(&error)],
-                                        )
-                                        .expect("English pre-parse error message exists"),
-                                    );
-                                }
+                            .to_owned()
+                        });
+                        if skip.is_none() && state.preparse_render_equivalent {
+                            let before = parse_preview(
+                                &job.wiki_url,
+                                user_agent,
+                                access_token,
+                                &evaluation.snapshot.title,
+                                &evaluation.snapshot.content,
+                            )
+                            .await;
+                            let after = parse_preview(
+                                &job.wiki_url,
+                                user_agent,
+                                access_token,
+                                &evaluation.snapshot.title,
+                                &evaluation.result.text,
+                            )
+                            .await;
+                            if let (Ok(before), Ok(after)) = (before, after)
+                                && before.html == after.html
+                                && before.module_styles == after.module_styles
+                            {
+                                skip = Some("findsmith-api-preparse-same-render".to_owned());
+                            }
+                        }
+                        if let Some(entry) = state.queue.get_mut(cursor) {
+                            entry.revision_id = Some(evaluation.snapshot.revision_id);
+                            entry.revision_timestamp = Some(evaluation.snapshot.revision_timestamp);
+                            entry.replacement_count = Some(evaluation.result.total_replacements);
+                            if let Some(reason) = skip {
+                                entry.status = QueueEntryStatus::Skipped;
+                                entry.reason = Some(reason);
                             }
                         }
                     }
-                    Err(error) => {
-                        if let Some(entry) = state.queue.get_mut(state.preparse_cursor) {
+                    Err(EvaluationError::Load(PageLoadError::Missing)) => {
+                        if let Some(entry) = state.queue.get_mut(cursor) {
+                            entry.status = QueueEntryStatus::Missing;
+                            entry.reason = Some(SkipReason::Missing.message_key().to_owned());
+                        }
+                    }
+                    Err(EvaluationError::Load(error)) => {
+                        if let Some(entry) = state.queue.get_mut(cursor) {
                             entry.reason = Some(localization::required_with_args(
                                 "findsmith-api-preparse-page-load-failed",
                                 &[&error.to_string()],
                             ));
+                        }
+                    }
+                    Err(EvaluationError::Transform(error)) => {
+                        if let Some(entry) = state.queue.get_mut(cursor) {
+                            entry.reason = Some(
+                                localization::message_with_args(
+                                    "findsmith-api-preparse-transformation-failed",
+                                    &[&localization::from_source(&error)],
+                                )
+                                .expect("English pre-parse error message exists"),
+                            );
                         }
                     }
                 }
@@ -2991,37 +3356,42 @@ async fn job_action_response(
         "next" => {
             if let Some(entry) = state.current().filter(|entry| entry.status.is_pending()) {
                 let title = entry.title.clone();
-                let loaded = load_page(&job.wiki_url, user_agent, access_token, &title).await;
-                match loaded {
-                    Ok(snapshot) => match apply_with_wiki(
-                        &config.rules,
-                        &snapshot.content,
-                        &job.wiki_url,
-                        user_agent,
-                        &category_prefix_for_wiki(database, &job.wiki_url).await,
-                    )
-                    .await
-                    {
-                        Ok(result) => {
-                            if let Some(entry) = state.queue.get_mut(state.position) {
-                                entry.revision_id = Some(snapshot.revision_id);
-                                entry.revision_timestamp = Some(snapshot.revision_timestamp);
-                                entry.replacement_count = Some(result.total_replacements);
-                            }
-                            state.advance(QueueEntryStatus::Reviewed, None);
+                let evaluation = match skip_matcher(&config, &config.skip) {
+                    Ok(matcher) => {
+                        evaluate_page(
+                            database,
+                            &job.wiki_url,
+                            user_agent,
+                            access_token,
+                            username,
+                            &config,
+                            &matcher,
+                            &title,
+                        )
+                        .await
+                    }
+                    Err(message) => Err(EvaluationError::Transform(message)),
+                };
+                match evaluation {
+                    Ok(evaluation) => {
+                        if let Some(entry) = state.queue.get_mut(state.position) {
+                            entry.revision_id = Some(evaluation.snapshot.revision_id);
+                            entry.revision_timestamp = Some(evaluation.snapshot.revision_timestamp);
+                            entry.replacement_count = Some(evaluation.result.total_replacements);
                         }
-                        Err(error) => state.advance(
-                            QueueEntryStatus::Skipped,
-                            Some(
-                                localization::message_with_args(
-                                    "findsmith-api-transformation-failed",
-                                    &[&localization::from_source(&error)],
-                                )
-                                .expect("English transformation error message exists"),
+                        match evaluation.skip {
+                            Some(reason) => state.advance(
+                                QueueEntryStatus::Skipped,
+                                Some(reason.message_key().to_owned()),
                             ),
-                        ),
-                    },
-                    Err(error) => state.advance(
+                            None => state.advance(QueueEntryStatus::Reviewed, None),
+                        }
+                    }
+                    Err(EvaluationError::Load(PageLoadError::Missing)) => state.advance(
+                        QueueEntryStatus::Missing,
+                        Some(SkipReason::Missing.message_key().to_owned()),
+                    ),
+                    Err(EvaluationError::Load(error)) => state.advance(
                         QueueEntryStatus::Skipped,
                         Some(
                             localization::message_with_args(
@@ -3029,6 +3399,16 @@ async fn job_action_response(
                                 &[&error.to_string()],
                             )
                             .expect("English page load error message exists"),
+                        ),
+                    ),
+                    Err(EvaluationError::Transform(error)) => state.advance(
+                        QueueEntryStatus::Skipped,
+                        Some(
+                            localization::message_with_args(
+                                "findsmith-api-transformation-failed",
+                                &[&localization::from_source(&error)],
+                            )
+                            .expect("English transformation error message exists"),
                         ),
                     ),
                 }
@@ -3231,6 +3611,7 @@ async fn render_page_preview_error(
         wiki_id: &form.wiki_id,
         awb_access: None,
         rules,
+        skip: &form.skip_options(),
         csrf_token: &form.csrf_token,
         page_title: &form.page_title,
         page_preview: None,
@@ -3243,6 +3624,7 @@ async fn render_page_preview_error(
         latest_job_duplicates: 0,
         latest_job_limit_reached: false,
         latest_job_building: false,
+        latest_job_outdated: false,
         latest_queue_preview: &[],
     })
 }
@@ -3325,7 +3707,9 @@ async fn update_project_response(
         }
     }
     match save_project(database, owner, id, &form).await {
-        Ok((project, rules)) => {
+        Ok((project, state)) => {
+            let rules = state.rules.clone();
+            let config = JobConfigV1::new(state.rules, state.skip, state.namespaces);
             let jobs = JobRepository::new(database);
             let latest_job = match jobs.latest(owner, id).await {
                 Ok(job) => job,
@@ -3346,7 +3730,7 @@ async fn update_project_response(
                             owner,
                             id,
                             &project.wiki_url,
-                            JobConfigV1::new(rules),
+                            config,
                             JobState::repeat_with_new_rules(&old_state),
                         )
                         .await
@@ -3359,10 +3743,7 @@ async fn update_project_response(
                         Some(next.id),
                     );
                 }
-                if let Err(error) = jobs
-                    .update_config(owner, id, &job.id, &JobConfigV1::new(rules))
-                    .await
-                {
+                if let Err(error) = jobs.update_config(owner, id, &job.id, &config).await {
                     return job_error_response(error, &format!("/projects/{id}"));
                 }
             }
@@ -3377,7 +3758,7 @@ async fn save_project(
     owner: &str,
     id: &str,
     form: &UpdateProjectForm,
-) -> Result<(project::Model, Vec<ReplacementRule>), Box<Response>> {
+) -> Result<(project::Model, ProjectState), Box<Response>> {
     let back_href = format!("/projects/{id}");
     let rules = match replacement_rules(form) {
         Ok(rules) => rules,
@@ -3457,6 +3838,15 @@ async fn save_project(
             )));
         }
     };
+    let skip = form.skip_options();
+    if let Err(message) = skip::validate(&skip) {
+        return Err(Box::new(error_page(
+            StatusCode::BAD_REQUEST,
+            "findsmith-api-invalid-skip-options",
+            &message,
+            &back_href,
+        )));
+    }
     let legacy = legacy_sources(&sources);
     let state = ProjectState {
         sources,
@@ -3468,6 +3858,7 @@ async fn save_project(
         namespaces,
         queue_limit,
         rules,
+        skip,
     };
     if let Err(message) = validate_project_sources(&state) {
         return Err(Box::new(error_page(
@@ -3477,7 +3868,7 @@ async fn save_project(
             &back_href,
         )));
     }
-    let saved_rules = state.rules.clone();
+    let saved_state = state.clone();
     let repository = ProjectRepository::new(database);
     match repository
         .update(
@@ -3490,7 +3881,7 @@ async fn save_project(
         )
         .await
     {
-        Ok(Some(project)) => Ok((project, saved_rules)),
+        Ok(Some(project)) => Ok((project, saved_state)),
         Ok(None) => Err(Box::new(error_page(
             StatusCode::NOT_FOUND,
             "findsmith-api-project-not-found",
@@ -3739,8 +4130,6 @@ fn replacement_rules(form: &UpdateProjectForm) -> Result<Vec<ReplacementRule>, S
         || form.rule_case.len() != count
         || form.rule_scope.len() != count
         || (!form.rule_operation.is_empty() && form.rule_operation.len() != count)
-        || (!form.rule_group.is_empty() && form.rule_group.len() != count)
-        || (!form.rule_group_contains.is_empty() && form.rule_group_contains.len() != count)
         || (!form.rule_parameter.is_empty() && form.rule_parameter.len() != count)
         || (!form.rule_name.is_empty() && form.rule_name.len() != count)
     {
@@ -3750,7 +4139,6 @@ fn replacement_rules(form: &UpdateProjectForm) -> Result<Vec<ReplacementRule>, S
     let enabled = rule_indexes(&form.rule_enabled, count)?;
     let multiline = rule_indexes(&form.rule_multiline, count)?;
     let dot_newline = rule_indexes(&form.rule_dot_newline, count)?;
-    let group_invert = rule_indexes(&form.rule_group_invert, count)?;
     let mask_comments = rule_indexes(&form.rule_mask_comments, count)?;
     let mask_tags = rule_indexes(&form.rule_mask_tags, count)?;
     let mask_references = rule_indexes(&form.rule_mask_references, count)?;
@@ -3826,13 +4214,6 @@ fn replacement_rules(form: &UpdateProjectForm) -> Result<Vec<ReplacementRule>, S
             name: name.to_owned(),
             enabled: enabled.contains(&index),
             operation,
-            group_name: form.rule_group.get(index).cloned().unwrap_or_default(),
-            group_contains: form
-                .rule_group_contains
-                .get(index)
-                .cloned()
-                .unwrap_or_default(),
-            group_invert: group_invert.contains(&index),
             parameter: form.rule_parameter.get(index).cloned().unwrap_or_default(),
             mask: RuleMask {
                 comments: mask_comments.contains(&index),
@@ -4188,6 +4569,30 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_edit_is_found_only_after_the_base_revision() {
+        let revision = |revision_id: u64, user: &str, comment: &str| RecentRevision {
+            revision_id,
+            user: user.to_owned(),
+            comment: comment.to_owned(),
+        };
+        let attributed = format!("Fix typo ({EDIT_SUMMARY_ATTRIBUTION_LINK})");
+        let history = [
+            revision(12, "Other", "unrelated"),
+            revision(11, "Some_User", &attributed),
+            revision(10, "Some User", &attributed),
+        ];
+        assert_eq!(find_own_revision(&history, Some(10), "Some User"), Some(11));
+        assert_eq!(find_own_revision(&history, Some(11), "Some User"), None);
+        assert_eq!(
+            find_own_revision(&history[1..], None, "Some User"),
+            Some(11)
+        );
+        assert_eq!(find_own_revision(&history, None, "Some User"), None);
+        let manual = [revision(11, "Some User", "manual edit")];
+        assert_eq!(find_own_revision(&manual, Some(10), "Some User"), None);
+    }
+
+    #[test]
     fn submitted_rule_keeps_empty_replacement() {
         let form = UpdateProjectForm {
             name: "Example".to_owned(),
@@ -4198,8 +4603,6 @@ mod tests {
             queue_limit: 100,
             rule_name: vec!["Remove obsolete".to_owned()],
             rule_operation: vec!["replace".to_owned()],
-            rule_group: Vec::new(),
-            rule_group_contains: Vec::new(),
             rule_parameter: Vec::new(),
             rule_mask_comments: Vec::new(),
             rule_mask_tags: Vec::new(),
@@ -4208,7 +4611,6 @@ mod tests {
             rule_mask_headings: Vec::new(),
             rule_mask_templates: Vec::new(),
             rule_mask_link_targets: Vec::new(),
-            rule_group_invert: Vec::new(),
             rule_find: vec!["obsolete".to_owned()],
             rule_replace: vec![String::new()],
             rule_enabled: vec!["0".to_owned()],
@@ -4217,10 +4619,21 @@ mod tests {
             rule_scope: vec!["all".to_owned()],
             rule_multiline: Vec::new(),
             rule_dot_newline: Vec::new(),
+            skip_no_change: true,
+            skip_redirects: false,
+            skip_protected: false,
+            skip_outside_namespaces: true,
+            skip_contains: String::new(),
+            skip_not_contains: String::new(),
+            skip_regex: false,
+            skip_case_sensitive: true,
+            skip_min_replacements: 0,
+            skip_max_replacements: 0,
             page_title: String::new(),
             state_version: 1,
             csrf_token: "test".to_owned(),
         };
+        assert_eq!(form.skip_options(), SkipOptions::default());
 
         let rules = replacement_rules(&form).unwrap();
         assert_eq!(rules.len(), 1);

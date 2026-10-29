@@ -162,7 +162,8 @@ dynamic_keys = {
     "findsmith-project-result-" + part
     for part in (
         "in-flight", "authentication", "permission", "block", "protection", "captcha",
-        "spam", "conflict", "maxlag", "abuse-filter", "unknown"
+        "spam", "conflict", "maxlag", "abuse-filter", "network", "unknown", "not-saved",
+        "bot-exclusion"
     )
 }
 unused = sorted(key for key in english_keys if key not in code and key not in dynamic_keys)
