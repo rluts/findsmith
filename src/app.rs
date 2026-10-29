@@ -21,17 +21,19 @@ use crate::{
     config::{AuthenticationConfig, Config},
     mediawiki::owner_identity,
     web::{
-        OwnerState, WebState, healthz, owner_add_wiki, owner_build_project, owner_create_project,
-        owner_delete_project, owner_delete_saved_rule, owner_index, owner_job_action,
-        owner_job_queue_action, owner_job_recompute, owner_job_review, owner_language_middleware,
-        owner_page_preview, owner_project, owner_render_preview, owner_save_rule,
-        owner_saved_rules, owner_set_language, owner_start_job, owner_update_project,
-        owner_update_saved_rule, owner_wikis, owner_workspace, translation_languages, translations,
-        web_add_wiki, web_build_project, web_create_project, web_delete_project,
-        web_delete_saved_rule, web_job_action, web_job_queue_action, web_job_recompute,
-        web_job_review, web_language_middleware, web_oauth_index, web_page_preview, web_project,
-        web_render_preview, web_save_rule, web_saved_rules, web_set_language, web_start_job,
-        web_update_project, web_update_saved_rule, web_wikis, web_workspace,
+        OwnerState, WebState, healthz, owner_add_wiki, owner_autosave_project, owner_build_project,
+        owner_create_project, owner_delete_project, owner_delete_saved_rule,
+        owner_duplicate_project, owner_index, owner_job_action, owner_job_queue_action,
+        owner_job_recompute, owner_job_review, owner_language_middleware, owner_page_preview,
+        owner_project, owner_render_preview, owner_save_rule, owner_saved_rules,
+        owner_set_language, owner_start_job, owner_update_project, owner_update_saved_rule,
+        owner_wikis, owner_workspace, translation_languages, translations, web_add_wiki,
+        web_autosave_project, web_build_project, web_create_project, web_delete_project,
+        web_delete_saved_rule, web_duplicate_project, web_job_action, web_job_queue_action,
+        web_job_recompute, web_job_review, web_language_middleware, web_oauth_index,
+        web_page_preview, web_project, web_render_preview, web_save_rule, web_saved_rules,
+        web_set_language, web_start_job, web_update_project, web_update_saved_rule, web_wikis,
+        web_workspace,
     },
 };
 
@@ -89,6 +91,14 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
                 .route(
                     "/api/projects/{id}/delete",
                     axum::routing::post(web_delete_project),
+                )
+                .route(
+                    "/api/projects/{id}/autosave",
+                    axum::routing::post(web_autosave_project),
+                )
+                .route(
+                    "/api/projects/{id}/duplicate",
+                    axum::routing::post(web_duplicate_project),
                 )
                 .route(
                     "/api/projects/{id}/jobs",
@@ -180,6 +190,14 @@ pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<R
                 .route(
                     "/api/projects/{id}/delete",
                     axum::routing::post(owner_delete_project),
+                )
+                .route(
+                    "/api/projects/{id}/autosave",
+                    axum::routing::post(owner_autosave_project),
+                )
+                .route(
+                    "/api/projects/{id}/duplicate",
+                    axum::routing::post(owner_duplicate_project),
                 )
                 .route(
                     "/api/projects/{id}/jobs",

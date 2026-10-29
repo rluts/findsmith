@@ -8,7 +8,7 @@ use sea_orm::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{entities::job, projects::ReplacementRule};
+use crate::{entities::job, projects::ReplacementRule, skip::SkipOptions};
 
 pub const JOB_CONFIG_VERSION: u32 = 1;
 
@@ -16,13 +16,19 @@ pub const JOB_CONFIG_VERSION: u32 = 1;
 pub struct JobConfigV1 {
     pub version: u32,
     pub rules: Vec<ReplacementRule>,
+    #[serde(default)]
+    pub skip: SkipOptions,
+    #[serde(default)]
+    pub namespaces: Vec<i64>,
 }
 
 impl JobConfigV1 {
-    pub fn new(rules: Vec<ReplacementRule>) -> Self {
+    pub fn new(rules: Vec<ReplacementRule>, skip: SkipOptions, namespaces: Vec<i64>) -> Self {
         Self {
             version: JOB_CONFIG_VERSION,
             rules,
+            skip,
+            namespaces,
         }
     }
 }
@@ -117,6 +123,8 @@ pub struct JobState {
     pub policy_acknowledged: bool,
     #[serde(default)]
     pub edit_policy_blocked: bool,
+    #[serde(default)]
+    pub consecutive_edit_failures: u32,
 }
 
 impl JobState {
@@ -165,6 +173,7 @@ impl JobState {
             edit_in_flight: false,
             policy_acknowledged: false,
             edit_policy_blocked: false,
+            consecutive_edit_failures: 0,
         }
     }
 
@@ -184,6 +193,7 @@ impl JobState {
             edit_in_flight: false,
             policy_acknowledged: false,
             edit_policy_blocked: false,
+            consecutive_edit_failures: 0,
         }
     }
 

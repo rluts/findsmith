@@ -6,12 +6,12 @@ use mwbot::{
         EmbeddedIn, Generator, categories::CategoryMembers, link::LinksHere, search::Search,
     },
 };
-use parsoid::prelude::*;
 use serde::Deserialize;
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
     sync::{Mutex, OnceLock},
+    time::Duration,
 };
 
 use crate::AppResult;
@@ -366,125 +366,6 @@ fn can_mark_bot_edit(user: &UserInfo) -> bool {
         && user.rights.iter().any(|right| right == "bot")
 }
 
-pub async fn bot_edit_allowed(
-    wiki_url: &str,
-    user_agent: &str,
-    username: &str,
-    text: &str,
-) -> Result<bool, String> {
-    let rest_url = wiki_url
-        .strip_suffix("api.php")
-        .ok_or("The wiki has no supported Parsoid endpoint.")?;
-    let client = ParsoidClient::new(&format!("{rest_url}rest.php"), user_agent)
-        .map_err(|error| format!("Could not connect to Parsoid: {error}"))?;
-    let code = client
-        .transform_to_html(text)
-        .await
-        .map_err(|error| format!("Could not inspect bot exclusions: {error}"))?
-        .into_mutable();
-    let templates = code
-        .filter_templates()
-        .map_err(|error| format!("Could not inspect bot exclusions: {error}"))?;
-    let user = username.replace('_', " ").to_lowercase();
-    for template in templates {
-        let name = template.name_in_wikitext().replace('_', " ").to_lowercase();
-        let name = name.strip_prefix("template:").unwrap_or(&name).trim();
-        if name == "nobots" {
-            return Ok(false);
-        }
-        if name != "bots" {
-            continue;
-        }
-        if let Some(allow) = template.param("allow") {
-            let allowed = allow
-                .split(',')
-                .map(|name| name.trim().replace('_', " ").to_lowercase())
-                .any(|name| name == "all" || name == user);
-            if !allowed {
-                return Ok(false);
-            }
-        }
-        if let Some(deny) = template.param("deny") {
-            let denied = deny
-                .split(',')
-                .map(|name| name.trim().replace('_', " ").to_lowercase())
-                .any(|name| name == "all" || name == user);
-            if denied {
-                return Ok(false);
-            }
-        }
-    }
-    Ok(true)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EditFailureKind {
-    Authentication,
-    Permission,
-    Block,
-    Protection,
-    Captcha,
-    Spam,
-    Conflict,
-    Maxlag,
-    AbuseFilter,
-    Unknown,
-}
-
-impl EditFailureKind {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Authentication => "authentication",
-            Self::Permission => "permission",
-            Self::Block => "block",
-            Self::Protection => "protection",
-            Self::Captcha => "captcha",
-            Self::Spam => "spam",
-            Self::Conflict => "conflict",
-            Self::Maxlag => "maxlag",
-            Self::AbuseFilter => "abuse filter",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
-pub fn classify_edit_error(error: &mwapi::Error) -> EditFailureKind {
-    use EditFailureKind as Kind;
-    let code = match error {
-        mwapi::Error::NotLoggedIn | mwapi::Error::NotLoggedInAsBot | mwapi::Error::BadToken => {
-            return Kind::Authentication;
-        }
-        mwapi::Error::Maxlag { .. }
-        | mwapi::Error::TooManyRequests { .. }
-        | mwapi::Error::Readonly { .. } => return Kind::Maxlag,
-        mwapi::Error::ApiError(error) => error.code.to_ascii_lowercase(),
-        _ => return Kind::Unknown,
-    };
-    if code.contains("abusefilter") {
-        Kind::AbuseFilter
-    } else if code.contains("captcha") {
-        Kind::Captcha
-    } else if code.contains("spam") {
-        Kind::Spam
-    } else if code.contains("editconflict") || code == "articleexists" {
-        Kind::Conflict
-    } else if code.contains("protected") || code.contains("cascade") {
-        Kind::Protection
-    } else if code.contains("blocked") || code.contains("block") {
-        Kind::Block
-    } else if code.contains("assert") || code.contains("token") || code.contains("login") {
-        Kind::Authentication
-    } else if code.contains("permission")
-        || code.contains("denied")
-        || code.contains("create")
-        || code.contains("right")
-    {
-        Kind::Permission
-    } else {
-        Kind::Unknown
-    }
-}
-
 fn edit_clients() -> &'static Mutex<HashMap<(String, String), mwapi::Client>> {
     static CLIENTS: OnceLock<Mutex<HashMap<(String, String), mwapi::Client>>> = OnceLock::new();
     CLIENTS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -515,11 +396,10 @@ pub async fn edit_existing_page(
     let client = if let Some(client) = cached {
         client
     } else {
-        let client = mwapi::Client::builder(wiki_url)
+        // Edits are never retried automatically: a retry could save the same text twice.
+        let client = client_builder(wiki_url, user_agent)
             .set_oauth2_token(access_token)
-            .set_user_agent(user_agent)
             .set_assert(mwapi::Assert::User)
-            .set_maxlag(5)
             .set_retry_limit(0)
             .build()
             .await?;
@@ -572,6 +452,69 @@ pub async fn edit_existing_page(
         .ok_or_else(|| {
             mwapi::Error::Unknown("MediaWiki did not return the new revision ID.".to_owned())
         })
+}
+
+pub struct RecentRevision {
+    pub revision_id: u64,
+    pub user: String,
+    pub comment: String,
+}
+
+#[derive(Deserialize)]
+struct RecentRevisionsResponse {
+    query: RecentRevisionsQuery,
+}
+
+#[derive(Deserialize)]
+struct RecentRevisionsQuery {
+    pages: Vec<RecentRevisionsPage>,
+}
+
+#[derive(Deserialize)]
+struct RecentRevisionsPage {
+    #[serde(default)]
+    revisions: Vec<ApiRecentRevision>,
+}
+
+#[derive(Deserialize)]
+struct ApiRecentRevision {
+    revid: u64,
+    #[serde(default)]
+    user: String,
+    #[serde(default)]
+    comment: String,
+}
+
+/// Newest-first revision metadata, used to find out whether an interrupted edit
+/// request reached the wiki. Page text is not requested.
+pub async fn recent_revisions(
+    wiki_url: &str,
+    user_agent: &str,
+    access_token: &str,
+    title: &str,
+) -> Result<Vec<RecentRevision>, mwapi::Error> {
+    let client = authenticated_client(wiki_url, user_agent, access_token).await?;
+    let response: RecentRevisionsResponse = client
+        .get([
+            ("action", "query"),
+            ("prop", "revisions"),
+            ("rvprop", "ids|user|comment"),
+            ("rvlimit", "20"),
+            ("titles", title),
+            ("formatversion", "2"),
+        ])
+        .await?;
+    Ok(response
+        .query
+        .pages
+        .into_iter()
+        .flat_map(|page| page.revisions)
+        .map(|revision| RecentRevision {
+            revision_id: revision.revid,
+            user: revision.user,
+            comment: revision.comment,
+        })
+        .collect())
 }
 
 #[derive(Deserialize)]
@@ -967,14 +910,30 @@ fn resolve_normalized_batch(batch: &[String], query: NormalizeQuery) -> Vec<Norm
         .collect()
 }
 
+const MAXLAG_SECONDS: u32 = 5;
+const READ_RETRY_LIMIT: u32 = 3;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+pub fn client_builder(wiki_url: &str, user_agent: &str) -> mwapi::Builder {
+    mwapi::Client::builder(wiki_url)
+        .set_user_agent(user_agent)
+        .set_maxlag(MAXLAG_SECONDS)
+        .set_retry_limit(READ_RETRY_LIMIT)
+        .set_http_client(|| {
+            reqwest::Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .timeout(REQUEST_TIMEOUT)
+        })
+}
+
 async fn authenticated_client(
     wiki_url: &str,
     user_agent: &str,
     access_token: &str,
 ) -> Result<mwapi::Client, mwapi::Error> {
-    mwapi::Client::builder(wiki_url)
+    client_builder(wiki_url, user_agent)
         .set_oauth2_token(access_token)
-        .set_user_agent(user_agent)
         .set_assert(mwapi::Assert::User)
         .build()
         .await
@@ -1013,44 +972,6 @@ mod tests {
         }))
         .unwrap();
         assert!(!can_mark_bot_edit(&flood_without_right));
-    }
-
-    #[test]
-    fn edit_errors_are_classified_without_exposing_server_text() {
-        let error = |code: &str| {
-            mwapi::Error::ApiError(mwapi::ApiError {
-                code: code.to_owned(),
-                text: "private page text".to_owned(),
-                data: None,
-            })
-        };
-        assert_eq!(
-            classify_edit_error(&error("abusefilter-warning")),
-            EditFailureKind::AbuseFilter
-        );
-        assert_eq!(
-            classify_edit_error(&error("protectedpage")),
-            EditFailureKind::Protection
-        );
-        assert_eq!(
-            classify_edit_error(&error("editconflict")),
-            EditFailureKind::Conflict
-        );
-        assert_eq!(
-            classify_edit_error(&error("spamdetected")),
-            EditFailureKind::Spam
-        );
-        assert_eq!(
-            classify_edit_error(&error("captcha")),
-            EditFailureKind::Captcha
-        );
-        assert_eq!(
-            classify_edit_error(&mwapi::Error::Maxlag {
-                info: String::new(),
-                retry_after: None
-            }),
-            EditFailureKind::Maxlag
-        );
     }
 
     #[test]

@@ -29,10 +29,7 @@ pub async fn apply_with_wiki(
     let mut counts = Vec::with_capacity(rules.len());
     let mut total = 0;
     for rule in rules {
-        let enabled = rule.enabled
-            && (rule.group_name.is_empty()
-                || input.contains(&rule.group_contains) != rule.group_invert);
-        if !enabled {
+        if !rule.enabled {
             counts.push(0);
             continue;
         }
@@ -47,13 +44,12 @@ pub async fn apply_with_wiki(
         ) {
             apply_structural_rule(rule, &text, wiki_url, user_agent).await?
         } else {
-            let mut standalone = rule.clone();
-            standalone.group_name.clear();
-            standalone.group_contains.clear();
-            standalone.group_invert = false;
-            let result = RuleEngine::compile_with_category_prefix(&[standalone], category_prefix)
-                .and_then(|engine| engine.apply_intermediate(&text))
-                .map_err(|error| error.to_string())?;
+            let result = RuleEngine::compile_with_category_prefix(
+                std::slice::from_ref(rule),
+                category_prefix,
+            )
+            .and_then(|engine| engine.apply_intermediate(&text))
+            .map_err(|error| error.to_string())?;
             (result.text, result.total_replacements)
         };
         if next.len() > MAX_OUTPUT_BYTES {

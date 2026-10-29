@@ -24,7 +24,7 @@ The Page list shows each page's status. Click a title to inspect that page. You 
 
 Select '''Add rule''' in the '''Rules''' tab. Rules run in the order shown; use the arrows to reorder them or the checkbox to disable one. Operations include find and replace, append or prepend wikitext, add/remove/replace a category, rename a template, and set/remove a template parameter.
 
-For find and replace, enter '''Find''' and '''Replace with'''. Leave '''Replace with''' empty to remove matches. Choose literal text or '''Regex''', case sensitivity, and first match or all matches. Regex rules also have multiline and dot-matches-newline options. Replacement rules can protect selected wikitext regions, such as comments, references, links, headings, and templates. '''Conditional group''' runs rules sharing a group name only when their shared condition matches the original page text. FindSmith uses Rust regex syntax; expressions written for AutoWikiBrowser's .NET regex engine may need adjustment.
+For find and replace, enter '''Find''' and '''Replace with'''. Leave '''Replace with''' empty to remove matches. Choose literal text or '''Regex''', case sensitivity, and first match or all matches. Regex rules also have multiline and dot-matches-newline options. Replacement rules can protect selected wikitext regions, such as comments, references, links, headings, and templates. FindSmith uses Rust regex syntax; expressions written for AutoWikiBrowser's .NET regex engine may need adjustment.
 
 Give a rule a name and select '''Save to my rules''' to reuse it in other projects. Rule names do not have to be unique. '''Add to project''' copies a saved rule into the current project.
 
