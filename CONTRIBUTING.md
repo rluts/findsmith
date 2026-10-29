@@ -17,9 +17,8 @@ FindSmith is a Wikimedia community tool. Contributors are expected to follow the
 You may use large language models and AI coding assistants to help write code, tests, documentation, or messages. You remain the author and are responsible for everything you submit:
 
 - Do not submit code or text you do not understand. You should be able to explain every change and answer review questions about it yourself.
-- Review generated code as carefully as code you wrote by hand; all checks in [Before you open a merge request](#before-you-open-a-merge-request) still apply.
-- Test the change yourself: run FindSmith locally and try the affected feature by hand. Passing tests, or an assistant saying it works, is not enough.
-- Keep merge requests small enough for a person to review carefully. Split large generated changes into focused merge requests, each with one purpose.
+- Review generated code as carefully as code you wrote by hand. Everything in [Before you open a merge request](#before-you-open-a-merge-request) still applies, including testing the change yourself; an assistant saying it works is not enough.
+- Do not submit large amounts of generated code at once. A person must be able to review every line, so split generated changes into small, focused merge requests.
 - Check generated content for licensing problems; do not submit material copied from sources that are incompatible with `GPL-3.0-or-later`.
 - Never paste secrets, tokens, `.env` contents, or private user data into an external AI service.
 - Do not use AI tools to write interface translations; translations come from translatewiki.net.
@@ -67,6 +66,10 @@ npm run dev --workspace findsmith-frontend
 
 Database migrations run automatically when the server starts.
 
+### Testing edits
+
+Real edits made while developing must not touch content pages. Test only on pages in your own user space (for example `User:YourName/FindSmith test`) or in the Draft namespace on wikis that have one, and give test projects a page list made only of those pages. Clean up test pages when you are done, following the wiki's rules for deletion requests.
+
 ## Project layout
 
 | Path                                                          | Contents                                                                |
@@ -80,6 +83,9 @@ Database migrations run automatically when the server starts.
 | `i18n/`                                                       | Message catalogs (`en.json`) and translator documentation (`qqq.json`). |
 
 ## Before you open a merge request
+
+- Test the change yourself: run FindSmith locally and try the affected feature by hand, saving edits only as described in [Testing edits](#testing-edits). Passing automated checks is not enough.
+- Keep merge requests small enough for a person to review carefully. Split large changes into focused merge requests, each with one purpose.
 
 Run every check locally; all of them must pass:
 
