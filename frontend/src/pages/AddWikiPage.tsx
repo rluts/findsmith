@@ -32,7 +32,7 @@ export function AddWikiPage() {
         {error && <ErrorBox message={error} />}
         {!data && !error ? <Busy /> : data ? <>
           <label>{t('findsmith-add-wiki-domain')}<input value={domain} onChange={event => setDomain(event.target.value)} placeholder="en.wikipedia.org" required /></label>
-          <button className="primary" type="submit" disabled={busy}>{busy ? t('findsmith-add-wiki-checking') : t('findsmith-nav-add-wiki')}</button>
+          <button className="primary" type="submit" disabled={busy}>{busy ? t('findsmith-add-wiki-checking') : t('findsmith-add-wiki-button')}</button>
         </> : null}
       </form>
       <section className="panel project-list"><h2>{t('findsmith-add-wiki-added')}</h2>

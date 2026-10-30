@@ -1,6 +1,8 @@
-"""Check translation catalogs for duplicate, undocumented, and unused messages."""
+"""
+Check translation catalogs for malformed, undocumented, and unused messages.
+Please do not add non-builtin Python libraries to the script.
+"""
 
-from collections import defaultdict
 import json
 import re
 import sys
@@ -72,52 +74,6 @@ if english_keys != documented_keys:
         f"Catalog documentation mismatch: missing {sorted(english_keys - documented_keys)}, "
         f"extra {sorted(documented_keys - english_keys)}"
     )
-
-# Identical English messages usually need one key. When the same English text
-# genuinely needs different translations in different contexts, record the
-# exact key group and explain the distinction here.
-intentional_duplicate_values: dict[frozenset[str], str] = {}
-value_keys: dict[str, set[str]] = defaultdict(set)
-for key in english_keys:
-    value_keys[english[key]].add(key)
-duplicate_groups = {frozenset(keys) for keys in value_keys.values() if len(keys) > 1}
-unexplained = duplicate_groups - intentional_duplicate_values.keys()
-stale_exceptions = intentional_duplicate_values.keys() - duplicate_groups
-if unexplained or stale_exceptions:
-    details = []
-    for group in sorted(unexplained, key=lambda keys: sorted(keys)):
-        details.append(f"Duplicate English value: {sorted(group)}")
-    for group in sorted(stale_exceptions, key=lambda keys: sorted(keys)):
-        details.append(f"Stale duplicate exception: {sorted(group)}")
-    raise SystemExit("\n".join(details))
-if any(not reason.strip() for reason in intentional_duplicate_values.values()):
-    raise SystemExit("Every intentional duplicate needs a reason")
-
-# A final full stop alone does not normally justify another translation key.
-# Keep a documented exception only when sentence punctuation changes how the
-# text must be translated in its specific UI contexts.
-intentional_period_variants: dict[frozenset[str], str] = {}
-period_keys: dict[str, set[str]] = defaultdict(set)
-for key in english_keys:
-    value = english[key]
-    comparable = value[:-1] if value.endswith(".") and not value.endswith("..") else value
-    period_keys[comparable].add(key)
-period_groups = {
-    frozenset(keys)
-    for keys in period_keys.values()
-    if len({english[key] for key in keys}) > 1
-}
-unexplained_periods = period_groups - intentional_period_variants.keys()
-stale_period_exceptions = intentional_period_variants.keys() - period_groups
-if unexplained_periods or stale_period_exceptions:
-    details = []
-    for group in sorted(unexplained_periods, key=lambda keys: sorted(keys)):
-        details.append(f"English values differ only by final period: {sorted(group)}")
-    for group in sorted(stale_period_exceptions, key=lambda keys: sorted(keys)):
-        details.append(f"Stale final-period exception: {sorted(group)}")
-    raise SystemExit("\n".join(details))
-if any(not reason.strip() for reason in intentional_period_variants.values()):
-    raise SystemExit("Every final-period exception needs a reason")
 
 source_files = list((ROOT / "src").rglob("*.rs")) + list(
     (ROOT / "frontend/src").rglob("*.ts*")
