@@ -116,8 +116,6 @@ pub struct JobState {
     #[serde(default)]
     pub preparse_cursor: usize,
     #[serde(default)]
-    pub preparse_render_equivalent: bool,
-    #[serde(default)]
     pub edit_in_flight: bool,
     #[serde(default)]
     pub policy_acknowledged: bool,
@@ -169,7 +167,6 @@ impl JobState {
             generation_limit_reached: false,
             preparse_active: false,
             preparse_cursor: 0,
-            preparse_render_equivalent: false,
             edit_in_flight: false,
             policy_acknowledged: false,
             edit_policy_blocked: false,
@@ -189,7 +186,6 @@ impl JobState {
             generation_limit_reached: false,
             preparse_active: false,
             preparse_cursor: 0,
-            preparse_render_equivalent: false,
             edit_in_flight: false,
             policy_acknowledged: false,
             edit_policy_blocked: false,

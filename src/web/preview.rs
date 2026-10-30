@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     csrf,
-    diff::{DiffLine, SideBySideLine, side_by_side_lines, unified_lines},
+    diff::{SideBySideLine, side_by_side_lines},
     localization,
     mediawiki::{PageSnapshot, load_page, parse_preview},
     projects::{ProjectRepository, ReplacementRule},
@@ -50,7 +50,6 @@ pub(super) struct PagePreviewView {
     pub(super) changed: bool,
     pub(super) proposed_text: String,
     pub(super) rules: Vec<RulePreviewView>,
-    pub(super) unified_diff: Vec<DiffLine>,
     pub(super) side_by_side_diff: Vec<SideBySideLine>,
 }
 
@@ -340,7 +339,6 @@ fn page_preview_view(snapshot: PageSnapshot, result: TransformationResult) -> Pa
             .zip(result.changed)
             .map(|(count, changed)| RulePreviewView { count, changed })
             .collect(),
-        unified_diff: unified_lines(&snapshot.content, &result.text),
         side_by_side_diff: side_by_side_lines(&snapshot.content, &result.text),
     }
 }

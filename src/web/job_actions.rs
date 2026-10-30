@@ -13,7 +13,7 @@ use crate::{
     jobs::{JobConfigV1, JobError, JobRepository, JobState, JobStatus, QueueEntryStatus},
     lists::{queue_from_normalized, source_values},
     localization,
-    mediawiki::{PageLoadError, normalize_titles, parse_preview},
+    mediawiki::{PageLoadError, normalize_titles},
     skip::{SkipOptions, SkipReason},
     wikis::{self},
 };
@@ -31,8 +31,6 @@ pub struct JobActionForm {
     pub(super) csrf_token: String,
     pub(super) state_version: i64,
     pub(super) action: String,
-    #[serde(default)]
-    pub(super) render_equivalent: bool,
     #[serde(default)]
     pub(super) proposed_text: Option<String>,
     #[serde(default)]
@@ -222,7 +220,6 @@ async fn job_action_response(
             }
             state.preparse_cursor = 0;
             state.preparse_active = true;
-            state.preparse_render_equivalent = form.render_equivalent;
         }
         "preparse_stop" => {
             state.preparse_active = false;
@@ -280,37 +277,13 @@ async fn job_action_response(
                 let cursor = state.preparse_cursor;
                 match evaluation {
                     Ok(evaluation) => {
-                        let mut skip = evaluation.skip.map(|reason| {
+                        let skip = evaluation.skip.map(|reason| {
                             match reason {
                                 SkipReason::NoChange => "findsmith-api-preparse-no-changes",
                                 reason => reason.message_key(),
                             }
                             .to_owned()
                         });
-                        if skip.is_none() && state.preparse_render_equivalent {
-                            let before = parse_preview(
-                                &job.wiki_url,
-                                user_agent,
-                                access_token,
-                                &evaluation.snapshot.title,
-                                &evaluation.snapshot.content,
-                            )
-                            .await;
-                            let after = parse_preview(
-                                &job.wiki_url,
-                                user_agent,
-                                access_token,
-                                &evaluation.snapshot.title,
-                                &evaluation.result.text,
-                            )
-                            .await;
-                            if let (Ok(before), Ok(after)) = (before, after)
-                                && before.html == after.html
-                                && before.module_styles == after.module_styles
-                            {
-                                skip = Some("findsmith-api-preparse-same-render".to_owned());
-                            }
-                        }
                         if let Some(entry) = state.queue.get_mut(cursor) {
                             entry.revision_id = Some(evaluation.snapshot.revision_id);
                             entry.revision_timestamp = Some(evaluation.snapshot.revision_timestamp);

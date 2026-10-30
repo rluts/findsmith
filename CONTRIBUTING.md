@@ -100,7 +100,7 @@ Real edits made while developing must not touch content pages. Test only on page
 | `src/config.rs`, `src/auth.rs`, `src/csrf.rs`                 | Configuration, the `CurrentUser` extractor for OAuth or owner-token mode, and CSRF protection.                                              |
 | `src/mediawiki.rs`, `src/error.rs`                            | MediaWiki Action API client and failure categories.                                                                                         |
 | `src/rules.rs`, `src/structural.rs`, `src/masking.rs`         | Replacement rules and Parsoid-based operations.                                                                                             |
-| `src/diff.rs`                                                 | Unified and side-by-side diffs.                                                                                                             |
+| `src/diff.rs`                                                 | Side-by-side diffs.                                                                                                                         |
 | `src/jobs.rs`, `src/lists.rs`, `src/skip.rs`, `src/policy.rs` | Review queues, page lists, skip rules, and editing policy.                                                                                  |
 | `src/projects.rs`, `src/saved_rules.rs`, `src/wikis.rs`       | Projects, saved rules, and registered wikis.                                                                                                |
 | `src/database.rs`, `src/entities/`, `src/migration/`          | Database connection, SeaORM entities, and migrations.                                                                                       |

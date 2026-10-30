@@ -1,4 +1,4 @@
-import type { SideLine, UnifiedLine } from '../types/api'
+import type { SideLine } from '../types/api'
 
 const Fragments = ({ items }: { items: {text: string; emphasized: boolean}[] }) => <>{items.map((item, index) => item.emphasized ? <mark key={index}>{item.text}</mark> : <span key={index}>{item.text}</span>)}</>
 
@@ -7,8 +7,4 @@ export function SideDiff({ lines }: { lines: SideLine[] }) {
     <div className={`diff-cell ${line.left_kind}`}><i>{line.left_number}</i><b>{line.left_marker}</b><code><Fragments items={line.left_fragments} /></code></div>
     <div className={`diff-cell ${line.right_kind}`}><i>{line.right_number}</i><b>{line.right_marker}</b><code><Fragments items={line.right_fragments} /></code></div>
   </div>)}</div>
-}
-
-export function UnifiedDiff({ lines }: { lines: UnifiedLine[] }) {
-  return <div className="unified-diff">{lines.map((line, index) => <div className={`unified-line ${line.kind}`} key={index}><b>{line.marker}</b><code><Fragments items={line.fragments} /></code></div>)}</div>
 }

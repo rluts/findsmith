@@ -8,13 +8,6 @@ pub struct DiffFragment {
 }
 
 #[derive(Serialize)]
-pub struct DiffLine {
-    pub kind: &'static str,
-    pub marker: char,
-    pub fragments: Vec<DiffFragment>,
-}
-
-#[derive(Serialize)]
 pub struct SideBySideLine {
     pub left_number: String,
     pub left_kind: &'static str,
@@ -30,31 +23,6 @@ struct InlineLine {
     old_index: Option<usize>,
     new_index: Option<usize>,
     fragments: Vec<DiffFragment>,
-}
-
-pub fn unified_lines(original: &str, proposed: &str) -> Vec<DiffLine> {
-    let diff = TextDiff::from_lines(original, proposed);
-    let mut lines = Vec::new();
-    for (index, group) in diff.grouped_ops(1).into_iter().enumerate() {
-        if index > 0 {
-            lines.push(DiffLine {
-                kind: "separator",
-                marker: '…',
-                fragments: Vec::new(),
-            });
-        }
-        lines.extend(group.iter().flat_map(|operation| {
-            diff.iter_inline_changes(operation).map(|change| {
-                let (kind, marker) = change_style(change.tag());
-                DiffLine {
-                    kind,
-                    marker,
-                    fragments: fragments(&change),
-                }
-            })
-        }));
-    }
-    lines
 }
 
 pub fn side_by_side_lines(original: &str, proposed: &str) -> Vec<SideBySideLine> {
@@ -194,14 +162,6 @@ fn line_number(index: Option<usize>) -> String {
         .unwrap_or_default()
 }
 
-fn change_style(tag: ChangeTag) -> (&'static str, char) {
-    match tag {
-        ChangeTag::Delete => ("removed", '-'),
-        ChangeTag::Insert => ("added", '+'),
-        ChangeTag::Equal => ("context", ' '),
-    }
-}
-
 fn fragments(change: &InlineChange<'_, str>) -> Vec<DiffFragment> {
     let mut fragments: Vec<_> = change
         .iter_strings_lossy()
@@ -228,21 +188,17 @@ mod tests {
     }
 
     #[test]
-    fn unified_diff_marks_removed_and_added_lines() {
-        let lines = unified_lines("one\ntwo words\n", "one\nthree words\n");
-        let removed = lines.iter().find(|line| line.kind == "removed").unwrap();
-        let added = lines.iter().find(|line| line.kind == "added").unwrap();
-        assert_eq!(text(&removed.fragments), "two words");
-        assert_eq!(text(&added.fragments), "three words");
+    fn diff_emphasizes_changed_words() {
+        let lines = side_by_side_lines("one\ntwo words\n", "one\nthree words\n");
         assert!(
-            removed
-                .fragments
+            lines[1]
+                .left_fragments
                 .iter()
                 .any(|fragment| fragment.emphasized && fragment.text.contains("two"))
         );
         assert!(
-            added
-                .fragments
+            lines[1]
+                .right_fragments
                 .iter()
                 .any(|fragment| fragment.emphasized && fragment.text.contains("three"))
         );
@@ -271,23 +227,26 @@ mod tests {
 
     #[test]
     fn unchanged_files_produce_no_diff_lines() {
-        assert!(unified_lines("спільний текст\n", "спільний текст\n").is_empty());
+        assert!(side_by_side_lines("спільний текст\n", "спільний текст\n").is_empty());
     }
 
     #[test]
     fn diff_keeps_one_context_line_around_each_change() {
-        let lines = unified_lines(
+        let lines = side_by_side_lines(
             "one\ntwo\nthree\nfour\nfive\nsix\nseven\n",
             "one\nchanged\nthree\nfour\nfive\nchanged too\nseven\n",
         );
         let context: Vec<_> = lines
             .iter()
-            .filter(|line| line.kind == "context")
-            .map(|line| text(&line.fragments))
+            .filter(|line| line.left_kind == "context")
+            .map(|line| text(&line.left_fragments))
             .collect();
         assert_eq!(context, ["one", "three", "five", "seven"]);
         assert_eq!(
-            lines.iter().filter(|line| line.kind == "separator").count(),
+            lines
+                .iter()
+                .filter(|line| line.left_kind == "separator")
+                .count(),
             1
         );
     }

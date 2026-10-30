@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     csrf,
-    diff::{DiffLine, SideBySideLine, side_by_side_lines, unified_lines},
+    diff::{SideBySideLine, side_by_side_lines},
     jobs::{JobConfigV1, JobRepository, JobState, JobStatus, QueueEntry, QueueEntryStatus},
     localization,
     mediawiki::{PageLoadError, PageSnapshot, edit_permissions, load_page},
@@ -51,7 +51,6 @@ struct ReviewResponse<'a> {
     generation_message: String,
     preparse_active: bool,
     preparse_cursor: usize,
-    preparse_render_equivalent: bool,
     edit_in_flight: bool,
     edit_policy_blocked: bool,
     policy_acknowledged: bool,
@@ -79,7 +78,6 @@ struct ReviewPageView {
     changed: bool,
     rules: Vec<RulePreviewView>,
     proposed_text: String,
-    unified_diff: Vec<DiffLine>,
     side_by_side_diff: Vec<SideBySideLine>,
 }
 
@@ -229,7 +227,6 @@ async fn review_response(
         generation_message: localization::from_source(&state.generation_message),
         preparse_active: state.preparse_active,
         preparse_cursor: state.preparse_cursor,
-        preparse_render_equivalent: state.preparse_render_equivalent,
         edit_in_flight: state.edit_in_flight,
         edit_policy_blocked: state.edit_policy_blocked,
         policy_acknowledged: state.policy_acknowledged,
@@ -359,7 +356,6 @@ async fn review_page_view(
         }),
     };
     let permissions = permissions.ok();
-    let unified_diff = unified_lines(&snapshot.content, &proposed_text);
     let side_by_side_diff = side_by_side_lines(&snapshot.content, &proposed_text);
     Ok(ReviewPageView {
         full_url: snapshot.full_url,
@@ -389,7 +385,6 @@ async fn review_page_view(
             .map(|(count, changed)| RulePreviewView { count, changed })
             .collect(),
         proposed_text,
-        unified_diff,
         side_by_side_diff,
     })
 }
