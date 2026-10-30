@@ -21,7 +21,7 @@ trap 'trap - EXIT; kill 0 2>/dev/null' EXIT INT TERM
 
 # Start Vite only once the backend answers, so its proxy has something to reach.
 BACKEND_URL="http://127.0.0.1:${PORT:-8000}/healthz"
-echo "Waiting for the backend at $BACKEND_URL…"
+echo "Waiting for the backend at $BACKEND_URL..."
 until curl -fs -o /dev/null "$BACKEND_URL"; do
     if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
         echo "The backend stopped before it was ready." >&2
