@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use axum::{
     Router,
@@ -6,9 +6,9 @@ use axum::{
     http::{HeaderValue, StatusCode, header},
     middleware::Next,
     response::Response,
-    routing::{any, get, get_service},
+    routing::{any, get, get_service, post},
 };
-use mwoauth::axum::{refresh_session, routes as oauth_routes};
+use mwoauth::axum::{AxumOAuthState, Key, refresh_session, routes as oauth_routes};
 use sea_orm::DatabaseConnection;
 use tower_http::{
     services::{ServeDir, ServeFile},
@@ -17,225 +17,107 @@ use tower_http::{
 
 use crate::{
     AppResult,
-    auth::oauth_state,
+    auth::{AuthMode, CurrentUser, oauth_state},
     config::{AuthenticationConfig, Config},
     mediawiki::owner_identity,
     web::{
-        OwnerState, WebState, healthz, owner_add_wiki, owner_autosave_project, owner_build_project,
-        owner_create_project, owner_delete_project, owner_delete_saved_rule,
-        owner_duplicate_project, owner_index, owner_job_action, owner_job_queue_action,
-        owner_job_recompute, owner_job_review, owner_language_middleware, owner_page_preview,
-        owner_project, owner_render_preview, owner_save_rule, owner_saved_rules,
-        owner_set_language, owner_start_job, owner_update_project, owner_update_saved_rule,
-        owner_wikis, owner_workspace, translation_languages, translations, web_add_wiki,
-        web_autosave_project, web_build_project, web_create_project, web_delete_project,
-        web_delete_saved_rule, web_duplicate_project, web_job_action, web_job_queue_action,
-        web_job_recompute, web_job_review, web_language_middleware, web_oauth_index,
-        web_page_preview, web_project, web_render_preview, web_save_rule, web_saved_rules,
-        web_set_language, web_start_job, web_update_project, web_update_saved_rule, web_wikis,
-        web_workspace,
+        AppState, add_wiki, autosave_project, build_project, create_project, delete_project,
+        delete_saved_rule, duplicate_project, healthz, job_action, job_queue_action, job_recompute,
+        job_review, language_middleware, page_preview, project, readyz, render_preview, save_rule,
+        saved_rules, session, set_language, start_job, translation_languages, translations,
+        update_project, update_saved_rule, wikis, workspace,
     },
 };
 
 pub async fn router(config: Config, database: DatabaseConnection) -> AppResult<Router> {
-    match config.authentication {
-        AuthenticationConfig::WebOAuth(oauth_config) => {
-            let oauth = oauth_state(
-                oauth_config,
-                &config.cookie_key,
-                &config.auth_wiki_url,
-                &config.user_agent,
-                config.debug,
-            )?;
-            let state = WebState {
-                oauth,
-                database,
-                user_agent: config.user_agent,
-                csrf_secure: !config.debug,
-            };
-            let frontend = get_service(ServeFile::new("frontend/dist/index.html"))
-                .layer(axum::middleware::from_fn(disable_frontend_cache));
-            Ok(oauth_routes()
-                .route("/api/session", get(web_oauth_index))
-                .route("/api/language", axum::routing::post(web_set_language))
-                .route("/api/translations", get(translation_languages))
-                .route("/api/translations/{language}", get(translations))
-                .route("/api/workspace", get(web_workspace))
-                .route("/api/wikis", get(web_wikis).post(web_add_wiki))
-                .route("/api/rules", get(web_saved_rules).post(web_save_rule))
-                .route(
-                    "/api/rules/{id}",
-                    axum::routing::post(web_update_saved_rule),
-                )
-                .route(
-                    "/api/rules/{id}/delete",
-                    axum::routing::post(web_delete_saved_rule),
-                )
-                .route("/api/projects", axum::routing::post(web_create_project))
-                .route(
-                    "/api/projects/{id}/render-preview",
-                    axum::routing::post(web_render_preview),
-                )
-                .route(
-                    "/api/projects/{id}",
-                    get(web_project).post(web_update_project),
-                )
-                .route(
-                    "/api/projects/{id}/build",
-                    axum::routing::post(web_build_project),
-                )
-                .route(
-                    "/api/projects/{id}/page-preview",
-                    axum::routing::post(web_page_preview),
-                )
-                .route(
-                    "/api/projects/{id}/delete",
-                    axum::routing::post(web_delete_project),
-                )
-                .route(
-                    "/api/projects/{id}/autosave",
-                    axum::routing::post(web_autosave_project),
-                )
-                .route(
-                    "/api/projects/{id}/duplicate",
-                    axum::routing::post(web_duplicate_project),
-                )
-                .route(
-                    "/api/projects/{id}/jobs",
-                    axum::routing::post(web_start_job),
-                )
-                .route("/api/projects/{id}/jobs/{job_id}", get(web_job_review))
-                .route(
-                    "/api/projects/{id}/jobs/{job_id}/action",
-                    axum::routing::post(web_job_action),
-                )
-                .route(
-                    "/api/projects/{id}/jobs/{job_id}/recompute",
-                    axum::routing::post(web_job_recompute),
-                )
-                .route(
-                    "/api/projects/{id}/jobs/{job_id}/queue",
-                    axum::routing::post(web_job_queue_action),
-                )
-                .route("/healthz", get(healthz))
-                .route("/api/{*path}", any(api_not_found))
-                .nest_service("/assets", ServeDir::new("frontend/dist/assets"))
-                .route_service("/", frontend.clone())
-                .route_service("/workspace", frontend.clone())
-                .route_service("/add-wiki", frontend.clone())
-                .route_service("/projects/{id}", frontend.clone())
-                .route_service("/projects/{id}/jobs/{job_id}", frontend)
-                .layer(axum::middleware::from_fn_with_state(
-                    state.clone(),
-                    web_language_middleware,
-                ))
-                .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
-                .layer(axum::middleware::from_fn_with_state(
-                    state.oauth.clone(),
-                    refresh_session,
-                ))
-                .layer(TimeoutLayer::with_status_code(
-                    StatusCode::REQUEST_TIMEOUT,
-                    Duration::from_secs(60),
-                ))
-                .with_state(state))
-        }
+    let auth = match config.authentication {
+        AuthenticationConfig::WebOAuth(oauth_config) => AuthMode::OAuth(Arc::new(oauth_state(
+            oauth_config,
+            &config.cookie_key,
+            &config.auth_wiki_url,
+            &config.user_agent,
+            config.debug,
+        )?)),
         AuthenticationConfig::OwnerToken(access_token) => {
             let identity =
                 owner_identity(&config.auth_wiki_url, &config.user_agent, &access_token).await?;
-            let state = OwnerState {
+            AuthMode::Owner(CurrentUser {
                 central_id: identity.central_id,
                 username: identity.username,
                 access_token,
-                database,
-                user_agent: config.user_agent,
-                cookie_key: mwoauth::axum::Key::from(&config.cookie_key),
-                csrf_secure: !config.debug,
-            };
-            let frontend = get_service(ServeFile::new("frontend/dist/index.html"))
-                .layer(axum::middleware::from_fn(disable_frontend_cache));
-            Ok(Router::new()
-                .route("/api/session", get(owner_index))
-                .route("/api/language", axum::routing::post(owner_set_language))
-                .route("/api/translations", get(translation_languages))
-                .route("/api/translations/{language}", get(translations))
-                .route("/api/workspace", get(owner_workspace))
-                .route("/api/wikis", get(owner_wikis).post(owner_add_wiki))
-                .route("/api/rules", get(owner_saved_rules).post(owner_save_rule))
-                .route(
-                    "/api/rules/{id}",
-                    axum::routing::post(owner_update_saved_rule),
-                )
-                .route(
-                    "/api/rules/{id}/delete",
-                    axum::routing::post(owner_delete_saved_rule),
-                )
-                .route("/api/projects", axum::routing::post(owner_create_project))
-                .route(
-                    "/api/projects/{id}/render-preview",
-                    axum::routing::post(owner_render_preview),
-                )
-                .route(
-                    "/api/projects/{id}",
-                    get(owner_project).post(owner_update_project),
-                )
-                .route(
-                    "/api/projects/{id}/build",
-                    axum::routing::post(owner_build_project),
-                )
-                .route(
-                    "/api/projects/{id}/page-preview",
-                    axum::routing::post(owner_page_preview),
-                )
-                .route(
-                    "/api/projects/{id}/delete",
-                    axum::routing::post(owner_delete_project),
-                )
-                .route(
-                    "/api/projects/{id}/autosave",
-                    axum::routing::post(owner_autosave_project),
-                )
-                .route(
-                    "/api/projects/{id}/duplicate",
-                    axum::routing::post(owner_duplicate_project),
-                )
-                .route(
-                    "/api/projects/{id}/jobs",
-                    axum::routing::post(owner_start_job),
-                )
-                .route("/api/projects/{id}/jobs/{job_id}", get(owner_job_review))
-                .route(
-                    "/api/projects/{id}/jobs/{job_id}/action",
-                    axum::routing::post(owner_job_action),
-                )
-                .route(
-                    "/api/projects/{id}/jobs/{job_id}/recompute",
-                    axum::routing::post(owner_job_recompute),
-                )
-                .route(
-                    "/api/projects/{id}/jobs/{job_id}/queue",
-                    axum::routing::post(owner_job_queue_action),
-                )
-                .route("/healthz", get(healthz))
-                .route("/api/{*path}", any(api_not_found))
-                .nest_service("/assets", ServeDir::new("frontend/dist/assets"))
-                .route_service("/", frontend.clone())
-                .route_service("/workspace", frontend.clone())
-                .route_service("/add-wiki", frontend.clone())
-                .route_service("/projects/{id}", frontend.clone())
-                .route_service("/projects/{id}/jobs/{job_id}", frontend)
-                .layer(axum::middleware::from_fn_with_state(
-                    state.clone(),
-                    owner_language_middleware,
-                ))
-                .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
-                .layer(TimeoutLayer::with_status_code(
-                    StatusCode::REQUEST_TIMEOUT,
-                    Duration::from_secs(60),
-                ))
-                .with_state(state))
+                can_logout: false,
+            })
         }
+    };
+    let state = AppState {
+        database,
+        user_agent: config.user_agent,
+        csrf_secure: !config.debug,
+        cookie_key: Key::from(&config.cookie_key),
+        auth,
+    };
+    let frontend = get_service(ServeFile::new("frontend/dist/index.html"))
+        .layer(axum::middleware::from_fn(disable_frontend_cache));
+    let mut router = Router::new()
+        .route("/api/session", get(session))
+        .route("/api/language", post(set_language))
+        .route("/api/translations", get(translation_languages))
+        .route("/api/translations/{language}", get(translations))
+        .route("/api/workspace", get(workspace))
+        .route("/api/wikis", get(wikis).post(add_wiki))
+        .route("/api/rules", get(saved_rules).post(save_rule))
+        .route("/api/rules/{id}", post(update_saved_rule))
+        .route("/api/rules/{id}/delete", post(delete_saved_rule))
+        .route("/api/projects", post(create_project))
+        .route("/api/projects/{id}/render-preview", post(render_preview))
+        .route("/api/projects/{id}", get(project).post(update_project))
+        .route("/api/projects/{id}/build", post(build_project))
+        .route("/api/projects/{id}/page-preview", post(page_preview))
+        .route("/api/projects/{id}/delete", post(delete_project))
+        .route("/api/projects/{id}/autosave", post(autosave_project))
+        .route("/api/projects/{id}/duplicate", post(duplicate_project))
+        .route("/api/projects/{id}/jobs", post(start_job))
+        .route("/api/projects/{id}/jobs/{job_id}", get(job_review))
+        .route("/api/projects/{id}/jobs/{job_id}/action", post(job_action))
+        .route(
+            "/api/projects/{id}/jobs/{job_id}/recompute",
+            post(job_recompute),
+        )
+        .route(
+            "/api/projects/{id}/jobs/{job_id}/queue",
+            post(job_queue_action),
+        )
+        .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
+        .route("/api/{*path}", any(api_not_found))
+        .nest_service("/assets", ServeDir::new("frontend/dist/assets"))
+        .route_service("/", frontend.clone())
+        .route_service("/workspace", frontend.clone())
+        .route_service("/add-wiki", frontend.clone())
+        .route_service("/projects/{id}", frontend.clone())
+        .route_service("/projects/{id}/jobs/{job_id}", frontend);
+    if let AuthMode::OAuth(oauth) = &state.auth {
+        router =
+            router.merge(oauth_routes::<AxumOAuthState>().with_state(AxumOAuthState::clone(oauth)));
     }
+    router = router
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            language_middleware,
+        ))
+        .layer(DefaultBodyLimit::max(16 * 1024 * 1024));
+    if let AuthMode::OAuth(oauth) = &state.auth {
+        router = router.layer(axum::middleware::from_fn_with_state(
+            AxumOAuthState::clone(oauth),
+            refresh_session,
+        ));
+    }
+    Ok(router
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(60),
+        ))
+        .with_state(state))
 }
 
 async fn disable_frontend_cache(request: Request, next: Next) -> Response {

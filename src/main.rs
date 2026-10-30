@@ -39,6 +39,20 @@ async fn main() -> AppResult<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+async fn shutdown_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+    tokio::select! {
+        _ = sigterm.recv() => {},
+        _ = tokio::signal::ctrl_c() => {}
+    }
+    println!("FindSmith shutting down");
+}
+
+#[cfg(not(unix))]
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
+    println!("FindSmith shutting down");
 }

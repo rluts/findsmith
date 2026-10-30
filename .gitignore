@@ -9,3 +9,4 @@ frontend/dist/
 rust-buildpack
 .DS_Store
 .plan
+__pycache__/

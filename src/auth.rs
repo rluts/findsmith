@@ -1,33 +1,80 @@
+use std::{convert::Infallible, sync::Arc};
+
+use axum::{
+    extract::{FromRequestParts, OptionalFromRequestParts},
+    http::{StatusCode, request::Parts},
+};
 use mwoauth::axum::{AxumOAuthState, AxumUser, CookieConfig, Key};
 use mwoauth::{MwOAuthClient, MwOAuthConfig};
 use url::Url;
 
-use crate::{AppResult, config::WebOAuthConfig};
+use crate::{AppResult, config::WebOAuthConfig, web::AppState};
 
-pub enum Authentication {
-    WebOAuth(Box<AxumUser>),
-    OwnerToken {
-        username: String,
-        access_token: String,
-    },
+/// How requests are authenticated, chosen once at startup.
+#[derive(Clone)]
+pub enum AuthMode {
+    /// Users sign in through Wikimedia OAuth; tokens live in the session cookie.
+    OAuth(Arc<AxumOAuthState>),
+    /// Local development: every request acts as one fixed account.
+    Owner(CurrentUser),
 }
 
-impl Authentication {
-    pub fn username(&self) -> &str {
-        match self {
-            Self::WebOAuth(user) => user.profile().username(),
-            Self::OwnerToken { username, .. } => username,
+/// The signed-in user, independent of the authentication mode.
+#[derive(Clone)]
+pub struct CurrentUser {
+    pub central_id: String,
+    pub username: String,
+    pub access_token: String,
+    pub can_logout: bool,
+}
+
+impl CurrentUser {
+    fn from_oauth(user: AxumUser) -> Self {
+        Self {
+            central_id: user.profile().central_id().to_owned(),
+            username: user.profile().username().to_owned(),
+            access_token: user.oauth2_token().to_owned(),
+            can_logout: true,
         }
     }
+}
 
-    pub fn can_logout(&self) -> bool {
-        matches!(self, Self::WebOAuth(_))
+impl FromRequestParts<AppState> for CurrentUser {
+    type Rejection = StatusCode;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        match &state.auth {
+            AuthMode::Owner(user) => Ok(user.clone()),
+            AuthMode::OAuth(oauth) => {
+                let user =
+                    <AxumUser as FromRequestParts<_>>::from_request_parts(parts, oauth.as_ref())
+                        .await?;
+                Ok(Self::from_oauth(user))
+            }
+        }
     }
+}
 
-    pub fn access_token(&self) -> &str {
-        match self {
-            Self::WebOAuth(user) => user.oauth2_token(),
-            Self::OwnerToken { access_token, .. } => access_token,
+impl OptionalFromRequestParts<AppState> for CurrentUser {
+    type Rejection = Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Option<Self>, Self::Rejection> {
+        match &state.auth {
+            AuthMode::Owner(user) => Ok(Some(user.clone())),
+            AuthMode::OAuth(oauth) => {
+                let user = <AxumUser as OptionalFromRequestParts<_>>::from_request_parts(
+                    parts,
+                    oauth.as_ref(),
+                )
+                .await?;
+                Ok(user.map(Self::from_oauth))
+            }
         }
     }
 }
