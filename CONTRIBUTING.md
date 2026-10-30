@@ -4,8 +4,8 @@ Thank you for helping improve FindSmith. This guide covers how to set up a devel
 
 ## Ways to contribute
 
-- Report bugs and suggest features to [Wikimedia Phabricator](https://phabricator.wikimedia.org/tag/tool-findsmith/)
-<!-- - Translate the interface on translatewiki.net: TODO: add translatewiki link -->
+- Report bugs and suggest features on [Wikimedia Phabricator](https://phabricator.wikimedia.org/tag/tool-findsmith/).
+<!-- - Translate the interface on translatewiki.net: TODO: add translatewiki link and uncomment this line after integration. See https://phabricator.wikimedia.org/T440744 -->
 - Improve the code or documentation through merge requests on [Wikimedia GitLab](https://gitlab.wikimedia.org/toolforge-repos/findsmith).
 
 ## Code of conduct
@@ -29,13 +29,20 @@ You may use large language models and AI coding assistants to help write code, t
 ### Requirements
 
 - Rust: the toolchain version is pinned in `rust-toolchain.toml` and installed automatically by `rustup`.
+- [`cargo-watch`](https://crates.io/crates/cargo-watch) for `run-local.sh`: `cargo install cargo-watch`.
 - Node.js 22.12 or later, and npm 10 or later.
-- MariaDB or MySQL. `mariadb-docker.sh` starts a local MariaDB container.
-- A Wikimedia OAuth 2 consumer, or an owner-only access token for local testing. You can create it on [Meta](https://meta.wikimedia.org/wiki/Special:OAuthConsumerRegistration/propose/oauth2)
+- MariaDB or MySQL. `mariadb-docker.sh` starts a local MariaDB container in Docker.
+- A Wikimedia OAuth 2 consumer, or an owner-only access token for local testing. Both are registered on [Meta-Wiki](https://meta.wikimedia.org/wiki/Special:OAuthConsumerRegistration/propose/oauth2).
 
 ### Configuration
 
-Create a `.env` file in the repository root. It is ignored by Git; never commit it.
+Copy `.env.example` to `.env` in the repository root and fill in the empty values. It contains the minimal settings for local development with an owner-only access token and the MariaDB container from `mariadb-docker.sh`. `.env` is ignored by Git; never commit it.
+
+```sh
+cp .env.example .env
+```
+
+All settings:
 
 | Variable                                     | Required                           | Purpose                                                                                                                                   |
 |----------------------------------------------|------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------|
@@ -52,17 +59,19 @@ Create a `.env` file in the repository root. It is ignored by Git; never commit 
 
 ### Running locally
 
+You need a database first. Use either:
+
+- an existing local MySQL or MariaDB server: create the database named in `DATABASE_NAME` and a user matching `TOOL_TOOLSDB_USER` and `TOOL_TOOLSDB_PASSWORD`, and point `DATABASE_HOST` and `DATABASE_PORT` at it; or
+- a MariaDB container in Docker: run `./mariadb-docker.sh` once. It creates the database and user from `.env` and keeps the data in the `findsmith-mariadb-data` volume.
+
+Then install dependencies and start FindSmith:
+
 ```sh
-./mariadb-docker.sh    # first time only: start MariaDB in Docker
 npm install
-./run-local.sh         # builds the frontend, loads .env, runs cargo run
+./run-local.sh         # loads .env, runs the server with cargo watch, then starts Vite
 ```
 
-For frontend work with hot reload, run Axum and Vite side by side:
-
-```sh
-npm run dev --workspace findsmith-frontend
-```
+Open <http://localhost:5173/>. The backend restarts after Rust or message changes, and the frontend reloads in place.
 
 Database migrations run automatically when the server starts.
 
@@ -75,12 +84,14 @@ Real edits made while developing must not touch content pages. Test only on page
 | Path                                                          | Contents                                                                |
 |---------------------------------------------------------------|-------------------------------------------------------------------------|
 | `src/web.rs`, `src/app.rs`                                    | HTTP handlers, JSON responses, and routes.                              |
+| `src/config.rs`, `src/auth.rs`, `src/csrf.rs`                 | Configuration, OAuth sessions, and CSRF protection.                     |
 | `src/mediawiki.rs`, `src/error.rs`                            | MediaWiki Action API client and failure categories.                     |
 | `src/rules.rs`, `src/structural.rs`, `src/masking.rs`         | Replacement rules and Parsoid-based operations.                         |
 | `src/jobs.rs`, `src/lists.rs`, `src/skip.rs`, `src/policy.rs` | Review queues, page lists, skip rules, and editing policy.              |
 | `src/projects.rs`, `src/entities/`, `src/migration/`          | Persistence.                                                            |
 | `frontend/src/`                                               | React and TypeScript interface.                                         |
-| `i18n/`                                                       | Message catalogs (`en.json`) and translator documentation (`qqq.json`). |
+| `i18n/`, `build.rs`                                           | Message catalogs, translator documentation, and their build-time check. |
+| `scripts/`                                                    | Development checks, such as `check_i18n.py`.                            |
 
 ## Before you open a merge request
 
@@ -93,7 +104,7 @@ Run every check locally; all of them must pass:
 cargo fmt --check
 cargo clippy --all-targets
 cargo test
-python scripts/check_i18n.py
+python3 scripts/check_i18n.py
 npm run build
 ```
 
@@ -118,7 +129,7 @@ See the "Interface language" section of `README.md` for details.
 FindSmith edits Wikimedia wikis on behalf of its users. Changes must preserve these guarantees:
 
 - Every edit is reviewed and explicitly confirmed by a person; no unattended or bot-mode editing path.
-- OAuth client secrets stay on the server. A user's OAuth token is kept only in the encrypted, `HttpOnly` session cookie: it never appears in HTML, URLs, JSON responses, logs, the database, or storage that page scripts can read (`localStorage`, `sessionStorage`, IndexedDB, or non-`HttpOnly` cookies).
+- OAuth client secrets and the owner access token stay on the server. A user's OAuth token is kept only in the encrypted, `HttpOnly` session cookie: it never appears in HTML, URLs, JSON responses, logs, the database, or storage that page scripts can read (`localStorage`, `sessionStorage`, IndexedDB, or non-`HttpOnly` cookies).
 - Edits use `assert=user`, `maxlag`, base revision IDs, and timestamps, and stop on policy-sensitive failures.
 - `{{bots}}` and `{{nobots}}` exclusions are respected.
 - Page text and private data stay out of logs.
@@ -130,7 +141,7 @@ FindSmith edits Wikimedia wikis on behalf of its users. Changes must preserve th
 
 ## Releases
 
-Versions follow [Semantic Versioning](https://semver.org/). Pre-releases use the `-alpha.N`, `-beta.N`, and `-rc.N` suffixes; keep the version in `Cargo.toml`, `package.json`, and `frontend/package.json` in sync.
+Versions follow [Semantic Versioning](https://semver.org/). Pre-releases use the `-alpha.N`, `-beta.N`, and `-rc.N` suffixes; keep the version in `Cargo.toml`, `package.json`, and `frontend/package.json` in sync, and commit the updated `Cargo.lock` and `package-lock.json`.
 
 Automatic deployment is not ready yet.
 

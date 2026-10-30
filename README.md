@@ -19,24 +19,7 @@ Run `python3 scripts/check_i18n.py` after changing messages; it checks for dupli
 
 ## Local development
 
-Install frontend dependencies and build the production assets:
-
-```sh
-npm install
-npm run build
-```
-
-Run Axum after configuring the required environment variables:
-
-```sh
-cargo run
-```
-
-For frontend development with hot reload, run Vite separately. It proxies `/api` and `/oauth` to Axum on port 8000:
-
-```sh
-npm run dev --workspace findsmith-frontend
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, configuration, running locally, and the checks a change must pass.
 
 ## Toolforge build service
 

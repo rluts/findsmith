@@ -4,6 +4,7 @@
   "version": "0.1.0-alpha.2",
   "workspaces": ["frontend"],
   "scripts": {
+    "dev": "npm run dev --workspace findsmith-frontend",
     "build": "npm run build --workspace findsmith-frontend",
     "heroku-postbuild": "npm run build"
   },
