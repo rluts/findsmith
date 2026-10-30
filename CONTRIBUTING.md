@@ -22,7 +22,17 @@ You may use large language models and AI coding assistants to help write code, t
 - Check generated content for licensing problems; do not submit material copied from sources that are incompatible with `GPL-3.0-or-later`.
 - Never paste secrets, tokens, `.env` contents, or private user data into an external AI service.
 - Do not use AI tools to write interface translations; translations come from translatewiki.net.
-- Mention significant AI assistance in the merge request description, for example with a `Co-Authored-By` line or a short note.
+- Credit AI assistance with a `Co-Authored-By` trailer in both the commit message and the merge request description, for example `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- Adding a short note about what the assistant did is strongly recommended. For example:
+
+  ```text
+  Split web.rs into submodules
+
+  Opus 5.5 was used to split src/web.rs into submodules under src/web/.
+  I reviewed the result and ran the tests.
+
+  Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+  ```
 
 ## Development setup
 
@@ -81,17 +91,23 @@ Real edits made while developing must not touch content pages. Test only on page
 
 ## Project layout
 
-| Path                                                          | Contents                                                                |
-|---------------------------------------------------------------|-------------------------------------------------------------------------|
-| `src/web.rs`, `src/app.rs`                                    | HTTP handlers, JSON responses, and routes.                              |
-| `src/config.rs`, `src/auth.rs`, `src/csrf.rs`                 | Configuration, OAuth sessions, and CSRF protection.                     |
-| `src/mediawiki.rs`, `src/error.rs`                            | MediaWiki Action API client and failure categories.                     |
-| `src/rules.rs`, `src/structural.rs`, `src/masking.rs`         | Replacement rules and Parsoid-based operations.                         |
-| `src/jobs.rs`, `src/lists.rs`, `src/skip.rs`, `src/policy.rs` | Review queues, page lists, skip rules, and editing policy.              |
-| `src/projects.rs`, `src/entities/`, `src/migration/`          | Persistence.                                                            |
-| `frontend/src/`                                               | React and TypeScript interface.                                         |
-| `i18n/`, `build.rs`                                           | Message catalogs, translator documentation, and their build-time check. |
-| `scripts/`                                                    | Development checks, such as `check_i18n.py`.                            |
+| Path                                                          | Contents                                                                                                                                    |
+|---------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------|
+| `src/main.rs`, `src/app.rs`                                   | Startup, graceful shutdown, and the single route table.                                                                                     |
+| `src/web/`                                                    | HTTP handlers and JSON responses, one module per area (projects, jobs, review, editing, previews, rules, wikis, session, language, health). |
+| `src/web/mod.rs`                                              | `AppState` and the handlers exported to the router.                                                                                         |
+| `src/web/responses.rs`                                        | Shared JSON, error, and CSRF responses; maps repository errors to localized API errors.                                                     |
+| `src/config.rs`, `src/auth.rs`, `src/csrf.rs`                 | Configuration, the `CurrentUser` extractor for OAuth or owner-token mode, and CSRF protection.                                              |
+| `src/mediawiki.rs`, `src/error.rs`                            | MediaWiki Action API client and failure categories.                                                                                         |
+| `src/rules.rs`, `src/structural.rs`, `src/masking.rs`         | Replacement rules and Parsoid-based operations.                                                                                             |
+| `src/diff.rs`                                                 | Unified and side-by-side diffs.                                                                                                             |
+| `src/jobs.rs`, `src/lists.rs`, `src/skip.rs`, `src/policy.rs` | Review queues, page lists, skip rules, and editing policy.                                                                                  |
+| `src/projects.rs`, `src/saved_rules.rs`, `src/wikis.rs`       | Projects, saved rules, and registered wikis.                                                                                                |
+| `src/database.rs`, `src/entities/`, `src/migration/`          | Database connection, SeaORM entities, and migrations.                                                                                       |
+| `src/localization.rs`                                         | Message lookup, plurals, and language preferences.                                                                                          |
+| `frontend/src/`                                               | React and TypeScript interface.                                                                                                             |
+| `i18n/`, `build.rs`                                           | Message catalogs, translator documentation, and their build-time check.                                                                     |
+| `scripts/`                                                    | Development checks, such as `check_i18n.py`.                                                                                                |
 
 ## Before you open a merge request
 
@@ -138,6 +154,7 @@ FindSmith edits Wikimedia wikis on behalf of its users. Changes must preserve th
 
 - Write a short summary line in the imperative mood, followed by details if needed.
 - Describe what changed and how you tested it in the merge request.
+- If an AI assistant helped, add a `Co-Authored-By` trailer and, ideally, a note on what it did; see [LLM usage](#llm-usage).
 
 ## Releases
 

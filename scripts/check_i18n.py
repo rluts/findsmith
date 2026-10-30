@@ -79,7 +79,7 @@ source_files = list((ROOT / "src").rglob("*.rs")) + list(
     (ROOT / "frontend/src").rglob("*.ts*")
 )
 
-# Repository errors are mapped to user-facing responses in web.rs. Their Display
+# Repository errors are mapped to user-facing responses in src/web/responses.rs. Their Display
 # implementations are only for diagnostics; translating them creates catalog
 # entries that cannot reach the API response.
 for filename, error_type in (("projects.rs", "ProjectError"), ("jobs.rs", "JobError")):
@@ -93,7 +93,7 @@ for filename, error_type in (("projects.rs", "ProjectError"), ("jobs.rs", "JobEr
         raise SystemExit(f"Cannot inspect {error_type} Display implementation")
     if "localization::" in display[1] or "findsmith-" in display[1]:
         raise SystemExit(
-            f"{error_type} Display must not use translations; localize its API mapping in web.rs"
+            f"{error_type} Display must not use translations; localize its API mapping in src/web/responses.rs"
         )
 
 code = "\n".join(
