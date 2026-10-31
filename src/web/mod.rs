@@ -27,7 +27,7 @@ pub use projects::{
     autosave_project, create_project, delete_project, duplicate_project, project, update_project,
     workspace,
 };
-pub use queue_build::{build_project, start_job};
+pub use queue_build::{build_project, spawn_build_recovery, start_job};
 pub use review::{job_recompute, job_review};
 pub use saved_rules::{delete_saved_rule, save_rule, saved_rules, update_saved_rule};
 pub use session::session;

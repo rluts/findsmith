@@ -1,11 +1,16 @@
 use axum::{http::StatusCode, response::Response};
+use chrono::{TimeDelta, Utc};
+use sha1::{Digest, Sha1};
+use unicode_normalization::UnicodeNormalization;
 
 use crate::{
     error::{self, ApiFailureKind},
-    jobs::{JobConfigV1, JobRepository, JobState, JobStatus, QueueEntryStatus},
+    jobs::{
+        EditAttempt, JobConfigV1, JobError, JobRepository, JobState, JobStatus, QueueEntryStatus,
+    },
     localization,
     mediawiki::{
-        RecentRevision, edit_existing_page, edit_permissions, load_page, recent_revisions,
+        RevisionHistory, edit_existing_page, edit_permissions, load_page, revisions_since,
     },
     policy,
     wikis::{self},
@@ -37,7 +42,7 @@ pub(super) async fn save_current_page(
         return error_page(
             StatusCode::CONFLICT,
             "findsmith-api-cannot-save",
-            "findsmith-api-select-a-pending-or-reviewed-page-in-an-active-or-completed-review",
+            "Select a pending or reviewed page in an active or completed review.",
             back_href,
         );
     }
@@ -55,15 +60,15 @@ pub(super) async fn save_current_page(
         return error_page(
             StatusCode::BAD_REQUEST,
             "findsmith-api-cannot-save",
-            "findsmith-api-the-reviewed-text-base-revision-and-start-timestamp-are-required",
+            "The reviewed text, base revision, and start timestamp are required.",
             back_href,
         );
     };
     if !form.policy_acknowledged && !state.policy_acknowledged {
         return error_page(
             StatusCode::BAD_REQUEST,
-            "findsmith-api-policy-acknowledgement-required",
-            "findsmith-api-acknowledge-the-selected-wiki-s-editing-policies-before-saving",
+            "Policy acknowledgement required",
+            "Acknowledge the selected wiki's editing policies before saving.",
             back_href,
         );
     }
@@ -71,7 +76,7 @@ pub(super) async fn save_current_page(
         return error_page(
             StatusCode::BAD_REQUEST,
             "findsmith-api-cannot-save",
-            "findsmith-api-the-proposed-wikitext-is-too-large",
+            "The proposed wikitext is too large.",
             back_href,
         );
     }
@@ -156,7 +161,7 @@ pub(super) async fn save_current_page(
             state_version,
             state,
             "permission",
-            "findsmith-api-save-flags-denied",
+            "The selected minor or bot flag is not permitted for this account.",
             back_href,
         )
         .await;
@@ -244,8 +249,8 @@ pub(super) async fn save_current_page(
     if snapshot.content == *text {
         return error_page(
             StatusCode::CONFLICT,
-            "findsmith-api-no-changes",
-            "findsmith-api-the-proposed-wikitext-matches-the-current-revision",
+            "No changes",
+            "The proposed wikitext matches the current revision.",
             back_href,
         );
     }
@@ -263,12 +268,18 @@ pub(super) async fn save_current_page(
     state.policy_acknowledged = true;
     state.edit_in_flight = true;
     state.status = JobStatus::Stopped;
+    let saved_index = state.position;
+    let attempt = EditAttempt {
+        content_sha1: stored_content_sha1(text),
+        started_at: Utc::now(),
+    };
     if let Some(entry) = state.queue.get_mut(state.position) {
-        // The base revision lets an interrupted request be checked later.
+        // The base revision and attempt let an interrupted request be checked later.
         entry.revision_id = Some(snapshot.revision_id);
         entry.revision_timestamp = Some(snapshot.revision_timestamp.clone());
         entry.edit_result = Some("in_flight".to_owned());
         entry.reason = Some("findsmith-api-edit-outcome-unknown-reason".to_owned());
+        entry.edit_attempt = Some(attempt.clone());
     }
     if let Err(error) = repository
         .update_state(owner, project_id, job_id, state, state_version)
@@ -291,6 +302,7 @@ pub(super) async fn save_current_page(
         form.bot,
     )
     .await;
+    let saved_revid = outcome.as_ref().ok().copied();
     match outcome {
         Ok(new_revid) => {
             state.edit_in_flight = false;
@@ -328,10 +340,118 @@ pub(super) async fn save_current_page(
             }
         }
     }
-    match repository
-        .update_state(owner, project_id, job_id, state, state_version + 1)
-        .await
+    match (
+        repository
+            .update_state(owner, project_id, job_id, state, state_version + 1)
+            .await,
+        saved_revid,
+    ) {
+        (Ok(()), _) => action_response(back_href.to_owned(), Some(job_id.to_owned())),
+        // A verification in another tab changed the state while the edit was
+        // in flight. The wiki accepted the edit, so record that on the newer state.
+        (Err(JobError::Conflict), Some(new_revid)) => {
+            let save = LateSave {
+                index: saved_index,
+                base_revision: snapshot.revision_id,
+                attempt: &attempt,
+                new_revision: new_revid,
+            };
+            record_late_save(repository, owner, project_id, job_id, save, back_href).await
+        }
+        (Err(error), _) => job_error_response(error, back_href),
+    }
+}
+
+/// How long a check waits before treating a missing revision as proof that an
+/// edit was not saved. It covers the request timeout, the server's handler
+/// timeout and MediaWiki committing an edit after the client disconnected.
+const VERIFY_GRACE_SECONDS: i64 = 180;
+
+/// SHA-1 of the text as MediaWiki stores it: Unicode NFC, line endings
+/// normalized to `\n` and trailing whitespace removed.
+fn stored_content_sha1(text: &str) -> String {
+    let normalized: String = text.nfc().collect();
+    let normalized = normalized.replace("\r\n", "\n").replace('\r', "\n");
+    let normalized = normalized.trim_end_matches([' ', '\t', '\n', '\r', '\0', '\x0B']);
+    Sha1::digest(normalized.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+struct LateSave<'a> {
+    index: usize,
+    base_revision: u64,
+    attempt: &'a EditAttempt,
+    new_revision: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum LateSaveOutcome {
+    AlreadyRecorded,
+    Recorded,
+    Unrelated,
+}
+
+/// Marks the attempt saved on a state that changed while its request was in
+/// flight. The entry must still be the one this attempt was made for.
+fn apply_late_save(state: &mut JobState, save: &LateSave<'_>) -> LateSaveOutcome {
+    let Some(entry) = state.queue.get_mut(save.index) else {
+        return LateSaveOutcome::Unrelated;
+    };
+    if entry.revision_id != Some(save.base_revision)
+        || entry.edit_attempt.as_ref() != Some(save.attempt)
     {
+        return LateSaveOutcome::Unrelated;
+    }
+    if entry.edit_revision_id == Some(save.new_revision)
+        && entry.edit_result.as_deref() == Some("saved")
+    {
+        return LateSaveOutcome::AlreadyRecorded;
+    }
+    entry.edit_revision_id = Some(save.new_revision);
+    entry.edit_result = Some("saved".to_owned());
+    entry.reason = None;
+    if save.index == state.position && state.edit_in_flight {
+        state.edit_in_flight = false;
+    }
+    state.consecutive_edit_failures = 0;
+    if save.index == state.position && state.status == JobStatus::Stopped {
+        state.status = JobStatus::Active;
+        state.advance(QueueEntryStatus::Saved, None);
+    } else if let Some(entry) = state.queue.get_mut(save.index) {
+        entry.status = QueueEntryStatus::Saved;
+    }
+    LateSaveOutcome::Recorded
+}
+
+async fn record_late_save(
+    repository: &JobRepository<'_>,
+    owner: &str,
+    project_id: &str,
+    job_id: &str,
+    save: LateSave<'_>,
+    back_href: &str,
+) -> Response {
+    let job = match repository.get(owner, project_id, job_id).await {
+        Ok(Some(job)) => job,
+        Ok(None) => return job_error_response(JobError::Conflict, back_href),
+        Err(error) => return job_error_response(error, back_href),
+    };
+    let mut state: JobState = match serde_json::from_value(job.state_json) {
+        Ok(state) => state,
+        Err(error) => return job_error_response(JobError::Serialization(error), back_href),
+    };
+    let result = match apply_late_save(&mut state, &save) {
+        LateSaveOutcome::AlreadyRecorded => Ok(()),
+        LateSaveOutcome::Recorded => {
+            repository
+                .update_state(owner, project_id, job_id, &state, job.state_version)
+                .await
+        }
+        LateSaveOutcome::Unrelated => Err(JobError::Conflict),
+    };
+    match result {
         Ok(()) => action_response(back_href.to_owned(), Some(job_id.to_owned())),
         Err(error) => job_error_response(error, back_href),
     }
@@ -382,14 +502,23 @@ pub(super) async fn verify_edit_response(
     let Some(entry) = state.current().filter(|_| state.edit_in_flight) else {
         return error_page(
             StatusCode::CONFLICT,
-            "findsmith-api-no-edit-to-verify",
-            "findsmith-api-no-edit-to-verify-details",
+            "No edit to check",
+            "This review has no save whose outcome is unknown.",
             back_href,
         );
     };
     let base_revision = entry.revision_id;
-    let revisions = match recent_revisions(wiki_url, user_agent, access_token, &entry.title).await {
-        Ok(revisions) => revisions,
+    let attempt = entry.edit_attempt.clone();
+    let history = match revisions_since(
+        wiki_url,
+        user_agent,
+        access_token,
+        &entry.title,
+        base_revision,
+    )
+    .await
+    {
+        Ok(history) => history,
         Err(error) => {
             return error_page(
                 StatusCode::BAD_GATEWAY,
@@ -402,9 +531,21 @@ pub(super) async fn verify_edit_response(
             );
         }
     };
-    state.edit_in_flight = false;
-    match find_own_revision(&revisions, base_revision, username) {
-        Some(revision_id) => {
+    let verification = classify_history(
+        &history,
+        username,
+        attempt
+            .as_ref()
+            .map(|attempt| attempt.content_sha1.as_str()),
+    );
+    let remaining_seconds = attempt.as_ref().map_or(0, |attempt| {
+        (attempt.started_at + TimeDelta::seconds(VERIFY_GRACE_SECONDS) - Utc::now())
+            .num_seconds()
+            .max(0)
+    });
+    match verification {
+        Verification::Saved(revision_id) => {
+            state.edit_in_flight = false;
             state.consecutive_edit_failures = 0;
             state.status = JobStatus::Active;
             if let Some(entry) = state.queue.get_mut(state.position) {
@@ -414,12 +555,33 @@ pub(super) async fn verify_edit_response(
             }
             state.advance(QueueEntryStatus::Saved, None);
         }
-        None => {
+        // The request may still be running, so a missing revision proves nothing yet.
+        Verification::NotSaved | Verification::Unknown if remaining_seconds > 0 => {
+            return error_page(
+                StatusCode::CONFLICT,
+                "findsmith-api-edit-still-in-progress",
+                &localization::required_with_args(
+                    "findsmith-api-edit-still-in-progress-details",
+                    &[&remaining_seconds.to_string()],
+                ),
+                back_href,
+            );
+        }
+        Verification::NotSaved => {
+            state.edit_in_flight = false;
             state.status = JobStatus::Stopped;
             if let Some(entry) = state.queue.get_mut(state.position) {
                 entry.edit_result = Some("not_saved".to_owned());
                 entry.reason = Some("findsmith-api-edit-verified-not-saved".to_owned());
             }
+        }
+        Verification::Unknown => {
+            return error_page(
+                StatusCode::CONFLICT,
+                "findsmith-api-edit-outcome-unconfirmed",
+                "findsmith-api-edit-outcome-unconfirmed-details",
+                back_href,
+            );
         }
     }
     match repository
@@ -431,54 +593,222 @@ pub(super) async fn verify_edit_response(
     }
 }
 
-/// Finds a revision by this account with the FindSmith attribution, newer than
-/// the base revision. Without a recorded base only the latest revision counts.
-fn find_own_revision(
-    revisions: &[RecentRevision],
-    base_revision: Option<u64>,
+#[derive(Debug, PartialEq, Eq)]
+enum Verification {
+    Saved(u64),
+    NotSaved,
+    Unknown,
+}
+
+/// Decides whether the history after the base revision contains this attempt:
+/// a revision by this account, with the FindSmith attribution and the
+/// attempt's content hash. Anything that could be the attempt but cannot be
+/// confirmed, including an incomplete history, leaves the outcome unknown.
+/// Attempts recorded before content hashes were stored match on account and
+/// attribution alone.
+fn classify_history(
+    history: &RevisionHistory,
     username: &str,
-) -> Option<u64> {
+    content_sha1: Option<&str>,
+) -> Verification {
     let normalize = |name: &str| name.replace('_', " ");
-    revisions
-        .iter()
-        .take(if base_revision.is_some() {
-            revisions.len()
-        } else {
-            1
-        })
-        .take_while(|revision| base_revision.is_none_or(|base| revision.revision_id > base))
-        .find(|revision| {
-            normalize(&revision.user) == normalize(username)
-                && revision.comment.contains(EDIT_SUMMARY_ATTRIBUTION_LINK)
-        })
-        .map(|revision| revision.revision_id)
+    let own_account = |user: &str| normalize(user) == normalize(username);
+    let mut uncertain = !history.complete;
+    let mut matched = None;
+    // Newest first: keep the oldest match, the one made against the base revision.
+    for revision in &history.revisions {
+        if own_account(&revision.user) && revision.comment.contains(EDIT_SUMMARY_ATTRIBUTION_LINK) {
+            match content_sha1 {
+                Some(expected) if revision.sha1.eq_ignore_ascii_case(expected) => {
+                    matched = Some(revision.revision_id);
+                }
+                // Another FindSmith edit by this account, or this one with
+                // content MediaWiki transformed or hid.
+                Some(_) => uncertain = true,
+                None => matched = Some(revision.revision_id),
+            }
+        } else if revision.user.is_empty()
+            || (own_account(&revision.user) && revision.comment.is_empty())
+        {
+            // Hidden user or summary: the revision could be this attempt.
+            uncertain = true;
+        }
+    }
+    match matched {
+        Some(revision_id) => Verification::Saved(revision_id),
+        None if uncertain => Verification::Unknown,
+        None => Verification::NotSaved,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mediawiki::RecentRevision;
 
-    #[test]
-    fn interrupted_edit_is_found_only_after_the_base_revision() {
-        let revision = |revision_id: u64, user: &str, comment: &str| RecentRevision {
+    fn revision(revision_id: u64, user: &str, comment: &str, sha1: &str) -> RecentRevision {
+        RecentRevision {
             revision_id,
             user: user.to_owned(),
             comment: comment.to_owned(),
-        };
-        let attributed = format!("Fix typo ({EDIT_SUMMARY_ATTRIBUTION_LINK})");
-        let history = [
-            revision(12, "Other", "unrelated"),
-            revision(11, "Some_User", &attributed),
-            revision(10, "Some User", &attributed),
-        ];
-        assert_eq!(find_own_revision(&history, Some(10), "Some User"), Some(11));
-        assert_eq!(find_own_revision(&history, Some(11), "Some User"), None);
-        assert_eq!(
-            find_own_revision(&history[1..], None, "Some User"),
-            Some(11)
+            sha1: sha1.to_owned(),
+        }
+    }
+
+    fn history(revisions: Vec<RecentRevision>, complete: bool) -> RevisionHistory {
+        RevisionHistory {
+            revisions,
+            complete,
+        }
+    }
+
+    fn attributed() -> String {
+        format!("Fix typo ({EDIT_SUMMARY_ATTRIBUTION_LINK})")
+    }
+
+    #[test]
+    fn attempt_is_matched_by_account_attribution_and_content() {
+        let complete = history(
+            vec![
+                revision(12, "Other", "unrelated", "ccc"),
+                revision(11, "Some_User", &attributed(), "abc"),
+            ],
+            true,
         );
-        assert_eq!(find_own_revision(&history, None, "Some User"), None);
-        let manual = [revision(11, "Some User", "manual edit")];
-        assert_eq!(find_own_revision(&manual, Some(10), "Some User"), None);
+        assert_eq!(
+            classify_history(&complete, "Some User", Some("ABC")),
+            Verification::Saved(11)
+        );
+        let legacy = history(vec![revision(11, "Some User", &attributed(), "")], true);
+        assert_eq!(
+            classify_history(&legacy, "Some User", None),
+            Verification::Saved(11)
+        );
+    }
+
+    #[test]
+    fn unrelated_findsmith_edit_by_the_same_account_is_not_the_attempt() {
+        let other_attempt = history(vec![revision(11, "Some User", &attributed(), "zzz")], true);
+        assert_eq!(
+            classify_history(&other_attempt, "Some User", Some("abc")),
+            Verification::Unknown
+        );
+        let both = history(
+            vec![
+                revision(12, "Some User", &attributed(), "zzz"),
+                revision(11, "Some User", &attributed(), "abc"),
+            ],
+            true,
+        );
+        assert_eq!(
+            classify_history(&both, "Some User", Some("abc")),
+            Verification::Saved(11)
+        );
+    }
+
+    #[test]
+    fn missing_attempt_is_not_saved_only_with_complete_history() {
+        let revisions = || {
+            vec![
+                revision(12, "Other", "unrelated", "ccc"),
+                revision(11, "Some User", "manual edit", "ddd"),
+            ]
+        };
+        assert_eq!(
+            classify_history(&history(revisions(), true), "Some User", Some("abc")),
+            Verification::NotSaved
+        );
+        assert_eq!(
+            classify_history(&history(revisions(), false), "Some User", Some("abc")),
+            Verification::Unknown
+        );
+        assert_eq!(
+            classify_history(&history(Vec::new(), true), "Some User", Some("abc")),
+            Verification::NotSaved
+        );
+        let hidden = history(vec![revision(11, "", "", "")], true);
+        assert_eq!(
+            classify_history(&hidden, "Some User", Some("abc")),
+            Verification::Unknown
+        );
+    }
+
+    #[test]
+    fn content_hash_matches_mediawiki_storage() {
+        // MediaWiki stores "Hello\r\nworld\n  " as "Hello\nworld".
+        let expected = "8b2b2671aca63a28c0f4f92be7030bf9481f113b";
+        assert_eq!(stored_content_sha1("Hello\nworld"), expected);
+        assert_eq!(stored_content_sha1("Hello\r\nworld\n  "), expected);
+        // Decomposed "café" is stored in NFC.
+        assert_eq!(
+            stored_content_sha1("cafe\u{301}"),
+            "f424452a9673918c6f09b0cdd35b20be8e6ae7d7"
+        );
+    }
+
+    fn queue_entry(title: &str) -> crate::jobs::QueueEntry {
+        crate::jobs::QueueEntry {
+            requested_title: title.to_owned(),
+            title: title.to_owned(),
+            page_id: Some(1),
+            namespace: Some(0),
+            redirect: false,
+            status: QueueEntryStatus::Pending,
+            reason: None,
+            revision_id: None,
+            revision_timestamp: None,
+            replacement_count: None,
+            edit_revision_id: None,
+            edit_result: None,
+            edit_attempt: None,
+        }
+    }
+
+    #[test]
+    fn late_save_is_recorded_on_a_state_changed_by_verification() {
+        let attempt = EditAttempt {
+            content_sha1: "abc".to_owned(),
+            started_at: Utc::now(),
+        };
+        let mut state = JobState::new(vec![
+            crate::jobs::QueueEntry {
+                revision_id: Some(10),
+                edit_result: Some("not_saved".to_owned()),
+                edit_attempt: Some(attempt.clone()),
+                ..queue_entry("A")
+            },
+            queue_entry("B"),
+        ]);
+        state.status = JobStatus::Stopped;
+        let save = LateSave {
+            index: 0,
+            base_revision: 10,
+            attempt: &attempt,
+            new_revision: 11,
+        };
+        assert_eq!(
+            apply_late_save(&mut state, &save),
+            LateSaveOutcome::Recorded
+        );
+        assert_eq!(state.queue[0].status, QueueEntryStatus::Saved);
+        assert_eq!(state.queue[0].edit_revision_id, Some(11));
+        assert_eq!(state.position, 1);
+        assert_eq!(state.status, JobStatus::Active);
+        assert_eq!(
+            apply_late_save(&mut state, &save),
+            LateSaveOutcome::AlreadyRecorded
+        );
+        let other = EditAttempt {
+            content_sha1: "zzz".to_owned(),
+            ..attempt.clone()
+        };
+        let unrelated = LateSave {
+            attempt: &other,
+            ..save
+        };
+        assert_eq!(
+            apply_late_save(&mut state, &unrelated),
+            LateSaveOutcome::Unrelated
+        );
     }
 }

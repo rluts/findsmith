@@ -35,15 +35,12 @@ pub fn validate_queue_limit(limit: usize) -> Result<usize, String> {
 
 pub fn validate_namespaces(namespaces: &[i64]) -> Result<Vec<i64>, String> {
     if namespaces.len() > 50 {
-        return Err("findsmith-api-select-at-most-50-namespaces".to_owned());
+        return Err("Select at most 50 namespaces.".to_owned());
     }
     let mut output = Vec::new();
     for namespace in namespaces {
         if !(0..=32_767).contains(namespace) {
-            return Err(crate::localization::required_with_args(
-                "findsmith-api-namespace-range",
-                &[&namespace.to_string()],
-            ));
+            return Err(format!("Namespace {namespace} is out of range."));
         }
         if !output.contains(namespace) {
             output.push(*namespace);
@@ -83,6 +80,7 @@ pub fn queue_from_normalized(titles: Vec<NormalizedTitle>) -> Vec<QueueEntry> {
                 replacement_count: None,
                 edit_revision_id: None,
                 edit_result: None,
+                edit_attempt: None,
             })
         })
         .collect()

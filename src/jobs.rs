@@ -1,6 +1,6 @@
 use std::{error::Error, fmt};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter, QueryOrder,
     Set, sea_query::Expr,
@@ -94,6 +94,17 @@ pub struct QueueEntry {
     pub edit_revision_id: Option<u64>,
     #[serde(default)]
     pub edit_result: Option<String>,
+    #[serde(default)]
+    pub edit_attempt: Option<EditAttempt>,
+}
+
+/// What a save request sent, recorded before the request so an interrupted
+/// save can later be matched to exactly this attempt in the page history.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct EditAttempt {
+    /// Hex SHA-1 of the text as MediaWiki stores it.
+    pub content_sha1: String,
+    pub started_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -140,6 +151,7 @@ impl JobState {
                 entry.replacement_count = None;
                 entry.edit_revision_id = None;
                 entry.edit_result = None;
+                entry.edit_attempt = None;
                 entry
             })
             .collect();
@@ -484,9 +496,55 @@ impl<'a> JobRepository<'a> {
         Ok(job::Entity::find()
             .filter(job::Column::Owner.eq(owner))
             .filter(job::Column::ProjectId.eq(project_id))
-            .order_by_desc(job::Column::UpdatedAt)
+            // The newest job is the current one. Activity on an older job, such
+            // as a review action or a config update, must not make it current again.
+            .order_by_desc(job::Column::CreatedAt)
             .one(self.database)
             .await?)
+    }
+
+    /// Fails builds that no running process will finish: jobs still building
+    /// whose state has not changed since `cutoff`. Returns how many were failed.
+    pub async fn fail_abandoned_builds(
+        &self,
+        cutoff: DateTime<Utc>,
+        message: &str,
+    ) -> Result<usize, JobError> {
+        let candidates = job::Entity::find()
+            .filter(job::Column::UpdatedAt.lt(cutoff))
+            // The status lives in the state document; this works on MariaDB and MySQL.
+            .filter(Expr::cust(
+                "JSON_UNQUOTE(JSON_EXTRACT(state_json, '$.status')) = 'building'",
+            ))
+            .all(self.database)
+            .await?;
+        let mut failed = 0;
+        for job in candidates {
+            let Ok(mut state) = serde_json::from_value::<JobState>(job.state_json) else {
+                continue;
+            };
+            if state.status != JobStatus::Building {
+                continue;
+            }
+            state.status = JobStatus::Failed;
+            state.generation_message = message.to_owned();
+            match self
+                .update_state(
+                    &job.owner,
+                    &job.project_id,
+                    &job.id,
+                    &state,
+                    job.state_version,
+                )
+                .await
+            {
+                Ok(()) => failed += 1,
+                // The build made progress after it was listed, so it is still running.
+                Err(JobError::Conflict) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(failed)
     }
 
     pub async fn update_config(
@@ -561,6 +619,7 @@ mod tests {
             replacement_count: None,
             edit_revision_id: None,
             edit_result: None,
+            edit_attempt: None,
         }
     }
 
@@ -681,11 +740,16 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("edit_result");
+        object.get_mut("queue").unwrap().as_array_mut().unwrap()[0]
+            .as_object_mut()
+            .unwrap()
+            .remove("edit_attempt");
         let restored: JobState = serde_json::from_value(value).unwrap();
         assert!(!restored.edit_in_flight);
         assert!(!restored.edit_policy_blocked);
         assert!(!restored.policy_acknowledged);
         assert!(restored.queue[0].edit_result.is_none());
+        assert!(restored.queue[0].edit_attempt.is_none());
     }
 
     #[test]

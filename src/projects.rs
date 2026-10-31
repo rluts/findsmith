@@ -312,13 +312,13 @@ impl<'a> ProjectRepository<'a> {
         owner: &str,
         id: &str,
         name: String,
-        wiki_url: String,
         state: ProjectState,
         expected_version: i64,
     ) -> Result<Option<project::Model>, ProjectError> {
+        // A project's wiki is fixed at creation: jobs copy titles and metadata
+        // from it, so it is never part of an update.
         let result = project::Entity::update_many()
             .col_expr(project::Column::Name, Expr::value(validate_name(name)?))
-            .col_expr(project::Column::WikiUrl, Expr::value(wiki_url))
             .col_expr(
                 project::Column::StateJson,
                 Expr::value(serde_json::to_value(state)?),

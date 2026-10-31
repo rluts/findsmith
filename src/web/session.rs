@@ -100,9 +100,8 @@ async fn render_index(
                 return render(SessionResponse {
                     username: Some(&user.username),
                     groups: Vec::new(),
-                    groups_error: Some(localization::required_with_args(
-                        "findsmith-api-groups-unsupported",
-                        &[requested_wiki_id],
+                    groups_error: Some(format!(
+                        "Could not load groups: unsupported wiki {requested_wiki_id}."
                     )),
                     can_logout: user.can_logout,
                     language,

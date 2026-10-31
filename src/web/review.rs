@@ -173,8 +173,8 @@ async fn review_response(
     if config.version != crate::jobs::JOB_CONFIG_VERSION {
         return error_page(
             StatusCode::CONFLICT,
-            "findsmith-api-unsupported-review-configuration",
-            "findsmith-api-this-review-uses-a-configuration-version-that-this-release-cannot-open",
+            "Unsupported review configuration",
+            "This review uses a configuration version that this release cannot open.",
             &format!("/projects/{project_id}"),
         );
     }
@@ -343,7 +343,7 @@ async fn review_page_view(
     })?;
     let proposed_text = proposed_text.unwrap_or_else(|| result.text.clone());
     if proposed_text.len() > crate::rules::MAX_OUTPUT_BYTES {
-        return Err("findsmith-api-the-proposed-wikitext-is-too-large".to_owned());
+        return Err("The proposed wikitext is too large.".to_owned());
     }
     let protection = protection_text(&snapshot);
     let permissions = edit_permissions(wiki_url, user_agent, access_token).await;

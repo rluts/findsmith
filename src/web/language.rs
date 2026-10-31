@@ -57,8 +57,8 @@ pub async fn translations(Path(language): Path<String>) -> Response {
             .into_response(),
         None => error_page(
             StatusCode::NOT_FOUND,
-            "findsmith-api-unknown-language",
-            "findsmith-api-no-translation-catalog-exists-for-this-language",
+            "Unknown language",
+            "No translation catalog exists for this language.",
             "/",
         ),
     }
@@ -91,8 +91,8 @@ async fn save_language(
             jar,
             error_page(
                 StatusCode::BAD_REQUEST,
-                "findsmith-api-invalid-language",
-                "findsmith-api-use-a-valid-language-code",
+                "Invalid language",
+                "Use a valid language code.",
                 "/",
             ),
         );
@@ -102,8 +102,8 @@ async fn save_language(
             jar,
             error_page(
                 StatusCode::BAD_REQUEST,
-                "findsmith-api-language-not-available",
-                "findsmith-api-this-interface-language-is-not-available-yet",
+                "Language not available",
+                "This interface language is not available yet.",
                 "/",
             ),
         );

@@ -518,8 +518,8 @@ mod tests {
             "Read your new messages on this wiki before editing."
         );
         assert_eq!(
-            SOURCE_KEYS.get("Edit outcome unknown").map(String::as_str),
-            Some("findsmith-api-edit-outcome-unknown")
+            SOURCE_KEYS.get("Review not found").map(String::as_str),
+            Some("findsmith-api-review-not-found")
         );
         assert_eq!(
             SOURCE_KEYS

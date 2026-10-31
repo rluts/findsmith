@@ -24,8 +24,8 @@ export function App() {
   }, [])
   const review = path.match(/^\/projects\/([^/]+)\/jobs\/([^/]+)$/)
   const project = path.match(/^\/projects\/([^/]+)$/)
-  if (review) return <ProjectPage projectId={review[1]} jobId={review[2]} />
-  if (project) return <ProjectPage projectId={project[1]} />
+  if (review) return <ProjectPage key={review[1]} projectId={review[1]} jobId={review[2]} />
+  if (project) return <ProjectPage key={project[1]} projectId={project[1]} />
   if (path === '/workspace') return <WorkspacePage />
   if (path === '/add-wiki') return <AddWikiPage />
   return <HomePage />

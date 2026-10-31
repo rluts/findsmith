@@ -128,8 +128,8 @@ fn error_page_without_rendering() -> Response {
     render_with_status(
         StatusCode::INTERNAL_SERVER_ERROR,
         ErrorResponse {
-            title: localization::from_source("findsmith-api-unexpected-error"),
-            message: localization::from_source("findsmith-api-an-unexpected-error-occurred"),
+            title: "Unexpected error".to_owned(),
+            message: "An unexpected error occurred.".to_owned(),
             back_href: "/".to_owned(),
         },
     )

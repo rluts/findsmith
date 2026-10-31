@@ -231,10 +231,7 @@ async fn build_job_queue(
                 &owner,
                 &project_id,
                 &job_id,
-                &localization::required_with_args(
-                    "findsmith-api-generation-init-failed",
-                    &[&error.to_string()],
-                ),
+                &format!("Could not initialize the MediaWiki page generator: {error}"),
             )
             .await;
             return;
@@ -242,7 +239,7 @@ async fn build_job_queue(
     };
     for source in state.ordered_sources() {
         if source.kind == PageSourceKind::Manual {
-            if update_generation(
+            if !record_step(
                 &database,
                 &owner,
                 &project_id,
@@ -250,12 +247,8 @@ async fn build_job_queue(
                 Vec::new(),
                 "findsmith-api-generation-loading-manual",
                 false,
-                false,
             )
             .await
-            .ok()
-            .flatten()
-            .is_none()
             {
                 return;
             }
@@ -266,7 +259,7 @@ async fn build_job_queue(
                         "findsmith-api-generation-loaded-manual",
                         &[&pages.len().to_string()],
                     );
-                    if update_generation(
+                    if !record_step(
                         &database,
                         &owner,
                         &project_id,
@@ -274,12 +267,8 @@ async fn build_job_queue(
                         queue_from_normalized(pages),
                         &message,
                         false,
-                        false,
                     )
                     .await
-                    .ok()
-                    .flatten()
-                    .is_none()
                     {
                         return;
                     }
@@ -330,8 +319,12 @@ async fn build_job_queue(
         for value in &source.values {
             let current =
                 match current_generation_size(&database, &owner, &project_id, &job_id).await {
-                    Some(size) => size,
-                    None => return,
+                    Ok(Some(size)) => size,
+                    Ok(None) => return,
+                    Err(error) => {
+                        abandon_build(&database, &owner, &project_id, &job_id, &error).await;
+                        return;
+                    }
                 };
             if current >= state.queue_limit {
                 break;
@@ -340,7 +333,7 @@ async fn build_job_queue(
                 "findsmith-api-generation-loading-source",
                 &[&label, value],
             );
-            if update_generation(
+            if !record_step(
                 &database,
                 &owner,
                 &project_id,
@@ -348,12 +341,8 @@ async fn build_job_queue(
                 Vec::new(),
                 &loading_message,
                 false,
-                false,
             )
             .await
-            .ok()
-            .flatten()
-            .is_none()
             {
                 return;
             }
@@ -393,7 +382,7 @@ async fn build_job_queue(
                         "findsmith-api-generation-loaded-source",
                         &[&label, value],
                     );
-                    if update_generation(
+                    if !record_step(
                         &database,
                         &owner,
                         &project_id,
@@ -401,12 +390,8 @@ async fn build_job_queue(
                         queue_from_normalized(pages),
                         &message,
                         false,
-                        false,
                     )
                     .await
-                    .ok()
-                    .flatten()
-                    .is_none()
                     {
                         return;
                     }
@@ -428,7 +413,7 @@ async fn build_job_queue(
             }
         }
     }
-    let _ = update_generation(
+    record_step(
         &database,
         &owner,
         &project_id,
@@ -436,9 +421,86 @@ async fn build_job_queue(
         Vec::new(),
         "findsmith-api-queue-ready",
         true,
-        false,
     )
     .await;
+}
+
+/// Records a build step. Returns false when the build must stop: the job is
+/// no longer building, or its progress could not be saved, in which case the
+/// build is failed rather than left building.
+#[allow(clippy::too_many_arguments)]
+async fn record_step(
+    database: &DatabaseConnection,
+    owner: &str,
+    project_id: &str,
+    job_id: &str,
+    entries: Vec<QueueEntry>,
+    message: &str,
+    finish: bool,
+) -> bool {
+    match update_generation(
+        database, owner, project_id, job_id, entries, message, finish, false,
+    )
+    .await
+    {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(error) => {
+            abandon_build(database, owner, project_id, job_id, &error).await;
+            false
+        }
+    }
+}
+
+async fn abandon_build(
+    database: &DatabaseConnection,
+    owner: &str,
+    project_id: &str,
+    job_id: &str,
+    error: &JobError,
+) {
+    eprintln!("FindSmith: queue build {job_id} could not save its progress: {error}");
+    fail_generation(
+        database,
+        owner,
+        project_id,
+        job_id,
+        "Building the page list stopped because its progress could not be saved. Build the page list again.",
+    )
+    .await;
+}
+
+/// How long a build may go without saving progress before it is treated as
+/// abandoned. Each source saves before and after it is fetched.
+const ABANDONED_BUILD_AFTER: chrono::TimeDelta = chrono::TimeDelta::minutes(10);
+const BUILD_RECOVERY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// Builds run inside the server process, so a restart or a crashed build task
+/// leaves its job building forever. At startup this fails every build that
+/// was not updated after the process started; afterwards it periodically
+/// fails builds that stopped saving progress.
+pub fn spawn_build_recovery(database: DatabaseConnection) {
+    let started = chrono::Utc::now();
+    tokio::spawn(async move {
+        recover_builds(&database, started).await;
+        let mut interval = tokio::time::interval(BUILD_RECOVERY_INTERVAL);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            recover_builds(&database, chrono::Utc::now() - ABANDONED_BUILD_AFTER).await;
+        }
+    });
+}
+
+async fn recover_builds(database: &DatabaseConnection, cutoff: chrono::DateTime<chrono::Utc>) {
+    match JobRepository::new(database)
+        .fail_abandoned_builds(cutoff, "findsmith-api-generation-interrupted")
+        .await
+    {
+        Ok(0) => {}
+        Ok(count) => println!("FindSmith: failed {count} interrupted queue build(s)"),
+        Err(error) => eprintln!("FindSmith: could not recover interrupted queue builds: {error}"),
+    }
 }
 
 fn filter_namespaces(pages: &mut Vec<crate::mediawiki::NormalizedTitle>, namespaces: &[i64]) {
@@ -455,13 +517,15 @@ async fn current_generation_size(
     owner: &str,
     project_id: &str,
     job_id: &str,
-) -> Option<usize> {
-    let job = JobRepository::new(database)
+) -> Result<Option<usize>, JobError> {
+    let Some(job) = JobRepository::new(database)
         .get(owner, project_id, job_id)
-        .await
-        .ok()??;
-    let state: JobState = serde_json::from_value(job.state_json).ok()?;
-    (state.status == JobStatus::Building).then_some(state.queue.len())
+        .await?
+    else {
+        return Ok(None);
+    };
+    let state: JobState = serde_json::from_value(job.state_json)?;
+    Ok((state.status == JobStatus::Building).then_some(state.queue.len()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -512,7 +576,8 @@ async fn fail_generation(
     job_id: &str,
     message: &str,
 ) {
-    let _ = update_generation(
+    // If even this fails, build recovery fails the job once it goes stale.
+    if let Err(error) = update_generation(
         database,
         owner,
         project_id,
@@ -522,5 +587,8 @@ async fn fail_generation(
         false,
         true,
     )
-    .await;
+    .await
+    {
+        eprintln!("FindSmith: could not mark queue build {job_id} as failed: {error}");
+    }
 }

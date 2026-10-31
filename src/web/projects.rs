@@ -363,8 +363,8 @@ async fn create_project_response(
     }) else {
         return error_page(
             StatusCode::BAD_REQUEST,
-            "findsmith-api-unsupported-wiki",
-            "findsmith-api-select-one-of-the-available-wikis",
+            "Unsupported wiki",
+            "Select one of the available wikis.",
             "/workspace",
         );
     };
@@ -654,13 +654,33 @@ pub(super) async fn save_project(
             &back_href,
         )));
     }
-    let wiki_url = match resolve_project_wiki_url(database, id, owner, &form.wiki_id).await {
-        Ok(Some(url)) => url,
+    let project = match ProjectRepository::new(database).get(owner, id).await {
+        Ok(Some(project)) => project,
+        Ok(None) => {
+            return Err(Box::new(error_page(
+                StatusCode::NOT_FOUND,
+                "findsmith-api-project-not-found",
+                "findsmith-api-this-project-does-not-exist-or-you-do-not-have-access-to-it",
+                "/workspace",
+            )));
+        }
+        Err(error) => return Err(Box::new(project_error_response(error, &back_href))),
+    };
+    match resolve_project_wiki_url(database, id, owner, &form.wiki_id).await {
+        Ok(Some(url)) if url == project.wiki_url => {}
+        Ok(Some(_)) => {
+            return Err(Box::new(error_page(
+                StatusCode::BAD_REQUEST,
+                "Wiki cannot be changed",
+                "A project always edits the wiki it was created for. Create a new project to work on another wiki.",
+                &back_href,
+            )));
+        }
         Ok(None) => {
             return Err(Box::new(error_page(
                 StatusCode::BAD_REQUEST,
-                "findsmith-api-unsupported-wiki",
-                "findsmith-api-select-one-of-the-available-wikis",
+                "Unsupported wiki",
+                "Select one of the available wikis.",
                 &back_href,
             )));
         }
@@ -746,14 +766,7 @@ pub(super) async fn save_project(
     let saved_state = state.clone();
     let repository = ProjectRepository::new(database);
     match repository
-        .update(
-            owner,
-            id,
-            form.name.clone(),
-            wiki_url,
-            state,
-            form.state_version,
-        )
+        .update(owner, id, form.name.clone(), state, form.state_version)
         .await
     {
         Ok(Some(project)) => Ok((project, saved_state)),
@@ -777,8 +790,8 @@ async fn delete_project_response(
     if form.confirmation.as_deref() != Some("delete") {
         return error_page(
             StatusCode::BAD_REQUEST,
-            "findsmith-api-deletion-not-confirmed",
-            "findsmith-api-confirm-that-you-want-to-permanently-delete-this-project",
+            "Deletion not confirmed",
+            "Confirm that you want to permanently delete this project.",
             &back_href,
         );
     }
