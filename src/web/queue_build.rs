@@ -231,10 +231,7 @@ async fn build_job_queue(
                 &owner,
                 &project_id,
                 &job_id,
-                &localization::required_with_args(
-                    "findsmith-api-generation-init-failed",
-                    &[&error.to_string()],
-                ),
+                &format!("Could not initialize the MediaWiki page generator: {error}"),
             )
             .await;
             return;
@@ -468,7 +465,7 @@ async fn abandon_build(
         owner,
         project_id,
         job_id,
-        "findsmith-api-generation-update-failed",
+        "Building the page list stopped because its progress could not be saved. Build the page list again.",
     )
     .await;
 }

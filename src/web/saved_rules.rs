@@ -34,7 +34,7 @@ async fn saved_rules_response(database: &DatabaseConnection, owner: &str) -> Res
         Ok(rules) => Json(rules).into_response(),
         Err(message) => error_page(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "findsmith-api-saved-rules-unavailable",
+            "Saved rules unavailable",
             &message,
             "/workspace",
         ),
@@ -77,8 +77,8 @@ async fn save_rule_response(
         Err(_) => {
             return error_page(
                 StatusCode::BAD_REQUEST,
-                "findsmith-api-invalid-rule",
-                "findsmith-api-rule-data-is-invalid",
+                "Invalid rule",
+                "Rule data is invalid.",
                 "/workspace",
             );
         }

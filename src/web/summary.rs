@@ -69,10 +69,12 @@ pub(super) fn suggested_edit_summary(rules: &[ReplacementRule]) -> String {
 pub(super) fn complete_edit_summary(prefix: &str) -> Result<String, &'static str> {
     let prefix = prefix.trim();
     if prefix.is_empty() {
-        return Err("findsmith-api-summary-required");
+        return Err("Enter an edit summary before saving.");
     }
     if prefix.contains(EDIT_SUMMARY_ATTRIBUTION_LINK) {
-        return Err("findsmith-api-summary-attribution-automatic");
+        return Err(
+            "The Findsmith attribution is added automatically; do not include it in the editable summary.",
+        );
     }
     if prefix.chars().any(char::is_control) {
         return Err("findsmith-api-summary-one-line");
@@ -82,7 +84,9 @@ pub(super) fn complete_edit_summary(prefix: &str) -> Result<String, &'static str
         &[prefix, EDIT_SUMMARY_ATTRIBUTION_LINK],
     );
     if summary.chars().count() > MAX_EDIT_SUMMARY_CHARS {
-        return Err("findsmith-api-summary-max-length");
+        return Err(
+            "The edit summary, including the required Findsmith attribution, must be at most 500 characters.",
+        );
     }
     Ok(summary)
 }

@@ -133,8 +133,8 @@ async fn api_not_found() -> (StatusCode, axum::Json<serde_json::Value>) {
     (
         StatusCode::NOT_FOUND,
         axum::Json(serde_json::json!({
-            "title": crate::localization::required("findsmith-api-endpoint-not-found"),
-            "message": crate::localization::required("findsmith-api-endpoint-not-found-message")
+            "title": "API endpoint not found",
+            "message": "The requested API endpoint does not exist."
         })),
     )
 }

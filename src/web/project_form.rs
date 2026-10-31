@@ -25,10 +25,10 @@ pub(super) fn split_lines(value: &str) -> Vec<String> {
 
 pub(super) fn page_sources_from_form(form: &UpdateProjectForm) -> Result<Vec<PageSource>, String> {
     if form.source_kind.len() != form.source_value.len() {
-        return Err("findsmith-api-sources-incomplete".to_owned());
+        return Err("The submitted page sources are incomplete. Reload and try again.".to_owned());
     }
     if form.source_kind.len() > 100 {
-        return Err("findsmith-api-sources-limit".to_owned());
+        return Err("A project can contain at most 100 page sources.".to_owned());
     }
 
     form.source_kind
@@ -56,7 +56,7 @@ fn parse_page_source(kind: &str, mut values: Vec<String>) -> Result<PageSource, 
         "links_on_page" => PageSourceKind::LinksOnPage,
         "categories_on_page" => PageSourceKind::CategoriesOnPage,
         "redirects_to_page" => PageSourceKind::RedirectsToPage,
-        _ => return Err("findsmith-api-source-type-unsupported".to_owned()),
+        _ => return Err("A page source has an unsupported type.".to_owned()),
     };
     if kind == PageSourceKind::Watchlist {
         values = vec!["My watchlist".to_owned()];
@@ -244,9 +244,8 @@ pub(super) fn parse_namespaces(values: &[String]) -> Result<Vec<i64>, String> {
         .iter()
         .map(String::as_str)
         .map(|item| {
-            item.parse::<i64>().map_err(|_| {
-                localization::required_with_args("findsmith-api-namespace-id-invalid", &[item])
-            })
+            item.parse::<i64>()
+                .map_err(|_| format!("“{item}” is not a namespace ID."))
         })
         .collect()
 }
@@ -261,7 +260,9 @@ pub(super) fn replacement_rules(form: &UpdateProjectForm) -> Result<Vec<Replacem
         || (!form.rule_parameter.is_empty() && form.rule_parameter.len() != count)
         || (!form.rule_name.is_empty() && form.rule_name.len() != count)
     {
-        return Err("findsmith-api-rules-incomplete".to_owned());
+        return Err(
+            "The submitted rule fields are incomplete. Reload the page and try again.".to_owned(),
+        );
     }
 
     let enabled = rule_indexes(&form.rule_enabled, count)?;
@@ -302,39 +303,30 @@ pub(super) fn replacement_rules(form: &UpdateProjectForm) -> Result<Vec<Replacem
             "template_parameter_set" => RuleOperation::TemplateParameterSet,
             "template_parameter_remove" => RuleOperation::TemplateParameterRemove,
             _ => {
-                return Err(localization::required_with_args(
-                    "findsmith-api-rule-operation-invalid",
-                    &[&(index + 1).to_string()],
-                ));
+                return Err(format!("Rule {} has an invalid operation.", index + 1));
             }
         };
         let regex = match form.rule_type[index].as_str() {
             "plain" => false,
             "regex" => true,
             _ => {
-                return Err(localization::required_with_args(
-                    "findsmith-api-rule-type-invalid",
-                    &[&(index + 1).to_string()],
-                ));
+                return Err(format!("Rule {} has an invalid type.", index + 1));
             }
         };
         let case_sensitive = match form.rule_case[index].as_str() {
             "sensitive" => true,
             "insensitive" => false,
             _ => {
-                return Err(localization::required_with_args(
-                    "findsmith-api-rule-case-invalid",
-                    &[&(index + 1).to_string()],
-                ));
+                return Err(format!("Rule {} has an invalid case option.", index + 1));
             }
         };
         let replace_all = match form.rule_scope[index].as_str() {
             "all" => true,
             "first" => false,
             _ => {
-                return Err(localization::required_with_args(
-                    "findsmith-api-rule-scope-invalid",
-                    &[&(index + 1).to_string()],
+                return Err(format!(
+                    "Rule {} has an invalid replacement scope.",
+                    index + 1
                 ));
             }
         };
@@ -370,12 +362,12 @@ fn rule_indexes(values: &[String], count: usize) -> Result<HashSet<usize>, Strin
         .map(|value| {
             value
                 .parse::<usize>()
-                .map_err(|_| "findsmith-api-rule-index-invalid".to_owned())
+                .map_err(|_| "A submitted rule index is invalid.".to_owned())
                 .and_then(|index| {
                     if index < count {
                         Ok(index)
                     } else {
-                        Err("findsmith-api-rule-index-range".to_owned())
+                        Err("A submitted rule index is out of range.".to_owned())
                     }
                 })
         })

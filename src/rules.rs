@@ -39,11 +39,7 @@ impl fmt::Display for RuleError {
             )
         };
         match self {
-            Self::TooManyRules => write_message(
-                formatter,
-                "findsmith-api-rule-limit",
-                &[&MAX_RULES.to_string()],
-            ),
+            Self::TooManyRules => write!(formatter, "At most {MAX_RULES} rules are allowed."),
             Self::EmptyPattern { index } => write_message(
                 formatter,
                 "findsmith-api-rule-find-required",
@@ -64,36 +60,29 @@ impl fmt::Display for RuleError {
                 "findsmith-api-rule-template-invalid",
                 &[&(index + 1).to_string()],
             ),
-            Self::StructuralRequiresWiki => write_message(
+            Self::StructuralRequiresWiki => {
+                formatter.write_str("Template rules require the selected wiki's Parsoid service.")
+            }
+            Self::PatternTooLarge { index } => write!(
                 formatter,
-                "findsmith-api-rule-template-parsoid-required",
-                &[],
+                "The find value in rule {} is too large.",
+                index + 1
             ),
-            Self::PatternTooLarge { index } => write_message(
+            Self::ReplacementTooLarge { index } => write!(
                 formatter,
-                "findsmith-api-rule-find-too-large",
-                &[&(index + 1).to_string()],
-            ),
-            Self::ReplacementTooLarge { index } => write_message(
-                formatter,
-                "findsmith-api-rule-replacement-too-large",
-                &[&(index + 1).to_string()],
+                "The replacement value in rule {} is too large.",
+                index + 1
             ),
             Self::InvalidRegex { index, message } => write_message(
                 formatter,
                 "findsmith-api-rule-regex-invalid",
                 &[&(index + 1).to_string(), message],
             ),
-            Self::InputTooLarge => {
-                write_message(formatter, "findsmith-api-structural-input-too-large", &[])
-            }
-            Self::OutputTooLarge => {
-                write_message(formatter, "findsmith-api-structural-output-too-large", &[])
-            }
-            Self::TooManyReplacements => write_message(
+            Self::InputTooLarge => formatter.write_str("The input text is too large."),
+            Self::OutputTooLarge => formatter.write_str("The transformed text is too large."),
+            Self::TooManyReplacements => write!(
                 formatter,
-                "findsmith-api-rule-replacement-limit",
-                &[&MAX_TOTAL_REPLACEMENTS.to_string()],
+                "At most {MAX_TOTAL_REPLACEMENTS} replacements are allowed."
             ),
         }
     }

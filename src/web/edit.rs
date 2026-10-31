@@ -42,7 +42,7 @@ pub(super) async fn save_current_page(
         return error_page(
             StatusCode::CONFLICT,
             "findsmith-api-cannot-save",
-            "findsmith-api-select-a-pending-or-reviewed-page-in-an-active-or-completed-review",
+            "Select a pending or reviewed page in an active or completed review.",
             back_href,
         );
     }
@@ -60,15 +60,15 @@ pub(super) async fn save_current_page(
         return error_page(
             StatusCode::BAD_REQUEST,
             "findsmith-api-cannot-save",
-            "findsmith-api-the-reviewed-text-base-revision-and-start-timestamp-are-required",
+            "The reviewed text, base revision, and start timestamp are required.",
             back_href,
         );
     };
     if !form.policy_acknowledged && !state.policy_acknowledged {
         return error_page(
             StatusCode::BAD_REQUEST,
-            "findsmith-api-policy-acknowledgement-required",
-            "findsmith-api-acknowledge-the-selected-wiki-s-editing-policies-before-saving",
+            "Policy acknowledgement required",
+            "Acknowledge the selected wiki's editing policies before saving.",
             back_href,
         );
     }
@@ -76,7 +76,7 @@ pub(super) async fn save_current_page(
         return error_page(
             StatusCode::BAD_REQUEST,
             "findsmith-api-cannot-save",
-            "findsmith-api-the-proposed-wikitext-is-too-large",
+            "The proposed wikitext is too large.",
             back_href,
         );
     }
@@ -161,7 +161,7 @@ pub(super) async fn save_current_page(
             state_version,
             state,
             "permission",
-            "findsmith-api-save-flags-denied",
+            "The selected minor or bot flag is not permitted for this account.",
             back_href,
         )
         .await;
@@ -249,8 +249,8 @@ pub(super) async fn save_current_page(
     if snapshot.content == *text {
         return error_page(
             StatusCode::CONFLICT,
-            "findsmith-api-no-changes",
-            "findsmith-api-the-proposed-wikitext-matches-the-current-revision",
+            "No changes",
+            "The proposed wikitext matches the current revision.",
             back_href,
         );
     }
@@ -502,8 +502,8 @@ pub(super) async fn verify_edit_response(
     let Some(entry) = state.current().filter(|_| state.edit_in_flight) else {
         return error_page(
             StatusCode::CONFLICT,
-            "findsmith-api-no-edit-to-verify",
-            "findsmith-api-no-edit-to-verify-details",
+            "No edit to check",
+            "This review has no save whose outcome is unknown.",
             back_href,
         );
     };

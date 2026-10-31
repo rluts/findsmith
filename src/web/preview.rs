@@ -119,8 +119,8 @@ async fn render_preview_response(
     {
         return error_page(
             StatusCode::BAD_REQUEST,
-            "findsmith-api-invalid-preview",
-            "findsmith-api-the-title-wiki-or-proposed-wikitext-is-invalid",
+            "Invalid preview",
+            "The title, wiki, or proposed wikitext is invalid.",
             &back_href,
         );
     }
@@ -212,7 +212,7 @@ async fn page_preview_response(
                 id,
                 &form,
                 &rules,
-                "findsmith-api-select-one-of-the-available-wikis",
+                "Select one of the available wikis.",
             )
             .await;
         }

@@ -262,12 +262,8 @@ impl fmt::Display for PageLoadError {
                 &[reason],
             ),
             Self::Invalid(_) => write_message(formatter, "findsmith-api-page-title-invalid", &[]),
-            Self::MissingRevision => {
-                write_message(formatter, "findsmith-api-page-revision-missing", &[])
-            }
-            Self::MissingContent => {
-                write_message(formatter, "findsmith-api-page-content-missing", &[])
-            }
+            Self::MissingRevision => formatter.write_str("The page has no readable revision."),
+            Self::MissingContent => formatter.write_str("The page content could not be loaded."),
             Self::UnsupportedContentModel(model) => {
                 write_message(formatter, "findsmith-api-page-model-unsupported", &[model])
             }
@@ -1102,7 +1098,7 @@ fn resolve_normalized_batch(batch: &[String], query: NormalizeQuery) -> Vec<Norm
                     page_id: None,
                     namespace: None,
                     redirect: redirected,
-                    invalid_reason: Some("findsmith-api-wiki-title-missing".to_owned()),
+                    invalid_reason: Some("MediaWiki did not return this title.".to_owned()),
                 },
             }
         })

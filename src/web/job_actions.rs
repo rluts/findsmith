@@ -153,9 +153,8 @@ async fn job_action_response(
     if state.edit_in_flight {
         return error_page(
             StatusCode::CONFLICT,
-            &localization::message("findsmith-api-edit-outcome-unknown")
-                .expect("English edit outcome message exists"),
-            "findsmith-api-an-edit-request-may-have-reached-wikimedia-start-a-new-review-after-chec",
+            "Edit outcome unknown",
+            "An edit request may have reached Wikimedia. Start a new review after checking the page; this job cannot retry it.",
             &back_href,
         );
     }
@@ -194,7 +193,7 @@ async fn job_action_response(
         return error_page(
             StatusCode::CONFLICT,
             "findsmith-api-pre-parse-is-running",
-            "findsmith-api-stop-pre-parse-before-reviewing-pages",
+            "Stop pre-parse before reviewing pages.",
             &back_href,
         );
     }
@@ -203,8 +202,8 @@ async fn job_action_response(
     {
         return error_page(
             StatusCode::CONFLICT,
-            "findsmith-api-review-stopped",
-            "findsmith-api-resume-the-review-before-navigating-its-pages",
+            "Review stopped",
+            "Resume the review before navigating its pages.",
             &back_href,
         );
     }
@@ -213,8 +212,8 @@ async fn job_action_response(
             if state.status != JobStatus::Active {
                 return error_page(
                     StatusCode::CONFLICT,
-                    "findsmith-api-cannot-pre-parse",
-                    "findsmith-api-start-or-resume-a-review-first",
+                    "Cannot pre-parse",
+                    "Start or resume a review first.",
                     &back_href,
                 );
             }
@@ -242,8 +241,8 @@ async fn job_action_response(
             if !state.preparse_active {
                 return error_page(
                     StatusCode::CONFLICT,
-                    "findsmith-api-pre-parse-stopped",
-                    "findsmith-api-start-pre-parse-before-scanning-pages",
+                    "Pre-parse stopped",
+                    "Start pre-parse before scanning pages.",
                     &back_href,
                 );
             }
@@ -329,8 +328,8 @@ async fn job_action_response(
             if !state.resume() {
                 return error_page(
                     StatusCode::CONFLICT,
-                    "findsmith-api-cannot-resume-review",
-                    "findsmith-api-only-a-stopped-review-with-a-saved-queue-can-be-resumed",
+                    "Cannot resume review",
+                    "Only a stopped review with a saved queue can be resumed.",
                     &back_href,
                 );
             }
@@ -416,8 +415,8 @@ async fn job_action_response(
         _ => {
             return error_page(
                 StatusCode::BAD_REQUEST,
-                "findsmith-api-invalid-review-action",
-                "findsmith-api-choose-previous-skip-stop-resume-next-or-pre-parse",
+                "Invalid review action",
+                "Choose Previous, Skip, Stop, Resume, Next, or Pre-parse.",
                 &back_href,
             );
         }
@@ -466,8 +465,8 @@ async fn queue_action_response(
     if state.status == JobStatus::Building {
         return error_page(
             StatusCode::CONFLICT,
-            "findsmith-api-queue-is-still-building",
-            "findsmith-api-cancel-generation-or-wait-for-it-to-finish-before-changing-the-queue",
+            "Queue is still building",
+            "Cancel generation or wait for it to finish before changing the queue.",
             &back_href,
         );
     }
@@ -484,8 +483,8 @@ async fn queue_action_response(
             if !state.select(form.index) {
                 return error_page(
                     StatusCode::BAD_REQUEST,
-                    "findsmith-api-cannot-select-page",
-                    "findsmith-api-choose-a-page-in-the-current-list-after-generation-finishes",
+                    "Cannot select page",
+                    "Choose a page in the current list after generation finishes.",
                     &back_href,
                 );
             }
@@ -504,8 +503,8 @@ async fn queue_action_response(
                 Ok(_) => {
                     return error_page(
                         StatusCode::BAD_REQUEST,
-                        "findsmith-api-no-pages-to-append",
-                        "findsmith-api-enter-at-least-one-page-title",
+                        "No pages to append",
+                        "Enter at least one page title.",
                         &back_href,
                     );
                 }
@@ -549,8 +548,8 @@ async fn queue_action_response(
         _ => {
             return error_page(
                 StatusCode::BAD_REQUEST,
-                "findsmith-api-invalid-queue-action",
-                "findsmith-api-choose-select-append-move-remove-sort-or-clear",
+                "Invalid queue action",
+                "Choose select, append, move, remove, sort, or clear.",
                 &back_href,
             );
         }

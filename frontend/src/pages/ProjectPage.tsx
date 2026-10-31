@@ -160,18 +160,18 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
         })
         .catch(error => {
           if (!cancelled) setProject(current => current?.project_id === projectId && current.awb_access
-            ? { ...current, awb_access: { ...current.awb_access, allowed: null, error: error instanceof Error ? error.message : t('findsmith-project-error-awb-check') } }
+            ? { ...current, awb_access: { ...current.awb_access, allowed: null, error: error instanceof Error ? error.message : t('findsmith-request-failed') } }
             : current)
         })
     }, 5 * 60 * 1000)
     return () => { cancelled = true; window.clearInterval(timer) }
   }, [projectId])
-  useEffect(() => { void getJson<SavedRule[]>('/api/rules').then(setSavedRules).catch(error => setLibraryError(error instanceof Error ? error.message : t('findsmith-project-error-saved-rules-load'))) }, [projectId])
+  useEffect(() => { void getJson<SavedRule[]>('/api/rules').then(setSavedRules).catch(error => setLibraryError(error instanceof Error ? error.message : t('findsmith-request-failed'))) }, [projectId])
   useEffect(() => {
     if (!project?.wiki_id) return
     setBotEdit(null)
     setSession(null); setGroupsError('')
-    void getJson<Session>(`/api/session?include_groups=true&wiki_id=${encodeURIComponent(project.wiki_id)}`).then(setSession).catch(error => setGroupsError(error instanceof Error ? error.message : t('findsmith-project-error-groups-load')))
+    void getJson<Session>(`/api/session?include_groups=true&wiki_id=${encodeURIComponent(project.wiki_id)}`).then(setSession).catch(error => setGroupsError(error instanceof Error ? error.message : t('findsmith-request-failed')))
   }, [project?.wiki_id])
   useEffect(() => {
     if (!reviewPath) { ++reviewLoad.current; setReview(null); return }
@@ -192,7 +192,7 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
     const timer = window.setTimeout(() => {
       void postForm<ActionResult>(`${reviewPath}/action`, new URLSearchParams({csrf_token: review.csrf_token, state_version: String(review.state_version), action: 'preparse_step'}))
         .then(() => loadReview())
-        .catch(error => setPreparseError(error instanceof Error ? error.message : t('findsmith-project-error-preparse')))
+        .catch(error => setPreparseError(error instanceof Error ? error.message : t('findsmith-request-failed')))
     }, 500)
     return () => window.clearTimeout(timer)
   }, [review?.preparse_active, review?.state_version, reviewPath, preparseError])
@@ -312,7 +312,7 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
     try {
       await postForm(`/api/rules/${item.id}/delete`, new URLSearchParams({ csrf_token: project.csrf_token }))
       setSavedRules(current => current.filter(rule => rule.id !== item.id))
-    } catch (error) { setLibraryError(error instanceof Error ? error.message : t('findsmith-project-error-deleting-rule')) }
+    } catch (error) { setLibraryError(error instanceof Error ? error.message : t('findsmith-request-failed')) }
     finally { setBusy('') }
   }
 
@@ -345,7 +345,7 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
       await flushAutosave()
       const result = await postForm<ActionResult>(`/api/projects/${projectId}/duplicate`, new URLSearchParams({ csrf_token: project.csrf_token }))
       navigate(result.redirect)
-    } catch (error) { setError(error instanceof Error ? error.message : t('findsmith-project-error-duplicating-project')) }
+    } catch (error) { setError(error instanceof Error ? error.message : t('findsmith-request-failed')) }
     finally { setBusy('') }
   }
   async function removeProject() {
@@ -357,7 +357,7 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
       manualText.current = false; savedRevision.current = editRevision.current
       navigate(result.redirect)
     }
-    catch (error) { setError(error instanceof Error ? error.message : t('findsmith-project-error-deleting-project')); setBusy('') }
+    catch (error) { setError(error instanceof Error ? error.message : t('findsmith-request-failed')); setBusy('') }
   }
   async function reviewAction(name: string) {
     if (!review || !reviewPath || ((name === 'next' || name === 'skip' || name === 'previous' || name === 'preparse_start') && !allowReplacingManualText())) return
@@ -365,7 +365,7 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
     if (['next', 'skip', 'previous', 'resume'].includes(name)) setAutoSkipJobId(review.job_id)
     setBusy(name); setError('')
     try { await postForm<ActionResult>(`${reviewPath}/action`, new URLSearchParams({ csrf_token: review.csrf_token, state_version: String(review.state_version), action: name })); await Promise.all([loadProject(), loadReview()]) }
-    catch (error) { setError(error instanceof Error ? error.message : t('findsmith-project-error-review-action')) }
+    catch (error) { setError(error instanceof Error ? error.message : t('findsmith-request-failed')) }
     finally { setBusy('') }
   }
   async function savePage() {
@@ -381,7 +381,7 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
         edit_summary: editSummary,
       }))
       await Promise.all([loadProject(), loadReview()])
-    } catch (error) { setError(error instanceof Error ? error.message : t('findsmith-project-error-saving-edit')) }
+    } catch (error) { setError(error instanceof Error ? error.message : t('findsmith-request-failed')) }
     finally { setBusy('') }
   }
   async function recompute() {
@@ -400,7 +400,7 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
         setTextDirty(false)
       }
     }
-    catch (error) { setError(error instanceof Error ? error.message : t('findsmith-project-error-recomputing')) }
+    catch (error) { setError(error instanceof Error ? error.message : t('findsmith-request-failed')) }
     finally { setBusy('') }
   }
   /** Resolves to true once the server applied the queue action. */
@@ -411,10 +411,10 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
     const values = new URLSearchParams({ csrf_token: review.csrf_token, state_version: String(review.state_version), action: actionName, index: String(index), titles })
     try {
       await postForm<ActionResult>(`${reviewPath}/queue`, values)
-      await Promise.all([loadProject(), loadReview()]).catch(error => setError(error instanceof Error ? error.message : t('findsmith-project-error-queue-action')))
+      await Promise.all([loadProject(), loadReview()]).catch(error => setError(error instanceof Error ? error.message : t('findsmith-request-failed')))
       return true
     }
-    catch (error) { setError(error instanceof Error ? error.message : t('findsmith-project-error-queue-action')); return false }
+    catch (error) { setError(error instanceof Error ? error.message : t('findsmith-request-failed')); return false }
     finally { setBusy('') }
   }
 

@@ -79,7 +79,6 @@ struct Slots {
 }
 #[derive(Debug, Deserialize)]
 struct Slot {
-    contentmodel: String,
     #[serde(rename = "content", alias = "*")]
     content: String,
 }
@@ -225,7 +224,7 @@ async fn check_page(api_url: &str, user_agent: &str) -> Result<(String, CheckLis
             ("action", "query"),
             ("prop", "info|revisions"),
             ("inprop", "protection"),
-            ("rvprop", "content|contentmodel"),
+            ("rvprop", "content"),
             ("rvslots", "main"),
             ("titles", "Project:AutoWikiBrowser/CheckPageJSON"),
             ("formatversion", "2"),
@@ -237,7 +236,7 @@ async fn check_page(api_url: &str, user_agent: &str) -> Result<(String, CheckLis
         .pages
         .into_iter()
         .next()
-        .ok_or("findsmith-api-the-checkpagejson-page-was-not-returned")?;
+        .ok_or("The CheckPageJSON page was not returned.")?;
     validate_check_page(page)
 }
 
@@ -256,19 +255,17 @@ fn validate_check_page(page: CheckPage) -> Result<(String, CheckList), String> {
                     .is_ok_and(|date| date > Utc::now()))
     }) {
         return Err(
-            "findsmith-api-checkpagejson-must-be-protected-against-editing-by-non-admins".into(),
+            "Project:AutoWikiBrowser/CheckPageJSON page must be protected against editing by non-admins in this wiki.".into(),
         );
     }
     let revision = page
         .revisions
         .into_iter()
         .next()
-        .ok_or("findsmith-api-checkpagejson-has-no-readable-revision")?;
-    if revision.slots.main.contentmodel != "json" {
-        return Err("findsmith-api-checkpagejson-must-use-the-json-content-model".into());
-    }
+        .ok_or("CheckPageJSON has no readable revision.")?;
+    // Only the content matters: it must parse as the AWB lists, whatever its content model.
     let list: CheckList = serde_json::from_str(&revision.slots.main.content).map_err(|_| {
-        "findsmith-api-checkpagejson-must-contain-enabledusers-and-enabledbots-arrays".to_owned()
+        "Project:AutoWikiBrowser/CheckPageJSON page must contain enabledusers and enabledbots arrays in this wiki.".to_owned()
     })?;
     Ok((page.title, list))
 }
@@ -309,9 +306,7 @@ pub async fn register(
         })?;
     let wiki_id = response.query.general.wikiid;
     if wiki_id.is_empty() || wiki_id.len() > 100 || response.query.namespaces.is_empty() {
-        return Err(
-            "findsmith-api-this-wiki-did-not-return-a-valid-wiki-id-or-namespace-list".into(),
-        );
+        return Err("This wiki did not return a valid wiki ID or namespace list.".into());
     }
     if by_id(database, &wiki_id)
         .await
@@ -501,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn check_page_requires_protected_json_with_awb_lists() {
+    fn check_page_requires_protection_and_awb_lists() {
         let raw = serde_json::json!({
             "ns": 4, "title": "Wikipedia:AutoWikiBrowser/CheckPageJSON",
             "protection": [{"type": "edit", "level": "sysop", "expiry": "infinity"}],
@@ -511,6 +506,10 @@ mod tests {
         let (_, list) = validate_check_page(page).unwrap();
         assert_eq!(list.enabledusers, ["Alice"]);
         assert_eq!(list.enabledbots, ["Bot"]);
+        let mut wikitext_model = raw.clone();
+        wikitext_model["revisions"][0]["slots"]["main"]["contentmodel"] = "wikitext".into();
+        let page = serde_json::from_value(wikitext_model).unwrap();
+        assert!(validate_check_page(page).is_ok());
         let mut unprotected = raw;
         unprotected["protection"] = serde_json::json!([]);
         let page = serde_json::from_value(unprotected).unwrap();

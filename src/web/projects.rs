@@ -363,8 +363,8 @@ async fn create_project_response(
     }) else {
         return error_page(
             StatusCode::BAD_REQUEST,
-            "findsmith-api-unsupported-wiki",
-            "findsmith-api-select-one-of-the-available-wikis",
+            "Unsupported wiki",
+            "Select one of the available wikis.",
             "/workspace",
         );
     };
@@ -671,16 +671,16 @@ pub(super) async fn save_project(
         Ok(Some(_)) => {
             return Err(Box::new(error_page(
                 StatusCode::BAD_REQUEST,
-                "findsmith-api-wiki-cannot-change",
-                "findsmith-api-wiki-cannot-change-details",
+                "Wiki cannot be changed",
+                "A project always edits the wiki it was created for. Create a new project to work on another wiki.",
                 &back_href,
             )));
         }
         Ok(None) => {
             return Err(Box::new(error_page(
                 StatusCode::BAD_REQUEST,
-                "findsmith-api-unsupported-wiki",
-                "findsmith-api-select-one-of-the-available-wikis",
+                "Unsupported wiki",
+                "Select one of the available wikis.",
                 &back_href,
             )));
         }
@@ -790,8 +790,8 @@ async fn delete_project_response(
     if form.confirmation.as_deref() != Some("delete") {
         return error_page(
             StatusCode::BAD_REQUEST,
-            "findsmith-api-deletion-not-confirmed",
-            "findsmith-api-confirm-that-you-want-to-permanently-delete-this-project",
+            "Deletion not confirmed",
+            "Confirm that you want to permanently delete this project.",
             &back_href,
         );
     }

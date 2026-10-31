@@ -17,7 +17,7 @@ export function WorkspacePage() {
     setError('')
     const values = new URLSearchParams({ name, wiki_id: wikiId, csrf_token: data.csrf_token })
     try { const result = await postForm<ActionResult>('/api/projects', values); navigate(result.redirect) }
-    catch (error) { setError(error instanceof Error ? error.message : t('findsmith-workspace-create-error')) }
+    catch (error) { setError(error instanceof Error ? error.message : t('findsmith-request-failed')) }
   }
   return <Shell title={t('findsmith-workspace-title')} subtitle={data ? t('findsmith-signed-in-as', data.username) : t('findsmith-workspace-loading')}>
     <main className="workspace-grid">
