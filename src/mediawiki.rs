@@ -458,11 +458,26 @@ pub struct RecentRevision {
     pub revision_id: u64,
     pub user: String,
     pub comment: String,
+    /// Hex SHA-1 of the revision content; empty when the wiki hides it.
+    pub sha1: String,
 }
+
+/// Newest-first revisions after a base revision. `complete` is true only when
+/// every revision back to the base was listed.
+pub struct RevisionHistory {
+    pub revisions: Vec<RecentRevision>,
+    pub complete: bool,
+}
+
+/// Upper bound on history requests, so a busy page cannot keep a check running.
+const MAX_HISTORY_REQUESTS: usize = 10;
 
 #[derive(Deserialize)]
 struct RecentRevisionsResponse {
-    query: RecentRevisionsQuery,
+    #[serde(default)]
+    query: Option<RecentRevisionsQuery>,
+    #[serde(default, rename = "continue")]
+    continuation: Option<HashMap<String, Value>>,
 }
 
 #[derive(Deserialize)]
@@ -483,38 +498,76 @@ struct ApiRecentRevision {
     user: String,
     #[serde(default)]
     comment: String,
+    #[serde(default)]
+    sha1: String,
 }
 
-/// Newest-first revision metadata, used to find out whether an interrupted edit
-/// request reached the wiki. Page text is not requested.
-pub async fn recent_revisions(
+/// Lists revision metadata newer than `base_revision`, newest first, to find
+/// out whether an interrupted edit request reached the wiki. Page text is not
+/// requested. Without a base revision only the latest revision is listed and
+/// the history is never complete.
+pub async fn revisions_since(
     wiki_url: &str,
     user_agent: &str,
     access_token: &str,
     title: &str,
-) -> Result<Vec<RecentRevision>, mwapi::Error> {
+    base_revision: Option<u64>,
+) -> Result<RevisionHistory, mwapi::Error> {
     let client = authenticated_client(wiki_url, user_agent, access_token).await?;
-    let response: RecentRevisionsResponse = client
-        .get([
-            ("action", "query"),
-            ("prop", "revisions"),
-            ("rvprop", "ids|user|comment"),
-            ("rvlimit", "20"),
-            ("titles", title),
-            ("formatversion", "2"),
-        ])
-        .await?;
-    Ok(response
-        .query
-        .pages
-        .into_iter()
-        .flat_map(|page| page.revisions)
-        .map(|revision| RecentRevision {
-            revision_id: revision.revid,
-            user: revision.user,
-            comment: revision.comment,
-        })
-        .collect())
+    let mut params: Vec<(String, String)> = [
+        ("action", "query"),
+        ("prop", "revisions"),
+        ("rvprop", "ids|user|comment|sha1"),
+        ("titles", title),
+        ("formatversion", "2"),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_owned(), value.to_owned()))
+    .collect();
+    match base_revision {
+        Some(base) => {
+            params.push(("rvlimit".to_owned(), "max".to_owned()));
+            params.push(("rvendid".to_owned(), base.to_string()));
+        }
+        None => params.push(("rvlimit".to_owned(), "1".to_owned())),
+    }
+    let mut revisions = Vec::new();
+    for _ in 0..MAX_HISTORY_REQUESTS {
+        let response: RecentRevisionsResponse = client.get(params.clone()).await?;
+        revisions.extend(
+            response
+                .query
+                .into_iter()
+                .flat_map(|query| query.pages)
+                .flat_map(|page| page.revisions)
+                .filter(|revision| base_revision.is_none_or(|base| revision.revid > base))
+                .map(|revision| RecentRevision {
+                    revision_id: revision.revid,
+                    user: revision.user,
+                    comment: revision.comment,
+                    sha1: revision.sha1,
+                }),
+        );
+        let Some(next) = response.continuation else {
+            return Ok(RevisionHistory {
+                revisions,
+                complete: base_revision.is_some(),
+            });
+        };
+        if base_revision.is_none() {
+            break;
+        }
+        params.retain(|(key, _)| key != "continue" && !key.ends_with("continue"));
+        for (key, value) in next {
+            if let Some(value) = value.as_str() {
+                params.push((key, value.to_owned()));
+            }
+        }
+    }
+    Ok(RevisionHistory {
+        revisions,
+        complete: false,
+    })
 }
 
 #[derive(Deserialize)]

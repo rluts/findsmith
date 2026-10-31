@@ -1,6 +1,6 @@
 use std::{error::Error, fmt};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter, QueryOrder,
     Set, sea_query::Expr,
@@ -94,6 +94,17 @@ pub struct QueueEntry {
     pub edit_revision_id: Option<u64>,
     #[serde(default)]
     pub edit_result: Option<String>,
+    #[serde(default)]
+    pub edit_attempt: Option<EditAttempt>,
+}
+
+/// What a save request sent, recorded before the request so an interrupted
+/// save can later be matched to exactly this attempt in the page history.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct EditAttempt {
+    /// Hex SHA-1 of the text as MediaWiki stores it.
+    pub content_sha1: String,
+    pub started_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -140,6 +151,7 @@ impl JobState {
                 entry.replacement_count = None;
                 entry.edit_revision_id = None;
                 entry.edit_result = None;
+                entry.edit_attempt = None;
                 entry
             })
             .collect();
@@ -561,6 +573,7 @@ mod tests {
             replacement_count: None,
             edit_revision_id: None,
             edit_result: None,
+            edit_attempt: None,
         }
     }
 
@@ -681,11 +694,16 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("edit_result");
+        object.get_mut("queue").unwrap().as_array_mut().unwrap()[0]
+            .as_object_mut()
+            .unwrap()
+            .remove("edit_attempt");
         let restored: JobState = serde_json::from_value(value).unwrap();
         assert!(!restored.edit_in_flight);
         assert!(!restored.edit_policy_blocked);
         assert!(!restored.policy_acknowledged);
         assert!(restored.queue[0].edit_result.is_none());
+        assert!(restored.queue[0].edit_attempt.is_none());
     }
 
     #[test]

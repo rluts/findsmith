@@ -3,7 +3,7 @@ import { Busy, ErrorBox, Shell } from '../components/Shell'
 import { SideDiff } from '../components/DiffView'
 import { RenderedPreview } from '../components/RenderedPreview'
 import { ApiError, getJson, postForm } from '../lib/api'
-import { navigate } from '../lib/router'
+import { navigate, setNavigationGuard } from '../lib/router'
 import { useI18n } from '../lib/i18n'
 import type { ActionResult, Project, RenderedPreview as RenderedPreviewData, Review, Rule, RuleMask, SavedRule, Session, SkipOptions, Source } from '../types/api'
 
@@ -13,6 +13,17 @@ const maskOptions: Array<keyof RuleMask> = ['comments', 'tags', 'references', 'l
 const blankRule = (): Rule => ({ name: '', enabled: true, operation: 'replace', parameter: '', mask: blankMask(), find: '', replace: '', regex: false, case_sensitive: true, replace_all: true, multiline: false, dot_matches_new_line: false })
 const blankSource = (kind = 'manual'): Source => ({ kind, label: '', value: kind === 'watchlist' ? 'My watchlist' : '', summary: '' })
 const skipToggles: Array<[keyof SkipOptions, string]> = [['no_change', 'findsmith-project-skip-no-change'], ['redirects', 'findsmith-project-skip-redirects'], ['protected', 'findsmith-project-skip-protected'], ['outside_namespaces', 'findsmith-project-skip-outside-namespaces']]
+
+/** Fields the user edits locally; these survive reloads until autosave persists them. */
+function localConfiguration(project: Project): Partial<Project> {
+  const { project_name, queue_limit, page_title, skip, sources, namespace_options, rules, page_preview, page_preview_error } = project
+  return { project_name, queue_limit, page_title, skip, sources, namespace_options, rules, page_preview, page_preview_error }
+}
+
+/** Identifies the page revision a review's proposed text was computed for. */
+function reviewPageKey(review: Review) {
+  return review.page ? `${review.job_id}:${review.position}:${review.current?.title ?? ''}:${review.page.revision_id}` : ''
+}
 
 function projectForm(project: Project, stateVersion = project.state_version) {
   const values = new URLSearchParams({ name: project.project_name, wiki_id: project.wiki_id, queue_limit: String(project.queue_limit), page_title: project.page_title, state_version: String(stateVersion), csrf_token: project.csrf_token })
@@ -84,8 +95,17 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
   const editRevision = useRef(0)
   const savedRevision = useRef(0)
   const stateVersion = useRef(0)
-  const pendingAutosave = useRef<Promise<void> | null>(null)
+  const pendingAutosave = useRef<Promise<string | null> | null>(null)
+  // Responses are applied only when no newer request of the same kind started.
+  const projectLoad = useRef(0)
+  const reviewLoad = useRef(0)
+  const recomputeRequest = useRef(0)
+  // Manual wikitext belongs to one page revision and survives reloads of that page.
+  const textRef = useRef('')
+  const manualText = useRef(false)
+  const textPage = useRef('')
   projectRef.current = project
+  textRef.current = text
   const activeJobId = jobId ?? project?.latest_job_id ?? ''
   const reviewPath = activeJobId ? `/api/projects/${projectId}/jobs/${activeJobId}` : ''
 
@@ -95,16 +115,35 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
   }, [review?.job_id, review?.position, review?.current?.title])
 
   async function loadProject() {
+    const request = ++projectLoad.current
     const data = await getJson<Project>(`/api/projects/${projectId}`)
-    stateVersion.current = data.state_version; savedRevision.current = editRevision.current
-    setProject(data); setConfigurationDirty(false)
+    if (request !== projectLoad.current) return data
+    stateVersion.current = Math.max(stateVersion.current, data.state_version)
+    if (editRevision.current !== savedRevision.current) {
+      // Keep edits that autosave has not persisted yet; take everything else from the server.
+      setProject(current => current ? { ...data, ...localConfiguration(current), state_version: stateVersion.current } : data)
+    } else {
+      setProject(data); setConfigurationDirty(false)
+    }
     return data
   }
-  async function loadReview(preserveText = false) {
+  function showServerText(data: Review) {
+    if (!data.page) return
+    const page = reviewPageKey(data)
+    if (manualText.current && page === textPage.current) return
+    setText(data.page.proposed_text); setTextDirty(false)
+    manualText.current = false; textPage.current = page
+  }
+  async function loadReview() {
+    const request = ++reviewLoad.current
     if (!reviewPath) { setReview(null); return null }
     const data = await getJson<Review>(reviewPath)
-    setReview(data)
-    if (data.page && !preserveText) { setText(data.page.proposed_text); setTextDirty(false) }
+    if (request !== reviewLoad.current) return data
+    // While manual text is kept, keep the page computed from it too, so the
+    // diff shown is always the diff of the text that Save would send.
+    const keepManual = manualText.current && reviewPageKey(data) === textPage.current
+    setReview(current => keepManual && current?.page && reviewPageKey(current) === textPage.current ? { ...data, page: current.page } : data)
+    showServerText(data)
     return data
   }
 
@@ -132,7 +171,7 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
     void getJson<Session>(`/api/session?include_groups=true&wiki_id=${encodeURIComponent(project.wiki_id)}`).then(setSession).catch(error => setGroupsError(error instanceof Error ? error.message : t('findsmith-project-error-groups-load')))
   }, [project?.wiki_id])
   useEffect(() => {
-    if (!reviewPath) { setReview(null); return }
+    if (!reviewPath) { ++reviewLoad.current; setReview(null); return }
     void loadReview().catch(error => {
       if (error instanceof ApiError && error.status === 404 && jobId === projectId) {
         setError('')
@@ -171,31 +210,57 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
     const timer = window.setTimeout(() => { void runAutosave() }, 1500)
     return () => window.clearTimeout(timer)
   }, [project])
+  // Leaving the project: persist pending configuration instead of dropping the
+  // debounced autosave, and warn before unsaved manual wikitext is discarded.
+  const flushOnLeave = useRef(flushAutosave)
+  flushOnLeave.current = flushAutosave
+  useEffect(() => () => { void flushOnLeave.current().catch(() => {}) }, [])
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (editRevision.current === savedRevision.current && !manualText.current) return
+      event.preventDefault(); event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    setNavigationGuard(() => allowReplacingManualText())
+    return () => { window.removeEventListener('beforeunload', onBeforeUnload); setNavigationGuard(null) }
+  }, [t])
   useEffect(() => {
     if (error || busy || textDirty || !review?.page?.skip_reason || review.status !== 'active' || review.preparse_active || review.current?.status !== 'pending') return
     const timer = window.setTimeout(() => { void reviewAction('next') }, 600)
     return () => window.clearTimeout(timer)
   }, [review?.state_version, review?.page?.skip_reason, review?.current?.title, busy, textDirty, error])
 
-  async function runAutosave() {
+  /** Saves the current configuration; resolves to an error message, or null on success. */
+  async function runAutosave(): Promise<string | null> {
     const current = projectRef.current
-    if (!current || editRevision.current === savedRevision.current || pendingAutosave.current) return
+    if (pendingAutosave.current) return pendingAutosave.current
+    if (!current || editRevision.current === savedRevision.current) return null
     const revision = editRevision.current
     setAutosave({ state: 'saving' })
     const request = postForm<{ state_version: number }>(`/api/projects/${projectId}/autosave`, projectForm(current, stateVersion.current))
       .then(result => {
-        stateVersion.current = result.state_version; savedRevision.current = Math.max(savedRevision.current, revision)
-        setProject(latest => latest ? { ...latest, state_version: result.state_version } : latest)
+        stateVersion.current = Math.max(stateVersion.current, result.state_version); savedRevision.current = Math.max(savedRevision.current, revision)
+        setProject(latest => latest ? { ...latest, state_version: stateVersion.current } : latest)
         setAutosave({ state: 'saved' })
+        return null
       })
-      .catch(error => setAutosave({ state: 'failed', message: error instanceof Error ? error.message : t('findsmith-request-failed') }))
+      .catch(error => {
+        const message = error instanceof Error ? error.message : t('findsmith-request-failed')
+        setAutosave({ state: 'failed', message })
+        return message
+      })
       .finally(() => { pendingAutosave.current = null })
     pendingAutosave.current = request
-    await request
+    return request
   }
+  /** Persists every edit made so far, or throws when that is not possible. */
   async function flushAutosave() {
     await pendingAutosave.current
-    if (editRevision.current !== savedRevision.current) await runAutosave()
+    if (editRevision.current === savedRevision.current) return
+    const failure = await runAutosave()
+    if (failure !== null || editRevision.current !== savedRevision.current) {
+      throw new Error(t('findsmith-project-autosave-failed', failure ?? t('findsmith-request-failed')))
+    }
   }
 
   function update(patch: Partial<Project>, persist = true) {
@@ -205,7 +270,12 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
   }
   function updateSkip(patch: Partial<SkipOptions>) { if (project) update({ skip: { ...project.skip, ...patch } }) }
   function move<T>(items: T[], index: number, direction: number) { const copy = [...items]; const target = index + direction; if (target < 0 || target >= copy.length) return copy; [copy[index], copy[target]] = [copy[target], copy[index]]; return copy }
-  function allowReplacingManualText() { return !textDirty || window.confirm(t('findsmith-project-confirm-discard-manual')) }
+  function allowReplacingManualText() {
+    if (!manualText.current) return true
+    if (!window.confirm(t('findsmith-project-confirm-discard-manual'))) return false
+    manualText.current = false
+    return true
+  }
 
   async function loadRendered(title: string, proposedText: string) {
     if (!project) return
@@ -248,9 +318,13 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
     setBusy(label); setError('')
     try {
       await pendingAutosave.current
-      const result = await postForm<ActionResult | Project>(path, projectForm(project, stateVersion.current))
+      const current = projectRef.current ?? project
+      const revision = editRevision.current
+      const result = await postForm<ActionResult | Project>(path, projectForm(current, stateVersion.current))
       if ('page_preview' in result) setProject(current => current ? { ...current, page_preview: result.page_preview, page_preview_error: result.page_preview_error } : current)
       else {
+        // The request persisted the configuration as of `revision`.
+        savedRevision.current = Math.max(savedRevision.current, revision)
         const saved = await loadProject()
         if (refreshReview) {
           const nextJobId = 'id' in result && result.id && (createsJob || result.id !== projectId) ? result.id : saved.latest_job_id
@@ -262,7 +336,7 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
     finally { setBusy('') }
   }
   async function duplicateProject() {
-    if (!project) return
+    if (!project || !allowReplacingManualText()) return
     setBusy(t('findsmith-project-busy-duplicating')); setError('')
     try {
       await flushAutosave()
@@ -274,7 +348,12 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
   async function removeProject() {
     if (!project || !window.confirm(t('findsmith-project-confirm-delete-named-project', project.project_name))) return
     setBusy(t('findsmith-project-busy-deleting'))
-    try { const result = await postForm<ActionResult>(`/api/projects/${projectId}/delete`, new URLSearchParams({ csrf_token: project.csrf_token, confirmation: 'delete' })); navigate(result.redirect) }
+    try {
+      const result = await postForm<ActionResult>(`/api/projects/${projectId}/delete`, new URLSearchParams({ csrf_token: project.csrf_token, confirmation: 'delete' }))
+      // The project is gone: nothing is left to save or to warn about.
+      manualText.current = false; savedRevision.current = editRevision.current
+      navigate(result.redirect)
+    }
     catch (error) { setError(error instanceof Error ? error.message : t('findsmith-project-error-deleting-project')); setBusy('') }
   }
   async function reviewAction(name: string) {
@@ -303,16 +382,33 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
   async function recompute() {
     if (!review || !reviewPath) return
     setBusy(t('findsmith-project-busy-recomputing')); setError('')
-    try { const data = await postForm<Review>(`${reviewPath}/recompute`, new URLSearchParams({ csrf_token: review.csrf_token, proposed_text: text })); setReview(data); if (data.page) setText(data.page.proposed_text); setTextDirty(false) }
+    const sent = text
+    const request = ++recomputeRequest.current
+    try {
+      const data = await postForm<Review>(`${reviewPath}/recompute`, new URLSearchParams({ csrf_token: review.csrf_token, proposed_text: sent }))
+      // Drop a response for a newer recompute or for a page the review has since left.
+      if (request !== recomputeRequest.current || reviewPageKey(data) !== textPage.current) return
+      setReview(data)
+      // Text typed while the request ran is newer than the response; keep it and leave it marked for recompute.
+      if (textRef.current === sent) {
+        if (data.page) { setText(data.page.proposed_text); textPage.current = reviewPageKey(data) }
+        setTextDirty(false)
+      }
+    }
     catch (error) { setError(error instanceof Error ? error.message : t('findsmith-project-error-recomputing')) }
     finally { setBusy('') }
   }
-  async function queueAction(actionName: string, index = 0, titles = '') {
-    if (!review || !reviewPath || !allowReplacingManualText()) return
+  /** Resolves to true once the server applied the queue action. */
+  async function queueAction(actionName: string, index = 0, titles = ''): Promise<boolean> {
+    if (!review || !reviewPath || !allowReplacingManualText()) return false
     setBusy(actionName); setError('')
     const values = new URLSearchParams({ csrf_token: review.csrf_token, state_version: String(review.state_version), action: actionName, index: String(index), titles })
-    try { await postForm<ActionResult>(`${reviewPath}/queue`, values); await Promise.all([loadProject(), loadReview()]) }
-    catch (error) { setError(error instanceof Error ? error.message : t('findsmith-project-error-queue-action')) }
+    try {
+      await postForm<ActionResult>(`${reviewPath}/queue`, values)
+      await Promise.all([loadProject(), loadReview()]).catch(error => setError(error instanceof Error ? error.message : t('findsmith-project-error-queue-action')))
+      return true
+    }
+    catch (error) { setError(error instanceof Error ? error.message : t('findsmith-project-error-queue-action')); return false }
     finally { setBusy('') }
   }
 
@@ -452,7 +548,7 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
           {review.page ? <>
             <div className="page-heading"><a href={review.page.full_url} target="_blank" rel="noreferrer">{review.current?.title ?? t('findsmith-project-current-revision')}</a><strong title={t('findsmith-project-comparison-tooltip')}>{review.page.changed ? t('findsmith-project-proposed-changes') : t('findsmith-project-no-proposed-changes')}</strong></div>
             <div className="meta-strip"><span>{t('findsmith-project-revision', review.page.revision_id)}</span><span>{t('findsmith-project-namespace-short', review.current?.namespace ?? '—')}</span><span>{review.page.content_model}</span><span>{review.page.editable ? t('findsmith-project-editable') : t('findsmith-project-not-editable')}</span><span>{t('findsmith-project-protection', review.page.protection)}</span></div>
-            <details className="wikitext-accordion"><summary>{t(textDirty ? 'findsmith-project-proposed-wikitext-modified' : 'findsmith-project-proposed-wikitext')}</summary><textarea className="editor" value={text} maxLength={4194304} onChange={event => { setText(event.target.value); setTextDirty(true) }} /><button onClick={recompute} disabled={!!busy}>{t('findsmith-project-recompute-diff')}</button></details>
+            <details className="wikitext-accordion"><summary>{t(textDirty ? 'findsmith-project-proposed-wikitext-modified' : 'findsmith-project-proposed-wikitext')}</summary><textarea className="editor" value={text} maxLength={4194304} onChange={event => { setText(event.target.value); setTextDirty(true); manualText.current = true }} /><button onClick={recompute} disabled={!!busy}>{t('findsmith-project-recompute-diff')}</button></details>
             <div className="view-switch"><button className={previewMode === 'diff' ? 'active' : ''} onClick={() => setPreviewMode('diff')}>{t('findsmith-project-diff')}</button><button className={previewMode === 'preview' ? 'active' : ''} onClick={() => showRendered(review.current?.title ?? '', text)}>{t('findsmith-project-preview')}</button></div>
             {previewMode === 'preview' ? renderPanel() : <><div className="rule-counts">{review.page.rules.map((rule, index) => <span className={rule.changed ? 'changed' : ''} key={index}>{t('findsmith-project-rule-count', index + 1, rule.count)}</span>)}</div>{review.page.changed ? <SideDiff lines={review.page.side_by_side_diff} /> : <div className="no-diff">{t('findsmith-project-no-diff-the-proposed-wikitext-matches-the-current-revision')}</div>}</>}
           </> : <div className="empty preview-empty">{building ? review.generation_message : t('findsmith-project-no-reviewable-page')}</div>}
@@ -471,8 +567,8 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
   </Shell>
 }
 
-function AppendPages({ onAppend }: { onAppend: (titles: string) => void }) {
+function AppendPages({ onAppend }: { onAppend: (titles: string) => Promise<boolean> }) {
   const { t } = useI18n()
   const [titles, setTitles] = useState('')
-  return <div className="append-pages"><textarea value={titles} onChange={event => setTitles(event.target.value)} placeholder={t('findsmith-project-append-titles-placeholder')} /><button onClick={() => { if (titles.trim()) { onAppend(titles); setTitles('') } }}>{t('findsmith-project-append')}</button></div>
+  return <div className="append-pages"><textarea value={titles} onChange={event => setTitles(event.target.value)} placeholder={t('findsmith-project-append-titles-placeholder')} /><button onClick={() => { if (titles.trim()) void onAppend(titles).then(appended => { if (appended) setTitles(current => current === titles ? '' : current) }) }}>{t('findsmith-project-append')}</button></div>
 }

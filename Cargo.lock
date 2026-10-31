@@ -1233,9 +1233,11 @@ dependencies = [
  "sea-orm-migration",
  "serde",
  "serde_json",
+ "sha1",
  "similar",
  "tokio",
  "tower-http 0.7.1",
+ "unicode-normalization",
  "url",
  "uuid",
 ]

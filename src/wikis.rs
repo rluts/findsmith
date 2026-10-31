@@ -421,10 +421,7 @@ async fn access_url(
     user_agent: &str,
     username: &str,
 ) -> AccessView {
-    let key = (
-        api_url.to_owned(),
-        username.replace('_', " ").to_lowercase(),
-    );
+    let key = (api_url.to_owned(), username.replace('_', " "));
     let cached = access_cache()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -438,10 +435,8 @@ async fn access_url(
         let result = match checked {
             Ok((title, users)) => {
                 let member = |list: &[String]| {
-                    list.iter().any(|name| {
-                        name.replace('_', " ").to_lowercase()
-                            == username.replace('_', " ").to_lowercase()
-                    })
+                    list.iter()
+                        .any(|name| name.replace('_', " ") == username.replace('_', " "))
                 };
                 let bot = member(&users.enabledbots);
                 AccessResult {
