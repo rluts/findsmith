@@ -412,10 +412,12 @@ fn compile_rule(
             RuleOperation::CategoryAdd | RuleOperation::CategoryReplace
         ) {
             category_name(&rule.replace).to_owned()
-        } else if rule.regex && rule.operation == RuleOperation::Replace {
-            rule.replace.clone()
-        } else {
+        } else if rule.operation == RuleOperation::Replace && !rule.regex {
+            // Plain replacements still go through regex expansion.
             rule.replace.replace('$', "$$")
+        } else {
+            // Regex replacements expand `$` on purpose; other operations insert the text as is.
+            rule.replace.clone()
         },
         replace_all: rule.replace_all,
         matcher,
@@ -502,6 +504,19 @@ mod tests {
             .unwrap();
         assert_eq!(result.text, "start middle end");
         assert_eq!(result.counts, vec![1, 1]);
+    }
+
+    #[test]
+    fn append_and_prepend_keep_dollar_signs() {
+        let mut append = plain("", " costs $5");
+        append.operation = RuleOperation::Append;
+        let mut prepend = plain("", "$$ ");
+        prepend.operation = RuleOperation::Prepend;
+        let result = RuleEngine::compile(&[append, prepend])
+            .unwrap()
+            .apply("it")
+            .unwrap();
+        assert_eq!(result.text, "$$ it costs $5");
     }
 
     #[test]

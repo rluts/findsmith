@@ -456,6 +456,8 @@
   "findsmith-api-unknown-language": "Unknown language",
   "findsmith-api-unsupported-review-configuration": "Unsupported review configuration",
   "findsmith-api-unsupported-wiki": "Unsupported wiki",
+  "findsmith-api-wiki-cannot-change": "Wiki cannot be changed",
+  "findsmith-api-wiki-cannot-change-details": "A project always edits the wiki it was created for. Create a new project to work on another wiki.",
   "findsmith-api-use-a-valid-language-code": "Use a valid language code.",
   "findsmith-api-wait-for-list-generation-or-stop-pre-parse-before-changing-the-rules": "Wait for list generation or stop pre-parse before changing the rules.",
   "findsmith-api-source-more": "$1 and $2 more",

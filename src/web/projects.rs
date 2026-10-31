@@ -654,8 +654,28 @@ pub(super) async fn save_project(
             &back_href,
         )));
     }
-    let wiki_url = match resolve_project_wiki_url(database, id, owner, &form.wiki_id).await {
-        Ok(Some(url)) => url,
+    let project = match ProjectRepository::new(database).get(owner, id).await {
+        Ok(Some(project)) => project,
+        Ok(None) => {
+            return Err(Box::new(error_page(
+                StatusCode::NOT_FOUND,
+                "findsmith-api-project-not-found",
+                "findsmith-api-this-project-does-not-exist-or-you-do-not-have-access-to-it",
+                "/workspace",
+            )));
+        }
+        Err(error) => return Err(Box::new(project_error_response(error, &back_href))),
+    };
+    match resolve_project_wiki_url(database, id, owner, &form.wiki_id).await {
+        Ok(Some(url)) if url == project.wiki_url => {}
+        Ok(Some(_)) => {
+            return Err(Box::new(error_page(
+                StatusCode::BAD_REQUEST,
+                "findsmith-api-wiki-cannot-change",
+                "findsmith-api-wiki-cannot-change-details",
+                &back_href,
+            )));
+        }
         Ok(None) => {
             return Err(Box::new(error_page(
                 StatusCode::BAD_REQUEST,
@@ -746,14 +766,7 @@ pub(super) async fn save_project(
     let saved_state = state.clone();
     let repository = ProjectRepository::new(database);
     match repository
-        .update(
-            owner,
-            id,
-            form.name.clone(),
-            wiki_url,
-            state,
-            form.state_version,
-        )
+        .update(owner, id, form.name.clone(), state, form.state_version)
         .await
     {
         Ok(Some(project)) => Ok((project, saved_state)),

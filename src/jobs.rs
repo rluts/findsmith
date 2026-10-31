@@ -496,7 +496,9 @@ impl<'a> JobRepository<'a> {
         Ok(job::Entity::find()
             .filter(job::Column::Owner.eq(owner))
             .filter(job::Column::ProjectId.eq(project_id))
-            .order_by_desc(job::Column::UpdatedAt)
+            // The newest job is the current one. Activity on an older job, such
+            // as a review action or a config update, must not make it current again.
+            .order_by_desc(job::Column::CreatedAt)
             .one(self.database)
             .await?)
     }

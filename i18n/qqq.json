@@ -456,6 +456,8 @@
   "findsmith-api-unknown-language": "Short translation API error title for an unrecognized language code.",
   "findsmith-api-unsupported-review-configuration": "Short review loading error title when saved review settings cannot be decoded by this release.",
   "findsmith-api-unsupported-wiki": "Short Add Wiki error title when the domain is not a supported Wikimedia project.",
+  "findsmith-api-wiki-cannot-change": "Title of the error shown when a request tries to move an existing project to a different wiki.",
+  "findsmith-api-wiki-cannot-change-details": "Message explaining that a project's wiki is fixed when the project is created.",
   "findsmith-api-use-a-valid-language-code": "Language preference validation detail when the submitted language code is malformed.",
   "findsmith-api-wait-for-list-generation-or-stop-pre-parse-before-changing-the-rules": "Project rule validation detail while page-list generation or pre-parse is active.",
   "findsmith-api-source-more": "Summary of a page source list. $1 is the first title, and $2 is the number of additional titles. $2 can be used with PLURAL. Example values: $1 = “Help:Example”, $2 = “2”.",
