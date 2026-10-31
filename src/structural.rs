@@ -2,6 +2,7 @@ use parsoid::prelude::*;
 
 use crate::{
     localization,
+    mediawiki::{TitleError, TitleNamespace, normalize_in_namespace},
     projects::{ReplacementRule, RuleOperation},
     rules::{
         MAX_INPUT_BYTES, MAX_OUTPUT_BYTES, MAX_TOTAL_REPLACEMENTS, RuleEngine, TransformationResult,
@@ -11,6 +12,34 @@ use crate::{
 fn parsoid_error(key: &str, error: &impl std::fmt::Display) -> String {
     localization::message_with_args(key, &[&error.to_string()])
         .expect("English Parsoid error message exists")
+}
+
+/// The wiki's normalized title for a rule's template or category name.
+async fn wiki_title(
+    wiki_url: &str,
+    user_agent: &str,
+    name: &str,
+    namespace: TitleNamespace,
+) -> Result<String, String> {
+    normalize_in_namespace(wiki_url, user_agent, name, namespace)
+        .await
+        .map_err(|error| match error {
+            TitleError::Invalid => localization::message_with_args(
+                "findsmith-api-structural-invalid-title",
+                &[name.trim()],
+            )
+            .expect("English title error message exists"),
+            TitleError::Request(message) => {
+                parsoid_error("findsmith-api-structural-title-lookup", &message)
+            }
+        })
+}
+
+/// Compares titles that the wiki has already normalized, such as Parsoid's
+/// link targets and [`wiki_title`] results. Case matters beyond what the wiki
+/// normalized, because MediaWiki titles are case-sensitive there.
+fn same_title(left: &str, right: &str) -> bool {
+    left.replace('_', " ") == right.replace('_', " ")
 }
 
 pub async fn apply_with_wiki(
@@ -77,11 +106,29 @@ async fn apply_structural_rule(
     wiki_url: &str,
     user_agent: &str,
 ) -> Result<(String, usize), String> {
-    if rule.operation == RuleOperation::CategoryReplace
-        && category_name(&rule.find)
-            .replace('_', " ")
-            .eq_ignore_ascii_case(&category_name(&rule.replace).replace('_', " "))
-    {
+    let is_category = matches!(
+        rule.operation,
+        RuleOperation::CategoryAdd | RuleOperation::CategoryRemove | RuleOperation::CategoryReplace
+    );
+    let namespace = if is_category {
+        TitleNamespace::Category
+    } else {
+        TitleNamespace::Template
+    };
+    let find_title = if rule.operation == RuleOperation::CategoryAdd {
+        String::new()
+    } else {
+        wiki_title(wiki_url, user_agent, &rule.find, namespace).await?
+    };
+    let replace_title = if matches!(
+        rule.operation,
+        RuleOperation::CategoryAdd | RuleOperation::CategoryReplace | RuleOperation::TemplateRename
+    ) {
+        wiki_title(wiki_url, user_agent, &rule.replace, namespace).await?
+    } else {
+        String::new()
+    };
+    if rule.operation == RuleOperation::CategoryReplace && same_title(&find_title, &replace_title) {
         return Ok((input.to_owned(), 0));
     }
     let rest_url = wiki_url
@@ -120,45 +167,41 @@ async fn apply_structural_rule(
         if rule.operation == RuleOperation::CategoryAdd
             && !categories
                 .iter()
-                .any(|item| same_category(&item.category(), &rule.replace))
+                .any(|item| same_title(&item.category(), &replace_title))
         {
-            code.append(&Category::new(
-                &format!("Category:{}", category_name(&rule.replace)),
-                None,
-            ));
+            code.append(&Category::new(&replace_title, None));
             count = 1;
         }
         for category in &categories {
             if !matches!(
                 rule.operation,
                 RuleOperation::CategoryRemove | RuleOperation::CategoryReplace
-            ) || !same_category(&category.category(), &rule.find)
+            ) || !same_title(&category.category(), &find_title)
             {
                 continue;
             }
             if rule.operation == RuleOperation::CategoryRemove
                 || categories
                     .iter()
-                    .any(|item| same_category(&item.category(), &rule.replace))
+                    .any(|item| same_title(&item.category(), &replace_title))
             {
                 category.detach();
             } else {
-                category.set_category(&format!("Category:{}", category_name(&rule.replace)));
+                category.set_category(&replace_title);
             }
             count += 1;
         }
         for template in &templates {
-            if !template.is_template() || !same_template(&template.name_in_wikitext(), &rule.find) {
+            if !template.is_template() || !same_title(&template.name(), &find_title) {
                 continue;
             }
             let changed = match rule.operation {
                 RuleOperation::TemplateRename => {
-                    let name = template_name(&rule.replace);
-                    if same_template(&template.name_in_wikitext(), name) {
+                    if same_title(&template.name(), &replace_title) {
                         false
                     } else {
                         template
-                            .set_name(name.to_owned())
+                            .set_name(template_name(&rule.replace).to_owned())
                             .map_err(|error| error.to_string())?;
                         true
                     }
@@ -212,34 +255,15 @@ fn template_name(name: &str) -> &str {
     }
 }
 
-fn same_template(left: &str, right: &str) -> bool {
-    template_name(left)
-        .replace('_', " ")
-        .eq_ignore_ascii_case(&template_name(right).replace('_', " "))
-}
-
-fn category_name(name: &str) -> &str {
-    let name = name.trim();
-    match name.split_once(':') {
-        Some((prefix, rest)) if prefix.eq_ignore_ascii_case("Category") => rest.trim(),
-        _ => name,
-    }
-}
-
-fn same_category(left: &str, right: &str) -> bool {
-    let left = left.split_once(':').map(|(_, name)| name).unwrap_or(left);
-    left.replace('_', " ")
-        .eq_ignore_ascii_case(&category_name(right).replace('_', " "))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn names_match_canonical_and_underscored_forms() {
-        assert!(same_template("Template:Infobox_person", "Infobox person"));
-        assert!(same_category("Категорія:New_York", "New York"));
+    fn normalized_titles_compare_case_sensitively() {
+        assert!(same_title("Шаблон:Infobox_person", "Шаблон:Infobox person"));
+        assert!(!same_title("Шаблон:Foo", "Шаблон:FOO"));
+        assert!(!same_title("Категорія:New York", "Категорія:New york"));
     }
 
     #[tokio::test]

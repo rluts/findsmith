@@ -366,6 +366,152 @@ fn can_mark_bot_edit(user: &UserInfo) -> bool {
         && user.rights.iter().any(|right| right == "bot")
 }
 
+/// Namespace that a structural rule's title defaults to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TitleNamespace {
+    Template,
+    Category,
+}
+
+impl TitleNamespace {
+    fn id(self) -> i64 {
+        match self {
+            Self::Template => 10,
+            Self::Category => 14,
+        }
+    }
+
+    fn canonical_prefix(self) -> &'static str {
+        match self {
+            Self::Template => "Template",
+            Self::Category => "Category",
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum TitleError {
+    Invalid,
+    Request(String),
+}
+
+#[derive(Debug, Deserialize)]
+struct TitleQueryResponse {
+    #[serde(default)]
+    query: Option<TitleQuery>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TitleQuery {
+    #[serde(default)]
+    normalized: Vec<TitleRename>,
+    #[serde(default)]
+    pages: Vec<TitlePage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TitleRename {
+    from: String,
+    to: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TitlePage {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    ns: i64,
+    #[serde(default)]
+    invalid: bool,
+}
+
+const MAX_CACHED_TITLES: usize = 10_000;
+
+type TitleCache = HashMap<(String, TitleNamespace, String), String>;
+
+fn title_cache() -> &'static Mutex<TitleCache> {
+    static TITLES: OnceLock<Mutex<TitleCache>> = OnceLock::new();
+    TITLES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Normalizes a title the way the wiki does (localized namespace names and
+/// aliases, first-letter case, underscores), as MediaWiki resolves a
+/// transclusion or category link: a title without a namespace prefix is placed
+/// in `namespace`, and a leading colon selects the main namespace.
+pub async fn normalize_in_namespace(
+    wiki_url: &str,
+    user_agent: &str,
+    input: &str,
+    namespace: TitleNamespace,
+) -> Result<String, TitleError> {
+    let input = input.trim();
+    let key = (wiki_url.to_owned(), namespace, input.to_owned());
+    if let Some(title) = title_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(&key)
+    {
+        return Ok(title.clone());
+    }
+    let explicit = input.strip_prefix(':').unwrap_or(input).to_owned();
+    let prefixed = format!("{}:{explicit}", namespace.canonical_prefix());
+    let client = client_builder(wiki_url, user_agent)
+        .build()
+        .await
+        .map_err(|error| TitleError::Request(error.to_string()))?;
+    let titles = format!("{explicit}|{prefixed}");
+    let response: TitleQueryResponse = client
+        .get([
+            ("action", "query"),
+            ("titles", titles.as_str()),
+            ("formatversion", "2"),
+        ])
+        .await
+        .map_err(|error| TitleError::Request(error.to_string()))?;
+    let title = resolve_namespaced_title(
+        &response.query.unwrap_or_default(),
+        &explicit,
+        &prefixed,
+        namespace,
+        input.starts_with(':'),
+    )?;
+    let mut cache = title_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if cache.len() >= MAX_CACHED_TITLES {
+        cache.clear();
+    }
+    cache.insert(key, title.clone());
+    Ok(title)
+}
+
+fn resolve_namespaced_title(
+    query: &TitleQuery,
+    explicit: &str,
+    prefixed: &str,
+    namespace: TitleNamespace,
+    main_namespace: bool,
+) -> Result<String, TitleError> {
+    let page = |requested: &str| {
+        let title = query
+            .normalized
+            .iter()
+            .find(|rename| rename.from == requested)
+            .map_or(requested, |rename| rename.to.as_str());
+        query.pages.iter().find(|page| page.title == title)
+    };
+    let as_written = page(explicit);
+    // A prefix that names another namespace is kept, as in `{{Project:Example}}`.
+    let chosen = match as_written {
+        Some(page) if main_namespace || page.ns != 0 => Some(page),
+        _ => page(prefixed).filter(|page| page.ns == namespace.id()),
+    };
+    match chosen {
+        Some(page) if !page.invalid && !page.title.is_empty() => Ok(page.title.clone()),
+        _ => Err(TitleError::Invalid),
+    }
+}
+
 fn edit_clients() -> &'static Mutex<HashMap<(String, String), mwapi::Client>> {
     static CLIENTS: OnceLock<Mutex<HashMap<(String, String), mwapi::Client>>> = OnceLock::new();
     CLIENTS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -995,6 +1141,98 @@ async fn authenticated_client(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn title_query(value: serde_json::Value) -> TitleQuery {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn titles_resolve_in_the_default_namespace_with_wiki_normalization() {
+        // ukwiki: "Template:" is an alias of "Шаблон:", and only the first letter is case-insensitive.
+        let query = title_query(serde_json::json!({
+            "normalized": [
+                {"from": "infobox_FOO", "to": "Infobox FOO"},
+                {"from": "Template:infobox_FOO", "to": "Шаблон:Infobox FOO"}
+            ],
+            "pages": [
+                {"title": "Infobox FOO", "ns": 0, "missing": true},
+                {"title": "Шаблон:Infobox FOO", "ns": 10}
+            ]
+        }));
+        assert_eq!(
+            resolve_namespaced_title(
+                &query,
+                "infobox_FOO",
+                "Template:infobox_FOO",
+                TitleNamespace::Template,
+                false
+            ),
+            Ok("Шаблон:Infobox FOO".to_owned())
+        );
+        let explicit = title_query(serde_json::json!({
+            "normalized": [{"from": "Template:Шаблон:Foo", "to": "Шаблон:Шаблон:Foo"}],
+            "pages": [
+                {"title": "Шаблон:Foo", "ns": 10},
+                {"title": "Шаблон:Шаблон:Foo", "ns": 10, "missing": true}
+            ]
+        }));
+        assert_eq!(
+            resolve_namespaced_title(
+                &explicit,
+                "Шаблон:Foo",
+                "Template:Шаблон:Foo",
+                TitleNamespace::Template,
+                false
+            ),
+            Ok("Шаблон:Foo".to_owned())
+        );
+    }
+
+    #[test]
+    fn other_namespaces_and_leading_colons_are_kept() {
+        let query = title_query(serde_json::json!({
+            "pages": [
+                {"title": "Wikipedia:Sandbox", "ns": 4},
+                {"title": "Template:Wikipedia:Sandbox", "ns": 10}
+            ]
+        }));
+        assert_eq!(
+            resolve_namespaced_title(
+                &query,
+                "Wikipedia:Sandbox",
+                "Template:Wikipedia:Sandbox",
+                TitleNamespace::Template,
+                false
+            ),
+            Ok("Wikipedia:Sandbox".to_owned())
+        );
+        let main = title_query(serde_json::json!({
+            "pages": [
+                {"title": "Foo", "ns": 0},
+                {"title": "Template:Foo", "ns": 10}
+            ]
+        }));
+        assert_eq!(
+            resolve_namespaced_title(&main, "Foo", "Template:Foo", TitleNamespace::Template, true),
+            Ok("Foo".to_owned())
+        );
+        let invalid = title_query(serde_json::json!({
+            "pages": [
+                {"title": "Foo<", "invalid": true},
+                {"title": "Category:Foo<", "invalid": true}
+            ]
+        }));
+        assert_eq!(
+            resolve_namespaced_title(
+                &invalid,
+                "Foo<",
+                "Category:Foo<",
+                TitleNamespace::Category,
+                false
+            ),
+            Err(TitleError::Invalid)
+        );
+    }
 
     #[test]
     fn bot_edit_requires_bot_or_flood_group_and_right() {

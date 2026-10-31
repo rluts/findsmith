@@ -135,6 +135,11 @@ pub fn masked_ranges(text: &str, mask: &RuleMask) -> Vec<Range<usize>> {
                     }
                     position += 2;
                 }
+                // Markup in comments and in tags such as <nowiki> is not parsed,
+                // so an unmatched `[[` or `{{` there must not mask the rest of the page.
+                (b'<', _) => {
+                    position = unparsed_region_end(text, position).unwrap_or(position + 1);
+                }
                 _ => position += 1,
             }
         }
@@ -160,6 +165,64 @@ pub fn masked_ranges(text: &str, mask: &RuleMask) -> Vec<Range<usize>> {
         }
     }
     merged
+}
+
+/// Tags whose content MediaWiki does not parse as wikitext.
+const UNPARSED_TAGS: &[&str] = &[
+    "nowiki",
+    "pre",
+    "math",
+    "chem",
+    "ce",
+    "syntaxhighlight",
+    "source",
+    "score",
+    "timeline",
+    "graph",
+    "hiero",
+    "templatedata",
+    "mapframe",
+    "maplink",
+];
+
+/// If `start` opens a comment or a tag whose content is not parsed as
+/// wikitext, returns where that region ends. An unclosed comment runs to the
+/// end of the page; an unclosed tag is plain text, as MediaWiki renders it.
+fn unparsed_region_end(text: &str, start: usize) -> Option<usize> {
+    let rest = &text[start..];
+    if let Some(after) = rest.strip_prefix("<!--") {
+        return Some(
+            after
+                .find("-->")
+                .map_or(text.len(), |index| start + 4 + index + 3),
+        );
+    }
+    let bytes = rest.as_bytes();
+    let name = UNPARSED_TAGS.iter().find(|name| {
+        bytes.len() > name.len() + 1
+            && bytes[1..=name.len()].eq_ignore_ascii_case(name.as_bytes())
+            && matches!(
+                bytes[name.len() + 1],
+                b'>' | b'/' | b' ' | b'\t' | b'\n' | b'\r'
+            )
+    })?;
+    let opening_end = tag_end(text, start)?;
+    if text[..opening_end].ends_with("/>") {
+        return Some(opening_end);
+    }
+    let closing = format!("</{name}");
+    let mut from = opening_end;
+    while let Some(relative) = text[from..].find("</") {
+        let at = from + relative;
+        if text.as_bytes()[at..]
+            .get(..closing.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(closing.as_bytes()))
+        {
+            return Some(tag_end(text, at).unwrap_or(text.len()));
+        }
+        from = at + 2;
+    }
+    Some(opening_end)
 }
 
 fn tag_end(text: &str, start: usize) -> Option<usize> {
@@ -213,6 +276,55 @@ mod tests {
         );
         let target = text.find("Target").unwrap();
         assert!(overlaps(&ranges, target, target + 6));
+    }
+
+    fn masked_words(text: &str, mask: &RuleMask) -> Vec<bool> {
+        let ranges = masked_ranges(text, mask);
+        text.match_indices("word")
+            .map(|(start, _)| overlaps(&ranges, start, start + 4))
+            .collect()
+    }
+
+    #[test]
+    fn unparsed_markup_does_not_mask_the_rest_of_the_page() {
+        let links = RuleMask {
+            links: true,
+            ..RuleMask::default()
+        };
+        assert_eq!(
+            masked_words("<!-- [[ --> word [[B|word]] word", &links),
+            [false, true, false]
+        );
+        assert_eq!(
+            masked_words("<!-- [[ word", &links),
+            [false],
+            "an unclosed comment hides its markup too"
+        );
+        let templates = RuleMask {
+            templates: true,
+            ..RuleMask::default()
+        };
+        assert_eq!(
+            masked_words("<NoWiki>{{</nowiki> word {{T|word}} word", &templates),
+            [false, true, false]
+        );
+        assert_eq!(
+            masked_words("<pre class=\"x\">{{ word</PRE> {{T|word}}", &templates),
+            [false, true]
+        );
+        // A self-closing or unclosed tag hides nothing.
+        assert_eq!(
+            masked_words("<nowiki/>{{T|word}} word", &templates),
+            [true, false]
+        );
+        assert_eq!(
+            masked_words("<nowiki>{{T|word}} word", &templates),
+            [true, false]
+        );
+        assert_eq!(
+            masked_words("<nowikix>{{T|word}} word", &templates),
+            [true, false]
+        );
     }
 
     #[test]

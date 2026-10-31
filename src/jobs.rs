@@ -503,6 +503,50 @@ impl<'a> JobRepository<'a> {
             .await?)
     }
 
+    /// Fails builds that no running process will finish: jobs still building
+    /// whose state has not changed since `cutoff`. Returns how many were failed.
+    pub async fn fail_abandoned_builds(
+        &self,
+        cutoff: DateTime<Utc>,
+        message: &str,
+    ) -> Result<usize, JobError> {
+        let candidates = job::Entity::find()
+            .filter(job::Column::UpdatedAt.lt(cutoff))
+            // The status lives in the state document; this works on MariaDB and MySQL.
+            .filter(Expr::cust(
+                "JSON_UNQUOTE(JSON_EXTRACT(state_json, '$.status')) = 'building'",
+            ))
+            .all(self.database)
+            .await?;
+        let mut failed = 0;
+        for job in candidates {
+            let Ok(mut state) = serde_json::from_value::<JobState>(job.state_json) else {
+                continue;
+            };
+            if state.status != JobStatus::Building {
+                continue;
+            }
+            state.status = JobStatus::Failed;
+            state.generation_message = message.to_owned();
+            match self
+                .update_state(
+                    &job.owner,
+                    &job.project_id,
+                    &job.id,
+                    &state,
+                    job.state_version,
+                )
+                .await
+            {
+                Ok(()) => failed += 1,
+                // The build made progress after it was listed, so it is still running.
+                Err(JobError::Conflict) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(failed)
+    }
+
     pub async fn update_config(
         &self,
         owner: &str,
