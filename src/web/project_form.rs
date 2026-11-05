@@ -427,6 +427,7 @@ mod tests {
             rule_multiline: Vec::new(),
             rule_dot_newline: Vec::new(),
             skip_no_change: true,
+            skip_in_use: true,
             skip_redirects: false,
             skip_protected: false,
             skip_outside_namespaces: true,

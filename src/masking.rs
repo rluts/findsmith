@@ -239,6 +239,21 @@ fn tag_end(text: &str, start: usize) -> Option<usize> {
     None
 }
 
+/// Comments and tags such as `<nowiki>`, whose content MediaWiki does not parse.
+pub fn unparsed_ranges(text: &str) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut position = 0;
+    while let Some(relative) = text[position..].find('<') {
+        let start = position + relative;
+        position = start + 1;
+        if let Some(end) = unparsed_region_end(text, start) {
+            ranges.push(start..end);
+            position = end;
+        }
+    }
+    ranges
+}
+
 pub fn overlaps(ranges: &[Range<usize>], start: usize, end: usize) -> bool {
     ranges.iter().any(|range| {
         if start == end {
@@ -252,6 +267,16 @@ pub fn overlaps(ranges: &[Range<usize>], start: usize, end: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unparsed_ranges_cover_comments_and_unparsed_tags() {
+        let text = "a <!-- b --> c <nowiki>d</nowiki> e <div>f</div>";
+        let content: Vec<&str> = unparsed_ranges(text)
+            .into_iter()
+            .map(|range| &text[range])
+            .collect();
+        assert_eq!(content, ["<!-- b -->", "<nowiki>d</nowiki>"]);
+    }
 
     #[test]
     fn masks_selected_regions_and_leaves_other_text() {

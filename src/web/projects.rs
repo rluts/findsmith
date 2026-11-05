@@ -160,6 +160,8 @@ pub struct UpdateProjectForm {
     #[serde(default)]
     pub(super) skip_no_change: bool,
     #[serde(default)]
+    pub(super) skip_in_use: bool,
+    #[serde(default)]
     pub(super) skip_redirects: bool,
     #[serde(default)]
     pub(super) skip_protected: bool,
@@ -187,6 +189,7 @@ impl UpdateProjectForm {
     pub(super) fn skip_options(&self) -> SkipOptions {
         SkipOptions {
             no_change: self.skip_no_change,
+            in_use_tpl: self.skip_in_use,
             redirects: self.skip_redirects,
             protected: self.skip_protected,
             outside_namespaces: self.skip_outside_namespaces,

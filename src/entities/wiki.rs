@@ -10,6 +10,7 @@ pub struct Model {
     pub name: String,
     pub check_page: String,
     pub namespaces_json: Json,
+    pub in_use_templates_json: Json,
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,
 }
