@@ -999,7 +999,7 @@ pub async fn page_list(
     };
     let mut output = Vec::new();
     while output.len() < limit
-        && let Some(page) = pages.recv().await
+        && let Some(page) = pages.next().await
     {
         let page = page?;
         let title = page.title().to_owned();
