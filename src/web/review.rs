@@ -73,6 +73,7 @@ struct ReviewPageView {
     can_minor: bool,
     can_bot: bool,
     edit_access_message: Option<String>,
+    bot_exclusion_message: Option<String>,
     skip_reason: Option<String>,
     protection: String,
     total_replacements: usize,
@@ -248,6 +249,7 @@ pub(super) struct PageEvaluation {
     pub(super) snapshot: PageSnapshot,
     pub(super) result: TransformationResult,
     pub(super) skip: Option<SkipReason>,
+    pub(super) bot_excluded: bool,
 }
 
 pub(super) enum EvaluationError {
@@ -281,26 +283,27 @@ pub(super) async fn evaluate_page(
     )
     .await
     .map_err(EvaluationError::Transform)?;
-    let mut skip = matcher.before_rules(&PageFacts {
+    let skip = matcher.before_rules(&PageFacts {
         namespace: snapshot.namespace,
         redirect: snapshot.redirect,
         editable: snapshot.editable,
         content: &snapshot.content,
     });
-    // A failed exclusion check does not skip the page; saving checks it again.
-    if skip.is_none()
-        && policy::bot_edit_allowed(wiki_url, user_agent, username, &snapshot.content).await
-            == Ok(false)
-    {
-        skip = Some(SkipReason::BotExclusion);
-    }
-    let skip = skip.or_else(|| {
-        matcher.after_rules(&snapshot.content, &result.text, result.total_replacements)
-    });
+    // Checked even for a page skipped for another reason: saving an excluded page
+    // locks the review. A failed check does not skip the page; saving checks it again.
+    let bot_excluded = policy::bot_edit_allowed(wiki_url, user_agent, username, &snapshot.content)
+        .await
+        == Ok(false);
+    let skip = skip
+        .or(bot_excluded.then_some(SkipReason::BotExclusion))
+        .or_else(|| {
+            matcher.after_rules(&snapshot.content, &result.text, result.total_replacements)
+        });
     Ok(PageEvaluation {
         snapshot,
         result,
         skip,
+        bot_excluded,
     })
 }
 
@@ -334,6 +337,7 @@ async fn review_page_view(
         snapshot,
         result,
         skip,
+        bot_excluded,
     } = evaluate_page(
         database,
         wiki_url,
@@ -382,6 +386,8 @@ async fn review_page_view(
             .as_ref()
             .is_some_and(|permissions| permissions.can_bot),
         edit_access_message: edit_access_message.map(localization::from_source),
+        bot_exclusion_message: bot_excluded
+            .then(|| localization::required("findsmith-api-save-bot-excluded")),
         skip_reason: skip.map(|reason| localization::required(reason.message_key())),
         protection,
         total_replacements: result.total_replacements,

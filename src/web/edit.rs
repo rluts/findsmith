@@ -42,7 +42,7 @@ pub(super) async fn save_current_page(
         return error_page(
             StatusCode::CONFLICT,
             "findsmith-api-cannot-save",
-            "Select a pending or reviewed page in an active or completed review.",
+            "Select a pending, reviewed, or skipped page in an active or completed review.",
             back_href,
         );
     }

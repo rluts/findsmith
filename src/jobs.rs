@@ -330,7 +330,9 @@ impl JobState {
             && self.current().is_some_and(|entry| {
                 matches!(
                     entry.status,
-                    QueueEntryStatus::Pending | QueueEntryStatus::Reviewed
+                    QueueEntryStatus::Pending
+                        | QueueEntryStatus::Reviewed
+                        | QueueEntryStatus::Skipped
                 )
             })
     }
@@ -374,7 +376,11 @@ impl JobState {
         let after_save = status == QueueEntryStatus::Saved;
         if let Some(entry) = self.queue.get_mut(self.position)
             && (entry.status.is_pending()
-                || (after_save && entry.status == QueueEntryStatus::Reviewed))
+                || (after_save
+                    && matches!(
+                        entry.status,
+                        QueueEntryStatus::Reviewed | QueueEntryStatus::Skipped
+                    )))
         {
             entry.status = status;
             entry.reason = reason;
@@ -700,7 +706,22 @@ mod tests {
         assert!(!state.can_save_current());
         state.status = JobStatus::Complete;
         state.queue[1].status = QueueEntryStatus::Skipped;
+        assert!(state.can_save_current());
+        state.queue[1].status = QueueEntryStatus::Missing;
         assert!(!state.can_save_current());
+    }
+
+    #[test]
+    fn saving_a_skipped_page_replaces_the_skip_and_leaves_other_skips() {
+        let mut state = JobState::new(vec![entry("A"), entry("B"), entry("C")]);
+        state.queue[0].status = QueueEntryStatus::Skipped;
+        state.queue[0].reason = Some("findsmith-api-manual-skip".to_owned());
+        state.queue[1].status = QueueEntryStatus::Skipped;
+        state.advance(QueueEntryStatus::Saved, None);
+        assert_eq!(state.queue[0].status, QueueEntryStatus::Saved);
+        assert_eq!(state.queue[0].reason, None);
+        assert_eq!(state.queue[1].status, QueueEntryStatus::Skipped);
+        assert_eq!(state.position, 2);
     }
 
     #[test]
