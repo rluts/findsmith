@@ -1,7 +1,7 @@
 {
   "name": "findsmith",
   "private": true,
-  "version": "0.1.0-alpha.3",
+  "version": "0.1.0-alpha.4",
   "workspaces": ["frontend"],
   "scripts": {
     "dev": "npm run dev --workspace findsmith-frontend",
