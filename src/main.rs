@@ -31,6 +31,7 @@ async fn main() -> AppResult<()> {
     let port = config.port.clone();
     let database = database::connect(config.database.clone()).await?;
     web::spawn_build_recovery(database.clone());
+    wikis::spawn_refresh(database.clone(), config.user_agent.clone());
     let app = app::router(config, database).await?;
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     println!("FindSmith listening on {}", listener.local_addr()?);

@@ -12,7 +12,7 @@ const blankMask = (): RuleMask => ({comments: false, tags: false, references: fa
 const maskOptions: Array<keyof RuleMask> = ['comments', 'tags', 'references', 'links', 'headings', 'templates', 'link_targets']
 const blankRule = (): Rule => ({ name: '', enabled: true, operation: 'replace', parameter: '', mask: blankMask(), find: '', replace: '', regex: false, case_sensitive: true, replace_all: true, multiline: false, dot_matches_new_line: false })
 const blankSource = (kind = 'manual'): Source => ({ kind, label: '', value: kind === 'watchlist' ? 'My watchlist' : '', summary: '' })
-const skipToggles: Array<[keyof SkipOptions, string]> = [['no_change', 'findsmith-project-skip-no-change'], ['redirects', 'findsmith-project-skip-redirects'], ['protected', 'findsmith-project-skip-protected'], ['outside_namespaces', 'findsmith-project-skip-outside-namespaces']]
+const skipToggles: Array<[keyof SkipOptions, string]> = [['no_change', 'findsmith-project-skip-no-change'], ['in_use_tpl', 'findsmith-project-skip-in-use'], ['redirects', 'findsmith-project-skip-redirects'], ['protected', 'findsmith-project-skip-protected'], ['outside_namespaces', 'findsmith-project-skip-outside-namespaces']]
 
 /** Fields the user edits locally; these survive reloads until autosave persists them. */
 function localConfiguration(project: Project): Partial<Project> {
@@ -28,7 +28,7 @@ function reviewPageKey(review: Review) {
 function projectForm(project: Project, stateVersion = project.state_version) {
   const values = new URLSearchParams({ name: project.project_name, wiki_id: project.wiki_id, queue_limit: String(project.queue_limit), page_title: project.page_title, state_version: String(stateVersion), csrf_token: project.csrf_token })
   const skip = project.skip
-  values.append('skip_no_change', String(skip.no_change)); values.append('skip_redirects', String(skip.redirects)); values.append('skip_protected', String(skip.protected)); values.append('skip_outside_namespaces', String(skip.outside_namespaces))
+  values.append('skip_no_change', String(skip.no_change)); values.append('skip_in_use', String(skip.in_use_tpl)); values.append('skip_redirects', String(skip.redirects)); values.append('skip_protected', String(skip.protected)); values.append('skip_outside_namespaces', String(skip.outside_namespaces))
   values.append('skip_contains', skip.contains); values.append('skip_not_contains', skip.not_contains); values.append('skip_regex', String(skip.regex)); values.append('skip_case_sensitive', String(skip.case_sensitive))
   values.append('skip_min_replacements', String(skip.min_replacements)); values.append('skip_max_replacements', String(skip.max_replacements))
   project.sources.forEach(source => { values.append('source_kind', source.kind); values.append('source_value', source.value) })

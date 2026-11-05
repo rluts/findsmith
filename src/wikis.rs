@@ -1,18 +1,18 @@
+use crate::{
+    entities::{user_preference, wiki},
+    localization,
+};
 use chrono::Utc;
+use mwapi::Client;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter, QueryOrder,
     Set, SqlErr,
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     sync::{Mutex, OnceLock},
     time::{Duration, Instant},
-};
-
-use crate::{
-    entities::{user_preference, wiki},
-    localization,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -95,6 +95,46 @@ pub struct WikiView {
     pub domain: String,
     pub name: String,
     pub check_page: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WbEntitiesResponse {
+    entities: HashMap<String, WbEntity>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WbEntity {
+    #[serde(default)]
+    sitelinks: HashMap<String, WbSitelink>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WbSitelink {
+    title: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RedirectsResponse {
+    #[serde(default)]
+    query: Option<RedirectsQuery>,
+    #[serde(default, rename = "continue")]
+    continuation: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RedirectsQuery {
+    pages: Vec<RedirectsPage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RedirectsPage {
+    #[serde(default)]
+    redirects: Vec<RedirectEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RedirectEntry {
+    title: String,
 }
 
 impl From<wiki::Model> for WikiView {
@@ -215,6 +255,12 @@ async fn public_client(api_url: &str, user_agent: &str) -> Result<mwapi::Client,
         .await
 }
 
+async fn wikidata_client(user_agent: &str) -> Result<mwapi::Client, mwapi::Error> {
+    crate::mediawiki::client_builder("https://www.wikidata.org/w/api.php", user_agent)
+        .build()
+        .await
+}
+
 async fn check_page(api_url: &str, user_agent: &str) -> Result<(String, CheckList), String> {
     let client = public_client(api_url, user_agent)
         .await
@@ -270,6 +316,198 @@ fn validate_check_page(page: CheckPage) -> Result<(String, CheckList), String> {
     Ok((page.title, list))
 }
 
+/// Wikidata items of `Template:In use` and `Template:Under construction`.
+const IN_USE_TEMPLATE_ITEMS: [&str; 2] = ["Q5617064", "Q10560270"];
+
+async fn fetch_in_use_template(wiki_id: &str, user_agent: &str) -> Result<Vec<String>, String> {
+    let ids = IN_USE_TEMPLATE_ITEMS.join("|");
+    let wd_client = wikidata_client(user_agent)
+        .await
+        .map_err(|e| e.to_string())?;
+    let response: WbEntitiesResponse = wd_client
+        .get([
+            ("action", "wbgetentities"),
+            ("ids", ids.as_str()),
+            ("props", "sitelinks"),
+            ("sitefilter", wiki_id),
+            ("formatversion", "2"),
+        ])
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(IN_USE_TEMPLATE_ITEMS
+        .iter()
+        .filter_map(|item| response.entities.get(*item)?.sitelinks.get(wiki_id))
+        .map(|link| link.title.clone())
+        .collect())
+}
+
+const MAX_REDIRECT_REQUESTS: usize = 10;
+
+async fn load_templates_with_redirects(
+    client: &Client,
+    wiki_id: &str,
+    user_agent: &str,
+) -> Result<BTreeSet<String>, String> {
+    let templates = fetch_in_use_template(wiki_id, user_agent).await?;
+    if templates.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let mut params: Vec<(String, String)> = [
+        ("action".to_string(), "query".to_string()),
+        ("prop".to_string(), "redirects".to_string()),
+        ("titles".to_string(), templates.join("|")),
+        ("rdprop".to_string(), "title".to_string()),
+        ("rdnamespace".to_string(), "10".to_string()),
+        ("rdlimit".to_string(), "max".to_string()),
+        ("formatversion".to_string(), "2".to_string()),
+    ]
+    .into_iter()
+    .collect();
+    let mut titles: BTreeSet<String> = templates.into_iter().collect();
+    for _ in 0..MAX_REDIRECT_REQUESTS {
+        let response: RedirectsResponse = client
+            .get(params.clone())
+            .await
+            .map_err(|e| e.to_string())?;
+        titles.extend(
+            response
+                .query
+                .into_iter()
+                .flat_map(|query| query.pages)
+                .flat_map(|page| page.redirects)
+                .map(|redirect| redirect.title),
+        );
+        let Some(next) = response.continuation else {
+            return Ok(titles);
+        };
+        params.retain(|(key, _)| !key.ends_with("continue"));
+        params.extend(next);
+    }
+    Ok(titles)
+}
+
+/// The "in use" and "under construction" templates of a wiki and their redirects, as
+/// last stored. Unregistered wikis have none.
+pub async fn in_use_templates(database: &DatabaseConnection, wiki_url: &str) -> Vec<String> {
+    match by_url(database, wiki_url).await {
+        Ok(Some(wiki)) => stored_in_use_templates(&wiki),
+        Ok(None) => Vec::new(),
+        Err(error) => {
+            eprintln!("FindSmith: could not read in-use templates of {wiki_url}: {error}");
+            Vec::new()
+        }
+    }
+}
+
+fn stored_in_use_templates(wiki: &wiki::Model) -> Vec<String> {
+    serde_json::from_value(wiki.in_use_templates_json.clone()).unwrap_or_default()
+}
+
+async fn load_site_info(client: &Client) -> Result<SiteInfoResponse, mwapi::Error> {
+    client
+        .get([
+            ("action", "query"),
+            ("meta", "siteinfo"),
+            ("siprop", "general|namespaces"),
+            ("formatversion", "2"),
+        ])
+        .await
+}
+
+fn namespace_list(namespaces: HashMap<String, ApiNamespace>) -> Vec<Namespace> {
+    let mut namespaces: Vec<Namespace> = namespaces
+        .into_values()
+        .filter(|entry| entry.id >= 0)
+        .map(|entry| Namespace {
+            id: entry.id,
+            name: if entry.id == 0 {
+                "Main".into()
+            } else {
+                entry.name
+            },
+        })
+        .collect();
+    namespaces.sort_by_key(|entry| entry.id);
+    namespaces
+}
+
+/// How often to look for wikis whose stored details need refreshing. A failed refresh
+/// changes nothing, so it is tried again on the next check.
+const WIKI_REFRESH_CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
+/// How long a wiki's namespaces and templates are used before they are loaded again.
+const WIKI_REFRESH_AFTER: chrono::TimeDelta = chrono::TimeDelta::days(7);
+/// Sooner for a wiki with no templates: registration may have failed to load them, or
+/// the wiki may have been registered before they were stored.
+const EMPTY_TEMPLATES_REFRESH_AFTER: chrono::TimeDelta = chrono::TimeDelta::days(1);
+
+fn refresh_due(
+    updated_at: chrono::DateTime<Utc>,
+    has_templates: bool,
+    now: chrono::DateTime<Utc>,
+) -> bool {
+    let age = now - updated_at;
+    age >= WIKI_REFRESH_AFTER || (!has_templates && age >= EMPTY_TEMPLATES_REFRESH_AFTER)
+}
+
+async fn refresh(
+    database: &DatabaseConnection,
+    user_agent: &str,
+    wiki: wiki::Model,
+) -> Result<(), String> {
+    let client = public_client(&wiki.api_url, user_agent)
+        .await
+        .map_err(|e| e.to_string())?;
+    let site_info = load_site_info(&client).await.map_err(|e| e.to_string())?;
+    if site_info.query.general.wikiid != wiki.id || site_info.query.namespaces.is_empty() {
+        return Err("the wiki did not return its wiki ID or namespace list".to_owned());
+    }
+    let templates = load_templates_with_redirects(&client, &wiki.id, user_agent).await?;
+    let namespaces = namespace_list(site_info.query.namespaces);
+    let mut active: wiki::ActiveModel = wiki.into();
+    active.namespaces_json = Set(serde_json::to_value(namespaces).map_err(|e| e.to_string())?);
+    // An empty result more likely means a broken lookup than that the templates are gone.
+    if !templates.is_empty() {
+        active.in_use_templates_json =
+            Set(serde_json::to_value(templates).map_err(|e| e.to_string())?);
+    }
+    active.updated_at = Set(Utc::now());
+    active.update(database).await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+async fn refresh_due_wikis(database: &DatabaseConnection, user_agent: &str) {
+    let wikis = match list(database).await {
+        Ok(wikis) => wikis,
+        Err(error) => {
+            eprintln!("FindSmith: could not list wikis to refresh: {error}");
+            return;
+        }
+    };
+    for wiki in wikis {
+        let has_templates = !stored_in_use_templates(&wiki).is_empty();
+        if !refresh_due(wiki.updated_at, has_templates, Utc::now()) {
+            continue;
+        }
+        let id = wiki.id.clone();
+        match refresh(database, user_agent, wiki).await {
+            Ok(()) => println!("FindSmith: refreshed wiki {id}"),
+            Err(error) => eprintln!("FindSmith: could not refresh wiki {id}: {error}"),
+        }
+    }
+}
+
+/// Keeps stored namespaces and templates current, starting with a check at startup.
+pub fn spawn_refresh(database: DatabaseConnection, user_agent: String) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(WIKI_REFRESH_CHECK_INTERVAL);
+        loop {
+            interval.tick().await;
+            refresh_due_wikis(&database, &user_agent).await;
+        }
+    });
+}
+
 pub async fn register(
     database: &DatabaseConnection,
     user_agent: &str,
@@ -285,25 +523,11 @@ pub async fn register(
         return Err("findsmith-api-this-wiki-is-already-in-the-list".into());
     }
     let client = public_client(&api_url, user_agent).await.map_err(|e| {
-        crate::localization::required_with_args(
-            "findsmith-api-wiki-connect-error",
-            &[&e.to_string()],
-        )
+        localization::required_with_args("findsmith-api-wiki-connect-error", &[&e.to_string()])
     })?;
-    let response: SiteInfoResponse = client
-        .get([
-            ("action", "query"),
-            ("meta", "siteinfo"),
-            ("siprop", "general|namespaces"),
-            ("formatversion", "2"),
-        ])
-        .await
-        .map_err(|e| {
-            crate::localization::required_with_args(
-                "findsmith-api-wiki-info-error",
-                &[&e.to_string()],
-            )
-        })?;
+    let response = load_site_info(&client).await.map_err(|e| {
+        localization::required_with_args("findsmith-api-wiki-info-error", &[&e.to_string()])
+    })?;
     let wiki_id = response.query.general.wikiid;
     if wiki_id.is_empty() || wiki_id.len() > 100 || response.query.namespaces.is_empty() {
         return Err("This wiki did not return a valid wiki ID or namespace list.".into());
@@ -316,21 +540,14 @@ pub async fn register(
         return Err("findsmith-api-this-wiki-is-already-in-the-list".into());
     }
     let (check_page, _) = check_page(&api_url, user_agent).await?;
-    let mut namespaces: Vec<Namespace> = response
-        .query
-        .namespaces
-        .into_values()
-        .filter(|entry| entry.id >= 0)
-        .map(|entry| Namespace {
-            id: entry.id,
-            name: if entry.id == 0 {
-                "Main".into()
-            } else {
-                entry.name
-            },
-        })
-        .collect();
-    namespaces.sort_by_key(|entry| entry.id);
+    let namespaces = namespace_list(response.query.namespaces);
+    // A failed template lookup must not block registration; the refresh task retries it.
+    let in_use_templates = load_templates_with_redirects(&client, &wiki_id, user_agent)
+        .await
+        .unwrap_or_else(|error| {
+            eprintln!("FindSmith: could not load in-use templates of {api_url}: {error}");
+            BTreeSet::new()
+        });
     let now = Utc::now();
     let active = wiki::ActiveModel {
         id: Set(wiki_id),
@@ -339,6 +556,9 @@ pub async fn register(
         name: Set(response.query.general.sitename),
         check_page: Set(check_page),
         namespaces_json: Set(serde_json::to_value(namespaces).map_err(|e| e.to_string())?),
+        in_use_templates_json: Set(
+            serde_json::to_value(in_use_templates).map_err(|e| e.to_string())?
+        ),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -478,6 +698,18 @@ async fn access_url(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wikis_refresh_weekly_and_sooner_without_templates() {
+        let now = Utc::now();
+        let age = |days| now - chrono::TimeDelta::days(days);
+        assert!(!refresh_due(now, true, now));
+        assert!(!refresh_due(age(6), true, now));
+        assert!(refresh_due(age(7), true, now));
+        assert!(!refresh_due(now, false, now));
+        assert!(refresh_due(age(1), false, now));
+    }
+
     #[test]
     fn domain_rejects_non_wikimedia_hosts_and_paths() {
         assert_eq!(

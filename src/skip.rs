@@ -1,13 +1,17 @@
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 
-use crate::rules::{MAX_OUTPUT_BYTES, MAX_PATTERN_BYTES};
+use crate::{
+    masking,
+    rules::{MAX_OUTPUT_BYTES, MAX_PATTERN_BYTES},
+};
 
 /// Conditions that skip a page automatically, with the reason recorded in the queue.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct SkipOptions {
     pub no_change: bool,
+    pub in_use_tpl: bool,
     pub redirects: bool,
     pub protected: bool,
     pub outside_namespaces: bool,
@@ -23,6 +27,7 @@ impl Default for SkipOptions {
     fn default() -> Self {
         Self {
             no_change: true,
+            in_use_tpl: true,
             redirects: false,
             protected: false,
             outside_namespaces: true,
@@ -39,6 +44,7 @@ impl Default for SkipOptions {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SkipReason {
     Missing,
+    InUse,
     Redirect,
     Protected,
     Namespace,
@@ -54,6 +60,7 @@ impl SkipReason {
     pub fn message_key(self) -> &'static str {
         match self {
             Self::Missing => "findsmith-api-skip-missing",
+            Self::InUse => "findsmith-api-skip-in-use",
             Self::Redirect => "findsmith-api-skip-redirect",
             Self::Protected => "findsmith-api-skip-protected",
             Self::Namespace => "findsmith-api-skip-namespace",
@@ -80,12 +87,23 @@ pub struct SkipMatcher {
     namespaces: Vec<i64>,
     contains: Option<Regex>,
     not_contains: Option<Regex>,
+    in_use: Option<Regex>,
 }
 
 impl SkipMatcher {
     /// `namespaces` is the project filter; an empty list allows every namespace.
-    pub fn compile(options: &SkipOptions, namespaces: &[i64]) -> Result<Self, String> {
+    /// `in_use_templates` holds full titles, such as `Template:In use`.
+    pub fn compile(
+        options: &SkipOptions,
+        namespaces: &[i64],
+        in_use_templates: &[String],
+    ) -> Result<Self, String> {
         Ok(Self {
+            in_use: if options.in_use_tpl {
+                template_pattern(in_use_templates)?
+            } else {
+                None
+            },
             contains: content_pattern(&options.contains, options)?,
             not_contains: content_pattern(&options.not_contains, options)?,
             options: options.clone(),
@@ -105,6 +123,13 @@ impl SkipMatcher {
         }
         if self.options.protected && !page.editable {
             return Some(SkipReason::Protected);
+        }
+        if self
+            .in_use
+            .as_ref()
+            .is_some_and(|pattern| transcludes(pattern, page.content))
+        {
+            return Some(SkipReason::InUse);
         }
         if self
             .contains
@@ -148,7 +173,7 @@ pub fn validate(options: &SkipOptions) -> Result<(), String> {
     if options.max_replacements > 0 && options.min_replacements > options.max_replacements {
         return Err("findsmith-api-skip-replacement-bounds".to_owned());
     }
-    SkipMatcher::compile(options, &[]).map(|_| ())
+    SkipMatcher::compile(options, &[], &[]).map(|_| ())
 }
 
 fn content_pattern(value: &str, options: &SkipOptions) -> Result<Option<Regex>, String> {
@@ -163,17 +188,74 @@ fn content_pattern(value: &str, options: &SkipOptions) -> Result<Option<Regex>, 
     } else {
         regex::escape(value)
     };
-    RegexBuilder::new(&pattern)
-        .case_insensitive(!options.case_sensitive)
+    build_pattern(&pattern, !options.case_sensitive).map(Some)
+}
+
+fn build_pattern(pattern: &str, case_insensitive: bool) -> Result<Regex, String> {
+    RegexBuilder::new(pattern)
+        .case_insensitive(case_insensitive)
         .size_limit(MAX_OUTPUT_BYTES)
         .build()
-        .map(Some)
         .map_err(|error| {
             crate::localization::required_with_args(
                 "findsmith-api-skip-pattern-invalid",
                 &[&error.to_string()],
             )
         })
+}
+
+/// Matches a call to any of the given templates the way MediaWiki resolves the name:
+/// the namespace is optional and caseless, the first letter is caseless, and spaces
+/// and underscores are interchangeable.
+fn template_pattern(titles: &[String]) -> Result<Option<Regex>, String> {
+    let mut namespaces = vec!["Template".to_owned()];
+    let mut names = Vec::new();
+    for title in titles {
+        let Some((namespace, name)) = title.split_once(':') else {
+            continue;
+        };
+        let mut letters = name.trim().chars();
+        let Some(first) = letters.next() else {
+            continue;
+        };
+        namespaces.push(namespace.trim().to_owned());
+        names.push(format!(
+            "(?i:{}){}",
+            regex::escape(&first.to_string()),
+            title_words(letters.as_str())
+        ));
+    }
+    if names.is_empty() {
+        return Ok(None);
+    }
+    namespaces.sort();
+    namespaces.dedup();
+    let namespaces: Vec<String> = namespaces.iter().map(|name| title_words(name)).collect();
+    let pattern = format!(
+        r"\{{\{{\s*(?::?\s*(?i:{})\s*:)?[\s_]*(?:{})[\s_]*(?:\||\}}\}})",
+        namespaces.join("|"),
+        names.join("|")
+    );
+    build_pattern(&pattern, false).map(Some)
+}
+
+fn title_words(value: &str) -> String {
+    value
+        .split(' ')
+        .map(regex::escape)
+        .collect::<Vec<_>>()
+        .join(r"[\s_]+")
+}
+
+/// Whether a match lies in parsed wikitext, not in a comment or `<nowiki>`.
+fn transcludes(pattern: &Regex, content: &str) -> bool {
+    if !pattern.is_match(content) {
+        return false;
+    }
+    let unparsed = masking::unparsed_ranges(content);
+    pattern
+        .find_iter(content)
+        .any(|found| !masking::overlaps(&unparsed, found.start(), found.end()))
 }
 
 #[cfg(test)]
@@ -191,7 +273,7 @@ mod tests {
 
     #[test]
     fn defaults_skip_unchanged_pages_and_pages_outside_the_filter() {
-        let matcher = SkipMatcher::compile(&SkipOptions::default(), &[0]).unwrap();
+        let matcher = SkipMatcher::compile(&SkipOptions::default(), &[0], &[]).unwrap();
         assert_eq!(matcher.before_rules(&page("text")), None);
         let talk = PageFacts {
             namespace: 1,
@@ -218,7 +300,7 @@ mod tests {
             case_sensitive: false,
             ..SkipOptions::default()
         };
-        let matcher = SkipMatcher::compile(&options, &[]).unwrap();
+        let matcher = SkipMatcher::compile(&options, &[], &[]).unwrap();
         assert_eq!(
             matcher.before_rules(&page("{{in use}} body")),
             Some(SkipReason::Contains)
@@ -228,7 +310,7 @@ mod tests {
             regex: true,
             ..SkipOptions::default()
         };
-        let matcher = SkipMatcher::compile(&options, &[]).unwrap();
+        let matcher = SkipMatcher::compile(&options, &[], &[]).unwrap();
         assert_eq!(
             matcher.before_rules(&page("no categories")),
             Some(SkipReason::NotContains)
@@ -245,7 +327,7 @@ mod tests {
             max_replacements: 3,
             ..SkipOptions::default()
         };
-        let matcher = SkipMatcher::compile(&options, &[]).unwrap();
+        let matcher = SkipMatcher::compile(&options, &[], &[]).unwrap();
         let redirect = PageFacts {
             redirect: true,
             ..page("#REDIRECT [[A]]")
@@ -268,6 +350,68 @@ mod tests {
             matcher.after_rules("a", "b", 4),
             Some(SkipReason::TooManyReplacements)
         );
+    }
+
+    fn in_use_matcher(enabled: bool) -> SkipMatcher {
+        let options = SkipOptions {
+            in_use_tpl: enabled,
+            ..SkipOptions::default()
+        };
+        let templates = [
+            "Шаблон:Редагую".to_owned(),
+            "Шаблон:У розробці".to_owned(),
+            "Шаблон:Inuse".to_owned(),
+        ];
+        SkipMatcher::compile(&options, &[], &templates).unwrap()
+    }
+
+    #[test]
+    fn in_use_templates_match_as_mediawiki_resolves_them() {
+        let matcher = in_use_matcher(true);
+        for content in [
+            "{{Редагую}} text",
+            "{{редагую|2026-11-04}} text",
+            "{{ Редагую\n| user = A }}",
+            "{{У розробці}}",
+            "{{у_розробці}}",
+            "{{У  розробці}}",
+            "{{шаблон:редагую}}",
+            "{{Template:Inuse}}",
+            "{{:Шаблон:Inuse}}",
+        ] {
+            assert_eq!(
+                matcher.before_rules(&page(content)),
+                Some(SkipReason::InUse),
+                "{content}"
+            );
+        }
+    }
+
+    #[test]
+    fn in_use_templates_ignore_other_text() {
+        let matcher = in_use_matcher(true);
+        for content in [
+            "Редагую text",
+            "{{Редагую сторінку}}",
+            "{{РЕДАГУЮ}}",
+            "{{Користувач:Редагую}}",
+            "<!-- {{Редагую}} --> text",
+            "<nowiki>{{Редагую}}</nowiki> text",
+        ] {
+            assert_eq!(matcher.before_rules(&page(content)), None, "{content}");
+        }
+        assert_eq!(
+            matcher.before_rules(&page("<!-- {{Inuse}} --> {{Inuse}}")),
+            Some(SkipReason::InUse)
+        );
+    }
+
+    #[test]
+    fn in_use_check_is_optional_and_needs_known_templates() {
+        let disabled = in_use_matcher(false);
+        assert_eq!(disabled.before_rules(&page("{{Редагую}}")), None);
+        let unknown = SkipMatcher::compile(&SkipOptions::default(), &[], &[]).unwrap();
+        assert_eq!(unknown.before_rules(&page("{{Редагую}}")), None);
     }
 
     #[test]

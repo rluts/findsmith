@@ -6,6 +6,7 @@ mod m20261005_000003_create_saved_rules;
 mod m20261005_000004_create_wikis;
 mod m20261006_000005_create_user_preferences;
 mod m20261024_000006_add_last_wiki_to_user_preferences;
+mod m20261102_075649_in_use_template;
 
 pub struct Migrator;
 
@@ -19,6 +20,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261005_000004_create_wikis::Migration),
             Box::new(m20261006_000005_create_user_preferences::Migration),
             Box::new(m20261024_000006_add_last_wiki_to_user_preferences::Migration),
+            Box::new(m20261102_075649_in_use_template::Migration),
         ]
     }
 }
