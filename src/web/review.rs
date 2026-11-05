@@ -19,6 +19,7 @@ use crate::{
     rules::TransformationResult,
     skip::{PageFacts, SkipMatcher, SkipOptions, SkipReason},
     structural::apply_with_wiki,
+    wikis,
 };
 
 use super::AppState;
@@ -303,11 +304,18 @@ pub(super) async fn evaluate_page(
     })
 }
 
-pub(super) fn skip_matcher(
+pub(super) async fn skip_matcher(
+    database: &DatabaseConnection,
+    wiki_url: &str,
     config: &JobConfigV1,
     options: &SkipOptions,
 ) -> Result<SkipMatcher, String> {
-    SkipMatcher::compile(options, &config.namespaces)
+    let in_use_templates = if options.in_use_tpl {
+        wikis::in_use_templates(database, wiki_url).await
+    } else {
+        Vec::new()
+    };
+    SkipMatcher::compile(options, &config.namespaces, &in_use_templates)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -321,7 +329,7 @@ async fn review_page_view(
     config: &JobConfigV1,
     proposed_text: Option<String>,
 ) -> Result<ReviewPageView, String> {
-    let matcher = skip_matcher(config, &config.skip)?;
+    let matcher = skip_matcher(database, wiki_url, config, &config.skip).await?;
     let PageEvaluation {
         snapshot,
         result,

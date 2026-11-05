@@ -257,22 +257,23 @@ async fn job_action_response(
                     no_change: true,
                     ..config.skip.clone()
                 };
-                let evaluation = match skip_matcher(&config, &options) {
-                    Ok(matcher) => {
-                        evaluate_page(
-                            database,
-                            &job.wiki_url,
-                            user_agent,
-                            access_token,
-                            username,
-                            &config,
-                            &matcher,
-                            &title,
-                        )
-                        .await
-                    }
-                    Err(message) => Err(EvaluationError::Transform(message)),
-                };
+                let evaluation =
+                    match skip_matcher(database, &job.wiki_url, &config, &options).await {
+                        Ok(matcher) => {
+                            evaluate_page(
+                                database,
+                                &job.wiki_url,
+                                user_agent,
+                                access_token,
+                                username,
+                                &config,
+                                &matcher,
+                                &title,
+                            )
+                            .await
+                        }
+                        Err(message) => Err(EvaluationError::Transform(message)),
+                    };
                 let cursor = state.preparse_cursor;
                 match evaluation {
                     Ok(evaluation) => {
@@ -352,22 +353,23 @@ async fn job_action_response(
         "next" => {
             if let Some(entry) = state.current().filter(|entry| entry.status.is_pending()) {
                 let title = entry.title.clone();
-                let evaluation = match skip_matcher(&config, &config.skip) {
-                    Ok(matcher) => {
-                        evaluate_page(
-                            database,
-                            &job.wiki_url,
-                            user_agent,
-                            access_token,
-                            username,
-                            &config,
-                            &matcher,
-                            &title,
-                        )
-                        .await
-                    }
-                    Err(message) => Err(EvaluationError::Transform(message)),
-                };
+                let evaluation =
+                    match skip_matcher(database, &job.wiki_url, &config, &config.skip).await {
+                        Ok(matcher) => {
+                            evaluate_page(
+                                database,
+                                &job.wiki_url,
+                                user_agent,
+                                access_token,
+                                username,
+                                &config,
+                                &matcher,
+                                &title,
+                            )
+                            .await
+                        }
+                        Err(message) => Err(EvaluationError::Transform(message)),
+                    };
                 match evaluation {
                     Ok(evaluation) => {
                         if let Some(entry) = state.queue.get_mut(state.position) {
