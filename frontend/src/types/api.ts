@@ -1,4 +1,4 @@
-export type Session = { username: string | null; groups: string[]; groups_error: string | null; can_logout: boolean; language: string; csrf_token: string }
+export type Session = { username: string | null; groups: string[]; groups_error: string | null; can_logout: boolean; language: string; csrf_token: string; version: string }
 export type Wiki = { id: string; domain: string; name: string; check_page: string }
 export type ProjectSummary = { id: string; name: string; state_version: number; updated_at: string; wiki_id: string }
 export type Workspace = { username: string; projects: ProjectSummary[]; wikis: Wiki[]; default_wiki_id: string | null; csrf_token: string }

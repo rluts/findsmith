@@ -14,7 +14,7 @@ function languageName({ code, locale }: LanguageOption): string {
 }
 
 export function Shell({ children, title, subtitle, authenticated = true }: { children: React.ReactNode; title?: string; subtitle?: string; authenticated?: boolean }) {
-  const { t, language, languages, setLanguage } = useI18n()
+  const { t, language, languages, setLanguage, version } = useI18n()
   const [languageError, setLanguageError] = useState('')
   return <div className="app-shell">
     <header className="titlebar"><img className="app-icon" src={logoUrl} alt="" width="22" height="22" /><strong className="app-name">FindSmith</strong>{title && <span className="window-title">{title}</span>}</header>
@@ -23,7 +23,7 @@ export function Shell({ children, title, subtitle, authenticated = true }: { chi
     </nav>
     {subtitle && <div className="contextbar">{subtitle}</div>}
     {children}
-    <footer className="statusbar"><span>{t('findsmith-footer-development')}</span><label className="language-choice">{t('findsmith-language-label')} <select value={language} onChange={event => { setLanguageError(''); void setLanguage(event.target.value).catch(error => setLanguageError(error instanceof Error ? error.message : String(error))) }}>{languages.map(option => <option key={option.code} value={option.code} lang={option.locale}>{languageName(option)}</option>)}</select></label>{languageError && <span role="alert">{languageError}</span>}<span>{t('findsmith-footer-license')} <a href="https://www.gnu.org/licenses/gpl-3.0.txt" target="_blank" rel="noreferrer">GPL-3.0-or-later</a></span></footer>
+    <footer className="statusbar"><span>{version ? `FindSmith v${version}` : 'FindSmith'}</span><label className="language-choice">{t('findsmith-language-label')} <select value={language} onChange={event => { setLanguageError(''); void setLanguage(event.target.value).catch(error => setLanguageError(error instanceof Error ? error.message : String(error))) }}>{languages.map(option => <option key={option.code} value={option.code} lang={option.locale}>{languageName(option)}</option>)}</select></label>{languageError && <span role="alert">{languageError}</span>}<span>{t('findsmith-footer-license')} <a href="https://www.gnu.org/licenses/gpl-3.0.txt" target="_blank" rel="noreferrer">GPL-3.0-or-later</a></span></footer>
   </div>
 }
 

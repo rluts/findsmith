@@ -102,13 +102,7 @@ code = "\n".join(
     if path.name != "localization.rs"
 )
 
-# These families are assembled from known protocol values at runtime or will be used in the project in near future.
-not_used_yet_keys = {
-    "findsmith-home-alpha-title",
-    "findsmith-home-alpha-message",
-    "findsmith-home-beta-title",
-    "findsmith-home-beta-message",
-}
+# These families are assembled from known protocol values at runtime.
 dynamic_keys = {
     "findsmith-project-mask-" + part
     for part in (
@@ -127,7 +121,12 @@ dynamic_keys = {
         "spam", "conflict", "maxlag", "abuse-filter", "network", "unknown", "not-saved",
         "bot-exclusion"
     )
-} | not_used_yet_keys
+} | {
+    # The home-page notice follows the pre-release stage of the package version.
+    f"findsmith-home-{stage}-{part}"
+    for stage in ("alpha", "beta")
+    for part in ("title", "message")
+}
 unused = sorted(key for key in english_keys if key not in code and key not in dynamic_keys)
 if unused:
     raise SystemExit("Unused catalog keys:\n" + "\n".join(unused))

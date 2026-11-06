@@ -5,7 +5,8 @@ import { Shell } from '../components/Shell'
 import { useI18n } from '../lib/i18n'
 
 export function HomePage() {
-  const { t } = useI18n()
+  const { t, version } = useI18n()
+  const stage = /-(alpha|beta)\b/.exec(version)?.[1]
   const [session, setSession] = useState<Session | null>(null)
   const [error, setError] = useState('')
   useEffect(() => { getJson<Session>('/api/session').then(setSession).catch(error => setError(error.message)) }, [])
@@ -14,7 +15,7 @@ export function HomePage() {
       <section className="welcome panel">
         <h1>{t('findsmith-home-title')}</h1>
         <p className="lead">{t('findsmith-home-lead')}</p>
-        <div className="notice"><strong>{t('findsmith-home-development-title')}</strong><br />{t('findsmith-home-development-message')}</div>
+        {stage && <div className="notice"><strong>{t(`findsmith-home-${stage}-title`)}</strong><br />{t(`findsmith-home-${stage}-message`)}</div>}
       </section>
       <section className="login panel">
         <h2>{t('findsmith-home-account')}</h2>

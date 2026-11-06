@@ -24,6 +24,7 @@ struct SessionResponse<'a> {
     can_logout: bool,
     language: &'a str,
     csrf_token: &'a str,
+    version: &'static str,
 }
 
 #[derive(Default, Deserialize)]
@@ -106,6 +107,7 @@ async fn render_index(
                     can_logout: user.can_logout,
                     language,
                     csrf_token,
+                    version: env!("CARGO_PKG_VERSION"),
                 });
             };
             match crate::mediawiki::user_groups(&wiki_url, user_agent, &user.access_token).await {
@@ -128,5 +130,6 @@ async fn render_index(
         can_logout: user.is_some_and(|user| user.can_logout),
         language,
         csrf_token,
+        version: env!("CARGO_PKG_VERSION"),
     })
 }

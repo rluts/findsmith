@@ -5,7 +5,7 @@ import type { Session } from '../types/api'
 
 type Catalog = { language: string; locale: string; messages: Record<string, string> }
 export type LanguageOption = { code: string; locale: string }
-type I18n = { language: string; locale: string; languages: LanguageOption[]; t: (key: string, ...args: Array<string | number>) => string; setLanguage: (language: string) => Promise<void> }
+type I18n = { language: string; locale: string; languages: LanguageOption[]; t: (key: string, ...args: Array<string | number>) => string; setLanguage: (language: string) => Promise<void>; version: string }
 const Context = createContext<I18n | null>(null)
 const build = document.querySelector<HTMLMetaElement>('meta[name="findsmith-build"]')?.content ?? ''
 const catalogPath = (language: string) => `/api/translations/${encodeURIComponent(language)}?v=${encodeURIComponent(build)}`
@@ -70,7 +70,7 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
   function t(key: string, ...args: Array<string | number>) {
     return formatMessage(activeBanana, key, args)
   }
-  return <Context.Provider value={{ language: catalog.language, locale: catalog.locale, languages, t, setLanguage }}>{children}</Context.Provider>
+  return <Context.Provider value={{ language: catalog.language, locale: catalog.locale, languages, t, setLanguage, version: session?.version ?? '' }}>{children}</Context.Provider>
 }
 
 export function useI18n(): I18n {
