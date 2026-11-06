@@ -245,6 +245,7 @@ mark { background: #8ee086; border-radius: 2px; color: inherit; }
 .clear-queue { width: 100%; margin-top: 5px; }
 .review-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 12px 0; }
 .review-buttons button { padding: 7px 12px; }
+.review-buttons .primary { grid-column: 1 / -1; }
 .control-pane dl, .rules-pane dl { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 0; margin: 0; }
 .control-pane dt, .rules-pane dt { color: var(--text-muted); }
 .control-pane dd, .rules-pane dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
@@ -270,7 +271,13 @@ mark { background: #8ee086; border-radius: 2px; color: inherit; }
 .edit-summary-control input { margin: 0; border-radius: 2px 2px 0 0; }
 .edit-summary-preview { display: block; padding: 5px 6px; border: 1px solid #b9c4bc; border-top: 0; border-radius: 0 0 2px 2px; background: #e9f0ea; overflow-wrap: anywhere; color: #2b3a2f; font-size: 12px; }
 .edit-summary-control small { display: block; margin-top: 4px; color: var(--text-muted); }
-.save-blockers { margin: 8px 0; padding-left: 20px; color: #7b2d19; }
+.review-notices { margin-top: 12px; }
+.review-notices ul { margin: 0; padding-inline-start: 18px; }
+.review-notices label { display: flex; gap: 5px; align-items: flex-start; margin: 8px 0 0; }
+.review-notices input[type="checkbox"] { width: auto; margin: 2px 0 0; }
+.review-position { margin: 0 0 8px; font-size: 13px; color: var(--text-muted); }
+.review-finished { margin: 0 0 12px; }
+.review-finished button { display: block; margin-top: 8px; }
 
 /* Messages */
 .error-box { border: 1px solid var(--error-border); border-inline-start-width: 4px; border-radius: 3px; background: var(--error-bg); color: var(--error-text); margin: 6px; padding: 8px 10px; }

@@ -84,7 +84,6 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
   const [queueStatus, setQueueStatus] = useState('all')
   const [comparison, setComparison] = useState('')
   const [preparseError, setPreparseError] = useState('')
-  const [policyAcknowledged, setPolicyAcknowledged] = useState(false)
   const [minorEdit, setMinorEdit] = useState(false)
   const [botEdit, setBotEdit] = useState<boolean | null>(null)
   const [editSummary, setEditSummary] = useState('')
@@ -112,7 +111,6 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
   const activeJobId = jobId ?? project?.latest_job_id ?? ''
   const reviewPath = activeJobId ? `/api/projects/${projectId}/jobs/${activeJobId}` : ''
 
-  useEffect(() => { setPolicyAcknowledged(false) }, [activeJobId])
   useEffect(() => {
     if (review) setEditSummary(review.suggested_edit_summary)
   }, [review?.job_id, review?.position, review?.current?.title])
@@ -201,12 +199,34 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
       if (event.altKey || event.ctrlKey || event.metaKey || target?.isContentEditable || target?.closest('input, textarea, select, button, a, summary, [role="button"]')) return
-      const action = ({n: 'next', p: 'previous', s: 'skip'} as Record<string, string>)[event.key.toLowerCase()]
+      const action = ({p: 'previous', s: 'skip'} as Record<string, string>)[event.key.toLowerCase()]
       if (action) { event.preventDefault(); void reviewAction(action) }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [review?.status, review?.preparse_active, review?.state_version, busy, textDirty, reviewPath])
+
+  // Keeps the diff current while editing; a failure leaves the Recompute button to retry.
+  useEffect(() => {
+    if (!textDirty || !review?.page || busy) return
+    const timer = window.setTimeout(() => { void recompute(true) }, 1000)
+    return () => window.clearTimeout(timer)
+  }, [text, textDirty, busy])
+
+  // Runs the current render's save, so it never publishes an outdated summary or text.
+  const saveShortcut = useRef<() => void>(() => {})
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Enter' || !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.repeat) return
+      const target = event.target as HTMLElement | null
+      // Fields elsewhere, such as rule inputs, must not publish an edit.
+      if ((target?.isContentEditable || target?.closest('input, textarea, select')) && !target?.closest('.edit-controls')) return
+      event.preventDefault()
+      saveShortcut.current()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   useEffect(() => {
     if (!project || editRevision.current === savedRevision.current) return
@@ -369,14 +389,14 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
     finally { setBusy('') }
   }
   async function savePage() {
-    if (!review || !reviewPath || !review.page || !['active', 'complete'].includes(review.status) || !['pending', 'reviewed'].includes(review.current?.status ?? '') || textDirty || !review.page.changed || !(policyAcknowledged || review.policy_acknowledged)) return
+    if (!review || !reviewPath || !review.page || !['active', 'complete'].includes(review.status) || !['pending', 'reviewed', 'skipped'].includes(review.current?.status ?? '') || textDirty || !review.page.changed || !review.policy_acknowledged) return
     setAutoSkipJobId(review.job_id)
     setBusy(t('findsmith-project-busy-saving-edit')); setError('')
     try {
       await postForm<ActionResult>(`${reviewPath}/action`, new URLSearchParams({
         csrf_token: review.csrf_token, state_version: String(review.state_version), action: 'save',
         proposed_text: text, base_revid: String(review.page.revision_id), start_timestamp: review.page.server_timestamp,
-        policy_acknowledged: String(policyAcknowledged || review.policy_acknowledged),
+        policy_acknowledged: String(review.policy_acknowledged),
         minor: String(minorEdit && review.page.can_minor), bot: String((botEdit ?? review.page.can_bot) && review.page.can_bot),
         edit_summary: editSummary,
       }))
@@ -384,9 +404,10 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
     } catch (error) { setError(error instanceof Error ? error.message : t('findsmith-request-failed')) }
     finally { setBusy('') }
   }
-  async function recompute() {
+  async function recompute(quiet = false) {
     if (!review || !reviewPath) return
-    setBusy(t('findsmith-project-busy-recomputing')); setError('')
+    if (!quiet) setBusy(t('findsmith-project-busy-recomputing'))
+    setError('')
     const sent = text
     const request = ++recomputeRequest.current
     try {
@@ -401,6 +422,15 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
       }
     }
     catch (error) { setError(error instanceof Error ? error.message : t('findsmith-request-failed')) }
+    finally { if (!quiet) setBusy('') }
+  }
+  async function acknowledgePolicy() {
+    if (!review || !reviewPath) return
+    setBusy(t('findsmith-project-busy-saving')); setError('')
+    try {
+      await postForm<ActionResult>(`${reviewPath}/action`, new URLSearchParams({ csrf_token: review.csrf_token, state_version: String(review.state_version), action: 'acknowledge_policy' }))
+      await loadReview()
+    } catch (error) { setError(error instanceof Error ? error.message : t('findsmith-request-failed')) }
     finally { setBusy('') }
   }
   /** Resolves to true once the server applied the queue action. */
@@ -444,19 +474,26 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
   const queueOnly = review?.queue.filter(entry => !comparisonSet.has(entry.title.toLocaleLowerCase())) ?? []
   const fullEditSummary = review ? t('findsmith-edit-summary-with-attribution', editSummary.trim(), review.edit_summary_attribution_link) : ''
   const summaryLength = Array.from(fullEditSummary).length
-  const showSaveControls = review?.page && !review.preparse_active && ['active', 'complete'].includes(review.status) && ['pending', 'reviewed'].includes(review.current?.status ?? '')
+  const showSaveControls = review?.page && !review.preparse_active && ['active', 'complete'].includes(review.status) && ['pending', 'reviewed', 'skipped'].includes(review.current?.status ?? '')
   const saveBlockers = review?.page ? [
-    !['pending', 'reviewed'].includes(review.current?.status ?? '') && t('findsmith-project-save-blocker-not-reviewable'),
+    !['pending', 'reviewed', 'skipped'].includes(review.current?.status ?? '') && t('findsmith-project-save-blocker-not-reviewable'),
     !review.page.changed && t('findsmith-project-save-blocker-no-changes'),
     !editSummary.trim() && t('findsmith-project-save-blocker-summary-required'),
     summaryLength > 500 && t('findsmith-project-save-blocker-summary-length'),
     !!review.edit_summary_attribution_link && editSummary.includes(review.edit_summary_attribution_link) && t('findsmith-project-save-blocker-attribution'),
     textDirty && t('findsmith-project-save-blocker-recompute'),
-    !(policyAcknowledged || review.policy_acknowledged) && t('findsmith-project-save-blocker-policies'),
+    !review.policy_acknowledged && t('findsmith-project-save-blocker-policies'),
     !review.page.editable && t('findsmith-project-save-blocker-page-rights'),
+    review.page.bot_exclusion_message,
     !review.page.can_edit && (review.page.edit_access_message || t('findsmith-project-save-blocker-rights-unverified')),
     project.awb_access?.allowed !== true && (project.awb_access?.allowed === false ? t('findsmith-project-save-blocker-awb-list') : t('findsmith-project-save-blocker-awb-check')),
   ].filter((reason): reason is string => typeof reason === 'string') : []
+  const autoSkipping = review?.current?.status === 'pending' && active && review.job_id === autoSkipJobId
+  const skipNotice = showSaveControls && review?.page?.skip_reason ? (autoSkipping ? t('findsmith-project-skip-auto-notice', review.page.skip_reason) : review.page.skip_reason) : null
+  const reviewNotices = [...new Set([review?.current?.reason, skipNotice, ...(showSaveControls ? saveBlockers : [])].filter((message): message is string => !!message))]
+  const needsPolicy = showSaveControls && !review?.policy_acknowledged
+  saveShortcut.current = () => { if (showSaveControls && !busy && saveBlockers.length === 0) void savePage() }
+  const saveButton = <button className="primary" disabled={!!busy || !review?.page || saveBlockers.length > 0} onClick={savePage}>{t('findsmith-project-save-and-next')}</button>
   const commandStack = <>
     {review && (configurationDirty || project.latest_job_outdated) && <p className="unsaved-note">{t('findsmith-project-configuration-changed-apply-rules-to-refresh-the-current-review')}</p>}
     {autosave.state !== 'idle' && <p className="autosave-status" role="status" aria-live="polite">{autosave.state === 'saving' ? t('findsmith-project-busy-saving') : autosave.state === 'saved' ? t('findsmith-project-autosave-saved') : t('findsmith-project-autosave-failed', autosave.message ?? '')}</p>}
@@ -501,8 +538,8 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
         {tab === 'rules' && <>
         <label>{t('findsmith-workspace-name')}<input value={project.project_name} maxLength={255} onChange={event => update({project_name: event.target.value})} /></label>
         <fieldset><legend>{t('findsmith-home-account')}</legend><p>{t('findsmith-project-groups', session ? (session.groups.length ? session.groups.join(', ') : t('findsmith-project-none-reported')) : (groupsError ? t('findsmith-project-unavailable-lower') : t('findsmith-project-loading-lower')))}</p>{session?.groups_error && <p className="error">{session.groups_error}</p>}{groupsError && <p className="error">{groupsError}</p>}</fieldset>
-          {review && <>{active && (review.preparse_active ? <div className="generation"><progress value={review.preparse_cursor} max={review.total || 1} /><p>{t('findsmith-project-preparse-progress', review.preparse_cursor, review.total)}</p>{preparseError && <ErrorBox message={preparseError} />}<button className="danger" disabled={!!busy} onClick={() => reviewAction('preparse_stop')}>{t('findsmith-project-stop-pre-parse')}</button></div> : <><div className="review-buttons"><button disabled={!!busy} onClick={() => reviewAction('previous')}>{t('findsmith-project-previous')}</button><button disabled={!!busy} onClick={() => reviewAction('skip')}>{t('findsmith-project-skip')}</button><button className="danger" disabled={!!busy} onClick={() => reviewAction('stop')}>{t('findsmith-project-stop-review')}</button><button className="primary" disabled={!!busy} onClick={() => reviewAction('next')}>{t('findsmith-project-next')}</button></div><p className="keyboard-hint">{t('findsmith-project-shortcuts-when-no-field-is-focused-n-next-p-previous-s-skip')}</p><button disabled={!!busy} onClick={() => reviewAction('preparse_start')}>{t('findsmith-project-pre-parse-queue')}</button></>)}{review.status === 'stopped' && !review.edit_in_flight && !review.edit_policy_blocked && <button className="primary resume-review" disabled={!!busy} onClick={() => reviewAction('resume')}>{t('findsmith-project-resume-review')}</button>}{review.current?.reason && <p className="notice">{review.current.reason}</p>}{review.page?.skip_reason && review.current?.status === 'pending' && active && review.job_id === autoSkipJobId && <p className="notice" role="status">{t('findsmith-project-skip-auto-notice', review.page.skip_reason)}</p>}{review.edit_in_flight && <div className="notice" role="status"><p>{t('findsmith-project-edit-in-flight-notice')}</p><button disabled={!!busy} onClick={() => reviewAction('verify_edit')}>{t('findsmith-project-verify-edit')}</button></div>}</>}
-          {showSaveControls && review && review.page && <fieldset className="edit-controls"><legend>{t('findsmith-project-save-to-wikimedia')}</legend><div className="edit-summary-control"><label htmlFor="edit-summary">{t('findsmith-project-edit-summary')}</label><input id="edit-summary" value={editSummary} onChange={event => setEditSummary(event.target.value)} /><span className="edit-summary-preview">{fullEditSummary}</span><small>{t('findsmith-project-summary-length', summaryLength)}</small></div><label><input type="checkbox" checked={policyAcknowledged || review.policy_acknowledged} disabled={review.policy_acknowledged} onChange={event => setPolicyAcknowledged(event.target.checked)} /> {t('findsmith-project-i-will-follow-this-wiki-s-editing-policies')}</label><label><input type="checkbox" checked={minorEdit && review.page.can_minor} disabled={!review.page.can_minor} onChange={event => setMinorEdit(event.target.checked)} /> {t('findsmith-project-minor-edit')}</label><label><input type="checkbox" checked={(botEdit ?? review.page.can_bot) && review.page.can_bot} disabled={!review.page.can_bot} onChange={event => setBotEdit(event.target.checked)} /> {t('findsmith-project-bot-edit')}</label><button className="primary" disabled={!!busy || saveBlockers.length > 0} onClick={savePage}>{t('findsmith-project-save')}</button>{saveBlockers.length > 0 && <ul className="save-blockers" aria-live="polite">{saveBlockers.map(reason => <li key={reason}>{reason}</li>)}</ul>}{active && <p>{t('findsmith-project-next-records-the-review-without-editing-wikimedia')}</p>}</fieldset>}
+          {review && <>{active && (review.preparse_active ? <div className="generation"><progress value={review.preparse_cursor} max={review.total || 1} /><p>{t('findsmith-project-preparse-progress', review.preparse_cursor, review.total)}</p>{preparseError && <ErrorBox message={preparseError} />}<button className="danger" disabled={!!busy} onClick={() => reviewAction('preparse_stop')}>{t('findsmith-project-stop-pre-parse')}</button></div> : <><div className="review-buttons"><button disabled={!!busy} onClick={() => reviewAction('previous')}>{t('findsmith-project-previous')}</button><button disabled={!!busy} onClick={() => reviewAction('skip')}>{t('findsmith-project-skip')}</button>{saveButton}</div><p className="keyboard-hint">{t('findsmith-project-review-shortcuts')}</p><button disabled={!!busy} onClick={() => reviewAction('preparse_start')}>{t('findsmith-project-pre-parse-queue')}</button></>)}{review.status === 'stopped' && !review.edit_in_flight && !review.edit_policy_blocked && <button className="primary resume-review" disabled={!!busy} onClick={() => reviewAction('resume')}>{t('findsmith-project-resume-review')}</button>}{(reviewNotices.length > 0 || needsPolicy) && <div className="notice review-notices" role="status" aria-live="polite">{reviewNotices.length > 0 && <ul>{reviewNotices.map(message => <li key={message}>{message}</li>)}</ul>}{needsPolicy && <label><input type="checkbox" checked={false} disabled={!!busy} onChange={acknowledgePolicy} /> {t('findsmith-project-i-will-follow-this-wiki-s-editing-policies')}</label>}</div>}{review.edit_in_flight && <div className="notice" role="status"><p>{t('findsmith-project-edit-in-flight-notice')}</p><button disabled={!!busy} onClick={() => reviewAction('verify_edit')}>{t('findsmith-project-verify-edit')}</button></div>}</>}
+          {showSaveControls && review && review.page && <fieldset className="edit-controls"><legend>{t('findsmith-project-save-to-wikimedia')}</legend><div className="edit-summary-control"><label htmlFor="edit-summary">{t('findsmith-project-edit-summary')}</label><input id="edit-summary" value={editSummary} onChange={event => setEditSummary(event.target.value)} /><span className="edit-summary-preview">{fullEditSummary}</span><small>{t('findsmith-project-summary-length', summaryLength)}</small></div><label><input type="checkbox" checked={minorEdit && review.page.can_minor} disabled={!review.page.can_minor} onChange={event => setMinorEdit(event.target.checked)} /> {t('findsmith-project-minor-edit')}</label><label><input type="checkbox" checked={(botEdit ?? review.page.can_bot) && review.page.can_bot} disabled={!review.page.can_bot} onChange={event => setBotEdit(event.target.checked)} /> {t('findsmith-project-bot-edit')}</label>{!active && saveButton}</fieldset>}
         <div className="rule-list">{project.rules.map((rule, index) => <article className={`rule-card ${rule.operation?.startsWith('category_') || rule.operation?.startsWith('template_') ? 'structural-rule' : ''}`} key={index}>
           <div className="rule-head"><label><input type="checkbox" checked={rule.enabled} onChange={event => { const rules = [...project.rules]; rules[index] = {...rule, enabled: event.target.checked}; update({rules}) }} /> {rule.name || t('findsmith-project-rule-number', index + 1)} <small>· {t(rule.operation?.startsWith('category_') ? 'findsmith-project-rule-kind-category' : rule.operation?.startsWith('template_') ? 'findsmith-project-rule-kind-template' : 'findsmith-project-rule-kind-text')}</small></label><span className="row-actions"><button aria-label={t('findsmith-project-move-item-up', rule.name || t('findsmith-project-rule-number', index + 1))} disabled={index === 0} onClick={() => update({rules: move(project.rules, index, -1)})}>↑</button><button aria-label={t('findsmith-project-move-item-down', rule.name || t('findsmith-project-rule-number', index + 1))} disabled={index === project.rules.length - 1} onClick={() => update({rules: move(project.rules, index, 1)})}>↓</button><button aria-label={t('findsmith-project-remove-item', rule.name || t('findsmith-project-rule-number', index + 1))} onClick={() => update({rules: project.rules.filter((_, item) => item !== index)})}>×</button></span></div>
           <label>{t('findsmith-project-name')}<input value={rule.name} maxLength={255} placeholder={t('findsmith-project-rule-name-placeholder')} onChange={event => { const rules = [...project.rules]; rules[index] = {...rule, name: event.target.value}; update({rules}) }} /></label>
@@ -551,10 +588,12 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
         <div className="tabs"><span className="active">{review ? t('findsmith-project-review') : t('findsmith-project-preview')}</span>{review && <><span className="inactive" aria-disabled="true">{t('findsmith-project-history')}</span><span className="inactive" aria-disabled="true">{t('findsmith-project-what-links-here')}</span><span className="inactive" aria-disabled="true">{t('findsmith-project-logs')}</span><span className="inactive" aria-disabled="true">{t('findsmith-project-typos')}</span></>}</div>
         {review ? <>
           {review.page_error && <ErrorBox message={review.page_error} />}
+          {review.status === 'complete' && <div className="notice review-finished" role="status"><p>{t('findsmith-project-review-finished', review.saved, review.skipped)}</p><button disabled={!!busy} onClick={() => submitProject(`/api/projects/${projectId}`, t('findsmith-project-busy-applying-rules'), true)}>{t('findsmith-project-apply-rules')}</button></div>}
           {review.page ? <>
+            <p className="review-position">{t('findsmith-project-review-position', review.position, review.total, review.saved, review.skipped)}</p>
             <div className="page-heading"><a href={review.page.full_url} target="_blank" rel="noreferrer">{review.current?.title ?? t('findsmith-project-current-revision')}</a><strong title={t('findsmith-project-comparison-tooltip')}>{review.page.changed ? t('findsmith-project-proposed-changes') : t('findsmith-project-no-proposed-changes')}</strong></div>
             <div className="meta-strip"><span>{t('findsmith-project-revision', review.page.revision_id)}</span><span>{t('findsmith-project-namespace-short', review.current?.namespace ?? '—')}</span><span>{review.page.content_model}</span><span>{review.page.editable ? t('findsmith-project-editable') : t('findsmith-project-not-editable')}</span><span>{t('findsmith-project-protection', review.page.protection)}</span></div>
-            <details className="wikitext-accordion"><summary>{t(textDirty ? 'findsmith-project-proposed-wikitext-modified' : 'findsmith-project-proposed-wikitext')}</summary><textarea className="editor" value={text} maxLength={4194304} onChange={event => { setText(event.target.value); setTextDirty(true); manualText.current = true }} /><button onClick={recompute} disabled={!!busy}>{t('findsmith-project-recompute-diff')}</button></details>
+            <details className="wikitext-accordion"><summary>{t(textDirty ? 'findsmith-project-proposed-wikitext-modified' : 'findsmith-project-proposed-wikitext')}</summary><textarea className="editor" value={text} maxLength={4194304} onChange={event => { setText(event.target.value); setTextDirty(true); manualText.current = true }} />{textDirty && <button onClick={() => recompute()} disabled={!!busy}>{t('findsmith-project-recompute-diff')}</button>}</details>
             <div className="view-switch"><button className={previewMode === 'diff' ? 'active' : ''} onClick={() => setPreviewMode('diff')}>{t('findsmith-project-diff')}</button><button className={previewMode === 'preview' ? 'active' : ''} onClick={() => showRendered(review.current?.title ?? '', text)}>{t('findsmith-project-preview')}</button></div>
             {previewMode === 'preview' ? renderPanel() : <><div className="rule-counts">{review.page.rules.map((rule, index) => <span className={rule.changed ? 'changed' : ''} key={index}>{t('findsmith-project-rule-count', index + 1, rule.count)}</span>)}</div>{review.page.changed ? <SideDiff lines={review.page.side_by_side_diff} /> : <div className="no-diff">{t('findsmith-project-no-diff-the-proposed-wikitext-matches-the-current-revision')}</div>}</>}
           </> : <div className="empty preview-empty">{building ? review.generation_message : t('findsmith-project-no-reviewable-page')}</div>}

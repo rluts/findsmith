@@ -325,6 +325,7 @@ async fn job_action_response(
             state.finish_preparse_if_done();
         }
         "previous" => state.previous(),
+        "acknowledge_policy" => state.policy_acknowledged = true,
         "resume" => {
             if !state.resume() {
                 return error_page(
