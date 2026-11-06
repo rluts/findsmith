@@ -443,13 +443,19 @@ async fn project_response(
                     let wiki_id = registered
                         .as_ref()
                         .map_or(project.wiki_url.as_str(), |wiki| wiki.id.as_str());
-                    let awb_access = match registered.as_ref() {
+                    let mut awb_access = match registered.as_ref() {
                         Some(wiki) => Some(wikis::access(wiki, user_agent, username).await),
                         None => {
                             wikis::access_unregistered(&project.wiki_url, user_agent, username)
                                 .await
                         }
                     };
+                    // The access cache is shared across languages, so localize per request.
+                    if let Some(error) =
+                        awb_access.as_mut().and_then(|access| access.error.as_mut())
+                    {
+                        *error = localization::from_source(error);
+                    }
                     let latest_job = match JobRepository::new(database).latest(owner, id).await {
                         Ok(job) => job,
                         Err(error) => return job_error_response(error, &format!("/projects/{id}")),

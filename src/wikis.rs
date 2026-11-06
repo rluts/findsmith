@@ -293,16 +293,15 @@ fn validate_check_page(page: CheckPage) -> Result<(String, CheckList), String> {
                 .into(),
         );
     }
+    // Ideally sysop-protected, but some wiki (e.g. testwiki, dewiki) has other levels of protection
     if !page.protection.iter().any(|item| {
         item.kind == "edit"
-            && item.level == "sysop"
+            && !matches!(item.level.as_str(), "" | "*" | "all")
             && (item.expiry == "infinity"
                 || chrono::DateTime::parse_from_rfc3339(&item.expiry)
                     .is_ok_and(|date| date > Utc::now()))
     }) {
-        return Err(
-            "Project:AutoWikiBrowser/CheckPageJSON page must be protected against editing by non-admins in this wiki.".into(),
-        );
+        return Err("findsmith-api-checkpagejson-must-be-protected".into());
     }
     let revision = page
         .revisions
@@ -310,9 +309,8 @@ fn validate_check_page(page: CheckPage) -> Result<(String, CheckList), String> {
         .next()
         .ok_or("CheckPageJSON has no readable revision.")?;
     // Only the content matters: it must parse as the AWB lists, whatever its content model.
-    let list: CheckList = serde_json::from_str(&revision.slots.main.content).map_err(|_| {
-        "Project:AutoWikiBrowser/CheckPageJSON page must contain enabledusers and enabledbots arrays in this wiki.".to_owned()
-    })?;
+    let list: CheckList = serde_json::from_str(&revision.slots.main.content)
+        .map_err(|_| "findsmith-api-checkpagejson-must-contain-awb-lists".to_owned())?;
     Ok((page.title, list))
 }
 
@@ -742,9 +740,20 @@ mod tests {
         wikitext_model["revisions"][0]["slots"]["main"]["contentmodel"] = "wikitext".into();
         let page = serde_json::from_value(wikitext_model).unwrap();
         assert!(validate_check_page(page).is_ok());
+        let mut semi_protected = raw.clone();
+        semi_protected["protection"][0]["level"] = "autoconfirmed".into();
+        let page = serde_json::from_value(semi_protected).unwrap();
+        assert!(validate_check_page(page).is_ok());
+        let mut move_only = raw.clone();
+        move_only["protection"][0]["type"] = "move".into();
+        let page = serde_json::from_value(move_only).unwrap();
+        assert!(validate_check_page(page).is_err());
         let mut unprotected = raw;
         unprotected["protection"] = serde_json::json!([]);
         let page = serde_json::from_value(unprotected).unwrap();
-        assert!(validate_check_page(page).is_err());
+        assert_eq!(
+            validate_check_page(page).unwrap_err(),
+            "findsmith-api-checkpagejson-must-be-protected"
+        );
     }
 }

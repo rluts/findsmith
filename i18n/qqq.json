@@ -338,6 +338,8 @@
   "findsmith-api-project-name-must-contain-between-1-and-255-characters": "Project name validation detail; 1 and 255 are character limits.",
   "findsmith-api-project-not-found": "Short API error title when a project ID is missing or inaccessible to the user.",
   "findsmith-api-project-autowikibrowser-checkpagejson-does-not-exist-on-this-wiki": "Add Wiki validation detail when the required Project:AutoWikiBrowser/CheckPageJSON page is absent. Keep the page title unchanged.",
+  "findsmith-api-checkpagejson-must-be-protected": "Error detail when Project:AutoWikiBrowser/CheckPageJSON has no active edit protection. Any level from autoconfirmed up is accepted. Shown on Add Wiki and in the project AutoWikiBrowser access notice. Keep the page title unchanged.",
+  "findsmith-api-checkpagejson-must-contain-awb-lists": "Error detail when Project:AutoWikiBrowser/CheckPageJSON is not JSON with the required lists. Shown on Add Wiki and in the project AutoWikiBrowser access notice. Keep the page title, enabledusers, and enabledbots unchanged.",
   "findsmith-api-queue-locked": "Short API error title when queue operations are blocked by an active review or generation.",
   "findsmith-api-reload-the-page-and-try-again-no-changes-were-made": "Conflict recovery detail after stale page state is rejected before changing data.",
   "findsmith-api-reload-the-project-to-get-the-latest-version-then-apply-your-changes-aga": "Project version conflict detail telling the user to reload before reapplying edits.",

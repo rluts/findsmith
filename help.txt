@@ -10,7 +10,7 @@ On the home page, select '''Log in with Wikimedia'''. FindSmith signs you in thr
 
 Open '''Your Projects''', enter a project name, choose a wiki from the shared list, and select '''Create project'''. A project uses one wiki at a time. You do not need to add a wiki that is already in the list.
 
-If the wiki you need is missing, open '''Add Wiki''' and enter its Wikimedia domain, for example <code>en.wikipedia.org</code>. FindSmith checks that wiki's protected <code>Project:AutoWikiBrowser/CheckPageJSON</code> and loads its namespaces. The new wiki is available to all FindSmith users; it only needs to be added once. Then return to '''Your Projects''' to create your project.
+If the wiki you need is missing, open '''Add Wiki''' and enter its Wikimedia domain, for example <code>en.wikipedia.org</code>. FindSmith checks that the wiki's <code>Project:AutoWikiBrowser/CheckPageJSON</code> page is protected, then loads the wiki's namespaces. The new wiki is available to all FindSmith users; it only needs to be added once. Then return to '''Your Projects''' to create your project.
 
 FindSmith checks whether your account appears in that wiki's <code>enabledusers</code> or <code>enabledbots</code> list. If access is missing or cannot be verified, you can still review pages, but you cannot save edits. The project page also shows the account's groups on the selected wiki. Follow that wiki's editing and automation policies before using FindSmith.
 
@@ -42,6 +42,6 @@ The '''Status''' tab shows review progress and decision history, including saved
 
 == Limitations ==
 
-FindSmith supports a Wikimedia wiki only after someone adds it to the shared list. To add it, the wiki must have a <code>Project:AutoWikiBrowser/CheckPageJSON</code> page protected from editing by non-admins. Its text must be JSON with <code>enabledusers</code> and <code>enabledbots</code> lists. To save edits, your account must appear in one of those lists and have the required edit rights on that wiki. You can still review pages if your account is not listed, but you cannot save them. There is no unattended editing; each '''Save and next''' submits at most one reviewed page. The interface is currently in English.
+FindSmith supports a Wikimedia wiki only after someone adds it to the shared list. To add it, the wiki must have a <code>Project:AutoWikiBrowser/CheckPageJSON</code> page protected from editing by at least non-autoconfirmed users. Its text must be JSON with <code>enabledusers</code> and <code>enabledbots</code> lists. To save edits, your account must appear in one of those lists and have the required edit rights on that wiki. You can still review pages if your account is not listed, but you cannot save them. There is no unattended editing; each '''Save and next''' submits at most one reviewed page. The interface is currently in English.
 
 [[uk:Користувач:RLuts/FindSmith/Help]]
