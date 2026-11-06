@@ -2,6 +2,18 @@
 
 All notable changes to FindSmith are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.1.0-alpha.5] - 2026-11-06
+
+### Changed
+
+- **Save and next** is now the primary review action. Skipped pages can still be saved, and their skip reason is kept.
+- The diff updates automatically after the proposed wikitext is edited by hand.
+- The review shows the page position and saved and skipped counts, plus a summary when the review is complete.
+- The "Pre-parse queue" option is renamed to "Skip pages without changes".
+- Project:AutoWikiBrowser/CheckPageJSON may now have any active edit protection (see testwiki, dewiki), from autoconfirmed up, instead of requiring sysop protection.
+- CheckPageJSON errors in the project access notice are translated instead of showing raw message keys.
+
+
 ## [0.1.0-alpha.4] - 2026-11-05
 
 ### Added
@@ -82,6 +94,7 @@ First tagged version.
 - Interface translation using the MediaWiki message format for translatewiki.net.
 - The FindSmith logo and updated styles.
 
+[0.1.0-alpha.5]: https://gitlab.wikimedia.org/toolforge-repos/findsmith/-/tags/0.1.0-alpha.5
 [0.1.0-alpha.4]: https://gitlab.wikimedia.org/toolforge-repos/findsmith/-/tags/0.1.0-alpha.4
 [0.1.0-alpha.2]: https://gitlab.wikimedia.org/toolforge-repos/findsmith/-/tags/0.1.0-alpha.2
 [0.1.0-alpha.1]: https://gitlab.wikimedia.org/toolforge-repos/findsmith/-/tags/0.1.0-alpha.1
