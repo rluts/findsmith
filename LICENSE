@@ -4,3 +4,20 @@ The full license text is available at:
 https://www.gnu.org/licenses/gpl-3.0.txt
 
 SPDX-License-Identifier: GPL-3.0-or-later
+
+Third-party code
+----------------
+
+src/typos/ (mod.rs and hide.rs) is a port of AutoWikiBrowser's typo fixing:
+WikiFunctions/Parse/RegExTypoFix.cs, the HideMore part of
+WikiFunctions/Parse/HideText.cs, and regular expressions from
+WikiFunctions/WikiRegexes.cs.
+
+    RegExTypoFix.cs: Copyright (C) 2007 Martin Richards & Max Semenik
+    WikiRegexes.cs:  Copyright (C) 2007 Martin Richards
+    HideText.cs:     the AutoWikiBrowser contributors
+
+AutoWikiBrowser is licensed under the GNU General Public License, version 2
+or (at your option) any later version, and this port is distributed under
+version 3 of that license, as the original permits.
+https://sourceforge.net/projects/autowikibrowser/

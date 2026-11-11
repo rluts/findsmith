@@ -170,6 +170,7 @@ async fn start_job_response(
         state.rules.clone(),
         state.skip.clone(),
         state.namespaces.clone(),
+        state.typos.clone(),
     );
     let job_state = JobState::building(queue_limit);
     match JobRepository::new(database)

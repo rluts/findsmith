@@ -17,6 +17,7 @@ use crate::{
     projects::{ProjectRepository, ProjectState, ReplacementRule},
     rules::RuleEngine,
     skip::{self, SkipOptions},
+    typos::TypoOptions,
     wikis::{self, AccessView, WikiView},
 };
 
@@ -64,6 +65,7 @@ pub(super) struct ProjectResponse<'a> {
     pub(super) awb_access: Option<&'a AccessView>,
     pub(super) rules: &'a [ReplacementRule],
     pub(super) skip: &'a SkipOptions,
+    pub(super) typos: &'a TypoOptions,
     pub(super) csrf_token: &'a str,
     pub(super) page_title: &'a str,
     pub(super) page_preview: Option<&'a PagePreviewView>,
@@ -180,12 +182,23 @@ pub struct UpdateProjectForm {
     #[serde(default)]
     pub(super) skip_max_replacements: usize,
     #[serde(default)]
+    pub(super) typos_enabled: bool,
+    #[serde(default)]
+    pub(super) skip_no_typo: bool,
+    #[serde(default)]
     pub(super) page_title: String,
     pub(super) state_version: i64,
     pub(super) csrf_token: String,
 }
 
 impl UpdateProjectForm {
+    pub(super) fn typo_options(&self) -> TypoOptions {
+        TypoOptions {
+            enabled: self.typos_enabled,
+            skip_if_none: self.skip_no_typo,
+        }
+    }
+
     pub(super) fn skip_options(&self) -> SkipOptions {
         SkipOptions {
             no_change: self.skip_no_change,
@@ -479,6 +492,7 @@ async fn project_response(
                                 .is_ok_and(|config| {
                                     config.rules != state.rules
                                         || config.skip != state.skip
+                                        || config.typos != state.typos
                                         || config.namespaces != state.namespaces
                                 });
                             let job_state: JobState = match serde_json::from_value(job.state_json) {
@@ -531,6 +545,7 @@ async fn project_response(
                         awb_access: awb_access.as_ref(),
                         rules: &state.rules,
                         skip: &state.skip,
+                        typos: &state.typos,
                         csrf_token,
                         page_title: "",
                         page_preview: None,
@@ -593,7 +608,7 @@ async fn update_project_response(
     match save_project(database, owner, id, &form).await {
         Ok((project, state)) => {
             let rules = state.rules.clone();
-            let config = JobConfigV1::new(state.rules, state.skip, state.namespaces);
+            let config = JobConfigV1::new(state.rules, state.skip, state.namespaces, state.typos);
             let jobs = JobRepository::new(database);
             let latest_job = match jobs.latest(owner, id).await {
                 Ok(job) => job,
@@ -763,6 +778,7 @@ pub(super) async fn save_project(
         queue_limit,
         rules,
         skip,
+        typos: form.typo_options(),
     };
     if let Err(message) = validate_project_sources(&state) {
         return Err(Box::new(error_page(

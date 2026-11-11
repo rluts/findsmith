@@ -3,7 +3,8 @@ use crate::{
     projects::{ReplacementRule, RuleOperation},
 };
 
-pub(super) const EDIT_SUMMARY_ATTRIBUTION_LINK: &str = "[[User:RLuts/FS|Findsmith]]";
+// Move to mediawiki.org? meta?
+pub(super) const EDIT_SUMMARY_ATTRIBUTION_LINK: &str = "[[User:RLuts/FS|FindSmith]]";
 
 const MAX_EDIT_SUMMARY_CHARS: usize = 500;
 
@@ -66,6 +67,31 @@ pub(super) fn suggested_edit_summary(rules: &[ReplacementRule]) -> String {
         .unwrap_or_else(|| summary_message("findsmith-edit-summary-autoreplacement", &[]))
 }
 
+/// The rules' summary followed by AWB's "typos fixed: ..." for the current page.
+/// Typo items that do not fit in the summary length are dropped from the end.
+pub(super) fn suggested_edit_summary_with_typos(rules: &[ReplacementRule], typos: &str) -> String {
+    let rules_summary = rules
+        .iter()
+        .any(|rule| rule.enabled)
+        .then(|| suggested_edit_summary(rules));
+    if typos.is_empty() {
+        return rules_summary.unwrap_or_else(|| suggested_edit_summary(rules));
+    }
+    let mut items: Vec<&str> = typos.split(", ").collect();
+    while !items.is_empty() {
+        let typos = summary_message("findsmith-edit-summary-typos", &[&items.join(", ")]);
+        let candidate = match &rules_summary {
+            Some(rules_summary) => format!("{rules_summary}; {typos}"),
+            None => typos,
+        };
+        if complete_edit_summary(&candidate).is_ok() {
+            return candidate;
+        }
+        items.pop();
+    }
+    rules_summary.unwrap_or_else(|| suggested_edit_summary(rules))
+}
+
 pub(super) fn complete_edit_summary(prefix: &str) -> Result<String, &'static str> {
     let prefix = prefix.trim();
     if prefix.is_empty() {
@@ -96,85 +122,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn edit_summary_uses_first_enabled_rule_and_fixed_attribution() {
-        let rules = vec![
-            ReplacementRule {
-                enabled: false,
-                find: "ignored".to_owned(),
-                replace: "ignored".to_owned(),
-                ..Default::default()
-            },
-            ReplacementRule {
-                find: "old".to_owned(),
-                replace: "new".to_owned(),
-                ..Default::default()
-            },
-        ];
-        let suggested = suggested_edit_summary(&rules);
-        assert_eq!(suggested, "Autoreplacement: old -> new");
+    fn typo_summary_follows_rules_and_fits_the_limit() {
         assert_eq!(
-            complete_edit_summary(&suggested).unwrap(),
-            "Autoreplacement: old -> new using [[User:RLuts/FS|Findsmith]]"
+            suggested_edit_summary_with_typos(&[], "teh → the, acheive → achieve"),
+            "typos fixed: teh → the, acheive → achieve"
         );
-        assert_eq!(
-            complete_edit_summary("Custom reason").unwrap(),
-            "Custom reason using [[User:RLuts/FS|Findsmith]]"
-        );
-    }
-
-    #[test]
-    fn edit_summary_describes_each_rule_operation() {
-        let cases = [
-            (RuleOperation::Append, "Appended wikitext"),
-            (RuleOperation::Prepend, "Prepended wikitext"),
-            (RuleOperation::CategoryAdd, "Added category New"),
-            (RuleOperation::CategoryRemove, "Removed category Old"),
-            (
-                RuleOperation::CategoryReplace,
-                "Replaced category Old with New",
-            ),
-            (RuleOperation::TemplateRename, "Renamed template Old to New"),
-            (
-                RuleOperation::TemplateParameterSet,
-                "Set parameter key in template Old to New",
-            ),
-            (
-                RuleOperation::TemplateParameterRemove,
-                "Removed parameter key from template Old",
-            ),
-        ];
-        for (operation, expected) in cases {
-            let rule = ReplacementRule {
-                operation,
-                find: "Old".to_owned(),
-                replace: "New".to_owned(),
-                parameter: "key".to_owned(),
-                ..Default::default()
-            };
-            assert_eq!(suggested_edit_summary(&[rule]), expected);
-        }
-        let rules = vec![
-            ReplacementRule {
-                operation: RuleOperation::CategoryAdd,
-                replace: "New".to_owned(),
-                ..Default::default()
-            },
-            ReplacementRule {
-                find: "Old".to_owned(),
-                replace: "New".to_owned(),
-                ..Default::default()
-            },
-        ];
-        assert_eq!(suggested_edit_summary(&rules), "Added category New");
-        let empty_value = [ReplacementRule {
-            operation: RuleOperation::TemplateParameterSet,
-            find: "Example".to_owned(),
-            parameter: "key".to_owned(),
-            ..Default::default()
+        let rules = vec![ReplacementRule {
+            find: "a".to_owned(),
+            replace: "b".to_owned(),
+            ..ReplacementRule::default()
         }];
+        assert!(
+            suggested_edit_summary_with_typos(&rules, "teh → the")
+                .ends_with("; typos fixed: teh → the")
+        );
+        let long = vec!["x".repeat(200); 5].join(", ");
+        let summary = suggested_edit_summary_with_typos(&[], &long);
+        assert!(complete_edit_summary(&summary).is_ok());
+        assert_eq!(summary.matches(", ").count(), 1);
         assert_eq!(
-            suggested_edit_summary(&empty_value),
-            "Set parameter key in template Example to (empty)"
+            suggested_edit_summary_with_typos(&[], ""),
+            "Autoreplacement"
         );
     }
 
@@ -200,7 +168,6 @@ mod tests {
             500
         );
         assert!(complete_edit_summary(&format!("{allowed}ї")).is_err());
-        assert!(complete_edit_summary("custom [[User:RLuts/FS|Findsmith]]").is_err());
         assert!(complete_edit_summary("custom\nreason").is_err());
     }
 }

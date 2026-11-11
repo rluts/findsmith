@@ -17,6 +17,7 @@ use crate::{
     projects::{ProjectRepository, ReplacementRule},
     rules::TransformationResult,
     structural::apply_with_wiki,
+    typos::lists::{TypoPageView, apply_typos},
 };
 
 use super::AppState;
@@ -51,6 +52,7 @@ pub(super) struct PagePreviewView {
     pub(super) proposed_text: String,
     pub(super) rules: Vec<RulePreviewView>,
     pub(super) side_by_side_diff: Vec<SideBySideLine>,
+    pub(super) typos: Option<TypoPageView>,
 }
 
 #[derive(Deserialize)]
@@ -226,7 +228,7 @@ async fn page_preview_response(
                 .await;
         }
     };
-    let result = match apply_with_wiki(
+    let mut result = match apply_with_wiki(
         &rules,
         &snapshot.content,
         &wiki_url,
@@ -240,7 +242,18 @@ async fn page_preview_response(
             return render_page_preview_error(database, id, &form, &rules, &error).await;
         }
     };
-    let page_preview = page_preview_view(snapshot, result);
+    let (text, typos) = apply_typos(
+        database,
+        &wiki_url,
+        user_agent,
+        access_token,
+        &form.typo_options(),
+        std::mem::take(&mut result.text),
+        &snapshot.title,
+    )
+    .await;
+    result.text = text;
+    let page_preview = page_preview_view(snapshot, result, typos);
     let skip = form.skip_options();
     let sources = page_sources_from_form(&form).unwrap_or_default();
     let source_views = page_source_views(&sources);
@@ -258,6 +271,7 @@ async fn page_preview_response(
         awb_access: None,
         rules: &rules,
         skip: &skip,
+        typos: &form.typo_options(),
         csrf_token: &form.csrf_token,
         page_title: &form.page_title,
         page_preview: Some(&page_preview),
@@ -298,6 +312,7 @@ async fn render_page_preview_error(
         awb_access: None,
         rules,
         skip: &form.skip_options(),
+        typos: &form.typo_options(),
         csrf_token: &form.csrf_token,
         page_title: &form.page_title,
         page_preview: None,
@@ -315,7 +330,11 @@ async fn render_page_preview_error(
     })
 }
 
-fn page_preview_view(snapshot: PageSnapshot, result: TransformationResult) -> PagePreviewView {
+fn page_preview_view(
+    snapshot: PageSnapshot,
+    result: TransformationResult,
+    typos: Option<TypoPageView>,
+) -> PagePreviewView {
     let protection = protection_text(&snapshot);
     let proposed_text = result.text.clone();
     PagePreviewView {
@@ -331,7 +350,7 @@ fn page_preview_view(snapshot: PageSnapshot, result: TransformationResult) -> Pa
         editable: snapshot.editable,
         protection,
         total_replacements: result.total_replacements,
-        changed: result.total_replacements > 0,
+        changed: snapshot.content != result.text,
         proposed_text,
         rules: result
             .counts
@@ -340,6 +359,7 @@ fn page_preview_view(snapshot: PageSnapshot, result: TransformationResult) -> Pa
             .map(|(count, changed)| RulePreviewView { count, changed })
             .collect(),
         side_by_side_diff: side_by_side_lines(&snapshot.content, &result.text),
+        typos,
     }
 }
 

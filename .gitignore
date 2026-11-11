@@ -10,3 +10,8 @@ rust-buildpack
 .DS_Store
 .plan
 __pycache__/
+
+# AutoWikiBrowser source code
+autowikibrowser-code-*/
+
+tmp/

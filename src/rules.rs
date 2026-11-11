@@ -3,6 +3,7 @@ use std::{error::Error, fmt};
 use regex::{Regex, RegexBuilder};
 
 use crate::{
+    dotnet_regex::{self, DotNetOptions, DotNetRegex, ReplaceError, Replacement},
     masking::{masked_ranges, overlaps},
     projects::{ReplacementRule, RuleMask, RuleOperation},
 };
@@ -17,14 +18,34 @@ pub const MAX_TOTAL_REPLACEMENTS: usize = 100_000;
 #[derive(Debug)]
 pub enum RuleError {
     TooManyRules,
-    EmptyPattern { index: usize },
-    EmptyValue { index: usize },
-    InvalidCategory { index: usize },
-    InvalidTemplate { index: usize },
+    EmptyPattern {
+        index: usize,
+    },
+    EmptyValue {
+        index: usize,
+    },
+    InvalidCategory {
+        index: usize,
+    },
+    InvalidTemplate {
+        index: usize,
+    },
     StructuralRequiresWiki,
-    PatternTooLarge { index: usize },
-    ReplacementTooLarge { index: usize },
-    InvalidRegex { index: usize, message: String },
+    PatternTooLarge {
+        index: usize,
+    },
+    ReplacementTooLarge {
+        index: usize,
+    },
+    InvalidRegex {
+        index: usize,
+        message: String,
+    },
+    /// A regex rule exceeded its backtracking budget on this text.
+    RegexFailed {
+        index: usize,
+        message: String,
+    },
     InputTooLarge,
     OutputTooLarge,
     TooManyReplacements,
@@ -78,6 +99,11 @@ impl fmt::Display for RuleError {
                 "findsmith-api-rule-regex-invalid",
                 &[&(index + 1).to_string(), message],
             ),
+            Self::RegexFailed { index, message } => write_message(
+                formatter,
+                "findsmith-api-rule-regex-failed",
+                &[&(index + 1).to_string(), message],
+            ),
             Self::InputTooLarge => formatter.write_str("The input text is too large."),
             Self::OutputTooLarge => formatter.write_str("The transformed text is too large."),
             Self::TooManyReplacements => write!(
@@ -104,8 +130,10 @@ struct CompiledRule {
 }
 
 enum Matcher {
+    /// Literal text and category patterns, in Rust `regex` syntax.
     Plain(Regex),
-    Regex(Regex),
+    /// User regular expressions, in .NET syntax as in AutoWikiBrowser.
+    DotNet(Box<DotNetRegex>, Replacement),
 }
 
 pub struct TransformationResult {
@@ -157,7 +185,7 @@ impl RuleEngine {
         let mut changed = Vec::with_capacity(self.rules.len());
         let mut total_replacements = 0;
 
-        for rule in &self.rules {
+        for (index, rule) in self.rules.iter().enumerate() {
             if !rule.enabled {
                 counts.push(0);
                 changed.push(false);
@@ -211,14 +239,35 @@ impl RuleEngine {
                         &[],
                     )?
                 }
-                RuleOperation::Replace => replace_bounded(
-                    rule.matcher.as_ref().expect("replacement matcher").regex(),
-                    &text,
-                    &rule.replace,
-                    rule.replace_all,
-                    remaining,
-                    &masked_ranges(&text, &rule.mask),
-                )?,
+                RuleOperation::Replace => match rule.matcher.as_ref().expect("replacement matcher")
+                {
+                    Matcher::Plain(regex) => replace_bounded(
+                        regex,
+                        &text,
+                        &rule.replace,
+                        rule.replace_all,
+                        remaining,
+                        &masked_ranges(&text, &rule.mask),
+                    )?,
+                    Matcher::DotNet(regex, replacement) => {
+                        let masked = masked_ranges(&text, &rule.mask);
+                        regex
+                            .replace_where(
+                                &text,
+                                replacement,
+                                rule.replace_all,
+                                remaining,
+                                |start, end| !overlaps(&masked, start, end),
+                            )
+                            .map_err(|error| match error {
+                                ReplaceError::TooManyReplacements => RuleError::TooManyReplacements,
+                                ReplaceError::Match(error) => RuleError::RegexFailed {
+                                    index,
+                                    message: error.to_string(),
+                                },
+                            })?
+                    }
+                },
                 RuleOperation::TemplateRename
                 | RuleOperation::TemplateParameterSet
                 | RuleOperation::TemplateParameterRemove => {
@@ -247,9 +296,11 @@ impl RuleEngine {
 }
 
 impl Matcher {
+    /// The Rust regex of a plain or category matcher.
     fn regex(&self) -> &Regex {
         match self {
-            Self::Plain(regex) | Self::Regex(regex) => regex,
+            Self::Plain(regex) => regex,
+            Self::DotNet(..) => unreachable!("only replacement rules use .NET regex"),
         }
     }
 }
@@ -355,8 +406,33 @@ fn compile_rule(
         return Err(RuleError::InvalidTemplate { index });
     }
 
+    if rule.operation == RuleOperation::Replace && rule.regex {
+        let regex = DotNetRegex::with_options(
+            &rule.find,
+            DotNetOptions {
+                ignore_case: !rule.case_sensitive,
+                multiline: rule.multiline,
+                singleline: rule.dot_matches_new_line,
+                ..DotNetOptions::default()
+            },
+            dotnet_regex::DEFAULT_BACKTRACK_LIMIT,
+        )
+        .map_err(|error| RuleError::InvalidRegex {
+            index,
+            message: error.to_string(),
+        })?;
+        let replacement = regex.replacement(&rule.replace);
+        return Ok(CompiledRule {
+            enabled: rule.enabled,
+            operation: rule.operation,
+            mask: rule.mask.clone(),
+            replace: rule.replace.clone(),
+            replace_all: rule.replace_all,
+            matcher: Some(Matcher::DotNet(Box::new(regex), replacement)),
+        });
+    }
+
     let pattern = match rule.operation {
-        RuleOperation::Replace if rule.regex => rule.find.clone(),
         RuleOperation::Replace => regex::escape(&rule.find),
         RuleOperation::CategoryAdd => category_pattern(&rule.replace, category_prefix),
         RuleOperation::CategoryRemove | RuleOperation::CategoryReplace => {
@@ -384,13 +460,7 @@ fn compile_rule(
                 })?,
         )
     };
-    let matcher = matcher.map(|regex| {
-        if rule.regex && rule.operation == RuleOperation::Replace {
-            Matcher::Regex(regex)
-        } else {
-            Matcher::Plain(regex)
-        }
-    });
+    let matcher = matcher.map(Matcher::Plain);
 
     Ok(CompiledRule {
         enabled: rule.enabled,
@@ -401,11 +471,11 @@ fn compile_rule(
             RuleOperation::CategoryAdd | RuleOperation::CategoryReplace
         ) {
             category_name(&rule.replace).to_owned()
-        } else if rule.operation == RuleOperation::Replace && !rule.regex {
+        } else if rule.operation == RuleOperation::Replace {
             // Plain replacements still go through regex expansion.
             rule.replace.replace('$', "$$")
         } else {
-            // Regex replacements expand `$` on purpose; other operations insert the text as is.
+            // Other operations insert the text as is.
             rule.replace.clone()
         },
         replace_all: rule.replace_all,
@@ -445,6 +515,60 @@ mod tests {
             replace: replace.to_owned(),
             ..ReplacementRule::default()
         }
+    }
+
+    fn regex(find: &str, replace: &str) -> ReplacementRule {
+        ReplacementRule {
+            regex: true,
+            ..plain(find, replace)
+        }
+    }
+
+    #[test]
+    fn regex_rules_use_dotnet_syntax() {
+        let engine = RuleEngine::compile(&[
+            regex(r"\b(a)cheive(d)?\b", "$1chieve$2"),
+            regex(r"(?<=\bthe\s+)teh\b", "x"),
+            regex(r"\<br\>", "<br />"),
+        ])
+        .unwrap();
+        let result = engine.apply("acheived the teh<br>").unwrap();
+        assert_eq!(result.text, "achieved the x<br />");
+        assert_eq!(result.counts, vec![1, 1, 1]);
+    }
+
+    #[test]
+    fn regex_rules_honour_options_masks_and_first_match() {
+        let mut rule = regex("^b", "B");
+        rule.multiline = true;
+        rule.case_sensitive = true;
+        assert_eq!(
+            RuleEngine::compile(&[rule])
+                .unwrap()
+                .apply("a\nb")
+                .unwrap()
+                .text,
+            "a\nB"
+        );
+        let mut first = regex("x", "y");
+        first.replace_all = false;
+        first.mask.comments = true;
+        assert_eq!(
+            RuleEngine::compile(&[first])
+                .unwrap()
+                .apply("<!-- x --> x x")
+                .unwrap()
+                .text,
+            "<!-- x --> y x"
+        );
+    }
+
+    #[test]
+    fn invalid_dotnet_regex_is_reported() {
+        assert!(matches!(
+            RuleEngine::compile(&[regex(r"(?P<x>a)", "b")]),
+            Err(RuleError::InvalidRegex { index: 0, .. })
+        ));
     }
 
     #[test]

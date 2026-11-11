@@ -8,7 +8,7 @@ use sea_orm::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{entities::project, skip::SkipOptions};
+use crate::{entities::project, skip::SkipOptions, typos::TypoOptions};
 
 pub const DEFAULT_QUEUE_LIMIT: usize = 100;
 pub const MAX_QUEUE_LIMIT: usize = 500;
@@ -26,6 +26,7 @@ pub struct ProjectState {
     pub queue_limit: usize,
     pub rules: Vec<ReplacementRule>,
     pub skip: SkipOptions,
+    pub typos: TypoOptions,
 }
 
 impl Default for ProjectState {
@@ -41,6 +42,7 @@ impl Default for ProjectState {
             queue_limit: DEFAULT_QUEUE_LIMIT,
             rules: Vec::new(),
             skip: SkipOptions::default(),
+            typos: TypoOptions::default(),
         }
     }
 }

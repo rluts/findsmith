@@ -8,7 +8,7 @@ use sea_orm::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{entities::job, projects::ReplacementRule, skip::SkipOptions};
+use crate::{entities::job, projects::ReplacementRule, skip::SkipOptions, typos::TypoOptions};
 
 pub const JOB_CONFIG_VERSION: u32 = 1;
 
@@ -20,15 +20,23 @@ pub struct JobConfigV1 {
     pub skip: SkipOptions,
     #[serde(default)]
     pub namespaces: Vec<i64>,
+    #[serde(default)]
+    pub typos: TypoOptions,
 }
 
 impl JobConfigV1 {
-    pub fn new(rules: Vec<ReplacementRule>, skip: SkipOptions, namespaces: Vec<i64>) -> Self {
+    pub fn new(
+        rules: Vec<ReplacementRule>,
+        skip: SkipOptions,
+        namespaces: Vec<i64>,
+        typos: TypoOptions,
+    ) -> Self {
         Self {
             version: JOB_CONFIG_VERSION,
             rules,
             skip,
             namespaces,
+            typos,
         }
     }
 }

@@ -437,6 +437,8 @@ mod tests {
             skip_case_sensitive: true,
             skip_min_replacements: 0,
             skip_max_replacements: 0,
+            typos_enabled: false,
+            skip_no_typo: false,
             page_title: String::new(),
             state_version: 1,
             csrf_token: "test".to_owned(),

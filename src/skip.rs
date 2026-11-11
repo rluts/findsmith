@@ -1,4 +1,6 @@
 use regex::{Regex, RegexBuilder};
+
+use crate::dotnet_regex::{self, DotNetOptions, DotNetRegex};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -54,6 +56,7 @@ pub enum SkipReason {
     NoChange,
     TooFewReplacements,
     TooManyReplacements,
+    NoTypoFixed,
 }
 
 impl SkipReason {
@@ -70,6 +73,7 @@ impl SkipReason {
             Self::NoChange => "findsmith-api-skip-no-change",
             Self::TooFewReplacements => "findsmith-api-skip-too-few-replacements",
             Self::TooManyReplacements => "findsmith-api-skip-too-many-replacements",
+            Self::NoTypoFixed => "findsmith-api-skip-no-typo",
         }
     }
 }
@@ -85,8 +89,8 @@ pub struct PageFacts<'a> {
 pub struct SkipMatcher {
     options: SkipOptions,
     namespaces: Vec<i64>,
-    contains: Option<Regex>,
-    not_contains: Option<Regex>,
+    contains: Option<DotNetRegex>,
+    not_contains: Option<DotNetRegex>,
     in_use: Option<Regex>,
 }
 
@@ -134,14 +138,15 @@ impl SkipMatcher {
         if self
             .contains
             .as_ref()
-            .is_some_and(|pattern| pattern.is_match(page.content))
+            // A search that runs out of budget skips the page rather than editing it.
+            .is_some_and(|pattern| pattern.is_match(page.content).unwrap_or(true))
         {
             return Some(SkipReason::Contains);
         }
         if self
             .not_contains
             .as_ref()
-            .is_some_and(|pattern| !pattern.is_match(page.content))
+            .is_some_and(|pattern| !pattern.is_match(page.content).unwrap_or(false))
         {
             return Some(SkipReason::NotContains);
         }
@@ -176,7 +181,8 @@ pub fn validate(options: &SkipOptions) -> Result<(), String> {
     SkipMatcher::compile(options, &[], &[]).map(|_| ())
 }
 
-fn content_pattern(value: &str, options: &SkipOptions) -> Result<Option<Regex>, String> {
+/// "Contains" conditions use .NET regex syntax, like AutoWikiBrowser.
+fn content_pattern(value: &str, options: &SkipOptions) -> Result<Option<DotNetRegex>, String> {
     if value.is_empty() {
         return Ok(None);
     }
@@ -186,9 +192,23 @@ fn content_pattern(value: &str, options: &SkipOptions) -> Result<Option<Regex>, 
     let pattern = if options.regex {
         value.to_owned()
     } else {
-        regex::escape(value)
+        dotnet_regex::escape(value)
     };
-    build_pattern(&pattern, !options.case_sensitive).map(Some)
+    DotNetRegex::with_options(
+        &pattern,
+        DotNetOptions {
+            ignore_case: !options.case_sensitive,
+            ..DotNetOptions::default()
+        },
+        dotnet_regex::DEFAULT_BACKTRACK_LIMIT,
+    )
+    .map(Some)
+    .map_err(|error| {
+        crate::localization::required_with_args(
+            "findsmith-api-skip-pattern-invalid",
+            &[&error.to_string()],
+        )
+    })
 }
 
 fn build_pattern(pattern: &str, case_insensitive: bool) -> Result<Regex, String> {

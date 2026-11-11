@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import { Busy, ErrorBox, Shell } from '../components/Shell'
 import { SideDiff } from '../components/DiffView'
 import { RenderedPreview } from '../components/RenderedPreview'
+import { TyposPanel } from '../components/TyposPanel'
 import { ApiError, getJson, postForm } from '../lib/api'
 import { navigate, setNavigationGuard } from '../lib/router'
 import { useI18n } from '../lib/i18n'
-import type { ActionResult, Project, RenderedPreview as RenderedPreviewData, Review, Rule, RuleMask, SavedRule, Session, SkipOptions, Source } from '../types/api'
+import type { ActionResult, Project, RenderedPreview as RenderedPreviewData, Review, Rule, RuleMask, SavedRule, Session, SkipOptions, Source, TypoOptions, TypoPage } from '../types/api'
 
 const sourceKinds = ['manual', 'category', 'backlinks', 'transclusions', 'search', 'watchlist', 'contributions', 'links_on_page', 'categories_on_page', 'redirects_to_page']
 const blankMask = (): RuleMask => ({comments: false, tags: false, references: false, links: false, headings: false, templates: false, link_targets: false})
@@ -16,8 +17,8 @@ const skipToggles: Array<[keyof SkipOptions, string]> = [['no_change', 'findsmit
 
 /** Fields the user edits locally; these survive reloads until autosave persists them. */
 function localConfiguration(project: Project): Partial<Project> {
-  const { project_name, queue_limit, page_title, skip, sources, namespace_options, rules, page_preview, page_preview_error } = project
-  return { project_name, queue_limit, page_title, skip, sources, namespace_options, rules, page_preview, page_preview_error }
+  const { project_name, queue_limit, page_title, skip, typos, sources, namespace_options, rules, page_preview, page_preview_error } = project
+  return { project_name, queue_limit, page_title, skip, typos, sources, namespace_options, rules, page_preview, page_preview_error }
 }
 
 /** Identifies the page revision a review's proposed text was computed for. */
@@ -31,6 +32,7 @@ function projectForm(project: Project, stateVersion = project.state_version) {
   values.append('skip_no_change', String(skip.no_change)); values.append('skip_in_use', String(skip.in_use_tpl)); values.append('skip_redirects', String(skip.redirects)); values.append('skip_protected', String(skip.protected)); values.append('skip_outside_namespaces', String(skip.outside_namespaces))
   values.append('skip_contains', skip.contains); values.append('skip_not_contains', skip.not_contains); values.append('skip_regex', String(skip.regex)); values.append('skip_case_sensitive', String(skip.case_sensitive))
   values.append('skip_min_replacements', String(skip.min_replacements)); values.append('skip_max_replacements', String(skip.max_replacements))
+  values.append('typos_enabled', String(project.typos.enabled)); values.append('skip_no_typo', String(project.typos.enabled && project.typos.skip_if_none))
   project.sources.forEach(source => { values.append('source_kind', source.kind); values.append('source_value', source.value) })
   project.namespace_options.filter(option => option.selected).forEach(option => values.append('namespaces', String(option.id)))
   project.rules.forEach((rule, index) => {
@@ -76,6 +78,7 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
   const [busy, setBusy] = useState('')
   const [previewMode, setPreviewMode] = useState<'diff' | 'preview'>('diff')
   const [rulesTab, setRulesTab] = useState<'rules' | 'options' | 'status'>('rules')
+  const [editorTab, setEditorTab] = useState<'page' | 'typos'>('page')
   const [autosave, setAutosave] = useState<{ state: 'idle' | 'saving' | 'saved' | 'failed'; message?: string }>({ state: 'idle' })
   const [rendered, setRendered] = useState<{ projectId: string; requestedTitle: string; requestedText: string; data: RenderedPreviewData } | null>(null)
   const [renderBusy, setRenderBusy] = useState<string | null>(null)
@@ -292,6 +295,7 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
     if (persist) setConfigurationDirty(true)
   }
   function updateSkip(patch: Partial<SkipOptions>) { if (project) update({ skip: { ...project.skip, ...patch } }) }
+  function updateTypos(patch: Partial<TypoOptions>) { if (project) update({ typos: { ...project.typos, ...patch } }) }
   function move<T>(items: T[], index: number, direction: number) { const copy = [...items]; const target = index + direction; if (target < 0 || target >= copy.length) return copy; [copy[index], copy[target]] = [copy[target], copy[index]]; return copy }
   function allowReplacingManualText() {
     if (!manualText.current) return true
@@ -461,6 +465,8 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
   if (!project) return <Shell title={t('findsmith-workspace-title')}><main><Busy label={error || t('findsmith-project-loading-project')} /></main></Shell>
   const building = review?.status === 'building'
   const tab = !review && rulesTab === 'status' ? 'rules' : rulesTab
+  const pageTypos: TypoPage | null = (review ? review.page?.typos : project?.page_preview?.typos) ?? null
+  const editorPanel = editorTab === 'typos' && pageTypos ? 'typos' : 'page'
   const active = review?.status === 'active'
   const previewTitle = review ? review.current?.title : project.page_preview?.title
   const previewText = review ? (review.page ? text : undefined) : project.page_preview?.proposed_text
@@ -565,6 +571,11 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
         {commandStack}
         </>}
         {tab === 'options' && <>
+          <fieldset className="skip-options typo-options"><legend>{t('findsmith-project-typos')}</legend>
+            <label><input type="checkbox" checked={project.typos.enabled} onChange={event => updateTypos({enabled: event.target.checked})} />{t('findsmith-project-typos-enable')}</label>
+            <label><input type="checkbox" checked={project.typos.enabled && project.typos.skip_if_none} disabled={!project.typos.enabled} onChange={event => updateTypos({skip_if_none: event.target.checked})} />{t('findsmith-project-skip-no-typo')}</label>
+            <small>{t('findsmith-project-typos-help')}</small>
+          </fieldset>
           <fieldset className="skip-options"><legend>{t('findsmith-project-skip-options')}</legend>
             {skipToggles.map(([key, label]) => <label key={key}><input type="checkbox" checked={Boolean(project.skip[key])} onChange={event => updateSkip({[key]: event.target.checked})} />{t(label)}</label>)}
             <label>{t('findsmith-project-skip-contains')}<input value={project.skip.contains} onChange={event => updateSkip({contains: event.target.value})} /></label>
@@ -585,8 +596,8 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
       </section>
 
       <section className="pane editor-pane">
-        <div className="tabs"><span className="active">{review ? t('findsmith-project-review') : t('findsmith-project-preview')}</span>{review && <><span className="inactive" aria-disabled="true">{t('findsmith-project-history')}</span><span className="inactive" aria-disabled="true">{t('findsmith-project-what-links-here')}</span><span className="inactive" aria-disabled="true">{t('findsmith-project-logs')}</span><span className="inactive" aria-disabled="true">{t('findsmith-project-typos')}</span></>}</div>
-        {review ? <>
+        <div className="tabs"><button type="button" className={editorPanel === 'page' ? 'active' : ''} onClick={() => setEditorTab('page')}>{review ? t('findsmith-project-review') : t('findsmith-project-preview')}</button>{review && <><span className="inactive" aria-disabled="true">{t('findsmith-project-history')}</span><span className="inactive" aria-disabled="true">{t('findsmith-project-what-links-here')}</span><span className="inactive" aria-disabled="true">{t('findsmith-project-logs')}</span></>}{pageTypos ? <button type="button" className={editorPanel === 'typos' ? 'active' : ''} onClick={() => setEditorTab('typos')}>{t('findsmith-project-typos')}{pageTypos.stats.length > 0 ? ` (${pageTypos.stats.length})` : ''}</button> : <span className="inactive" aria-disabled="true" title={t('findsmith-project-typos-off')}>{t('findsmith-project-typos')}</span>}</div>
+        {editorPanel === 'typos' && pageTypos ? <TyposPanel typos={pageTypos} /> : review ? <>
           {review.page_error && <ErrorBox message={review.page_error} />}
           {review.status === 'complete' && <div className="notice review-finished" role="status"><p>{t('findsmith-project-review-finished', review.saved, review.skipped)}</p><button disabled={!!busy} onClick={() => submitProject(`/api/projects/${projectId}`, t('findsmith-project-busy-applying-rules'), true)}>{t('findsmith-project-apply-rules')}</button></div>}
           {review.page ? <>

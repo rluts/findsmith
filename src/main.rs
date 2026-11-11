@@ -6,6 +6,7 @@ mod config;
 mod csrf;
 mod database;
 mod diff;
+mod dotnet_regex;
 mod entities;
 mod error;
 mod jobs;
@@ -20,6 +21,7 @@ mod rules;
 mod saved_rules;
 mod skip;
 mod structural;
+mod typos;
 mod web;
 mod wikis;
 

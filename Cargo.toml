@@ -17,6 +17,8 @@ mwbot = { version = "0.8.0-rc.1", default-features = false, features = ["generat
 parsoid = "0.11.0-rc.1"
 reqwest = { version = "0.13", default-features = false }
 mwoauth = { version = "0.1.0-rc.1", features = ["axum"] }
+# 0.20.1 or later: earlier versions mishandle variable-length lookbehinds (#314, #331).
+fancy-regex = "0.20.1"
 regex = "1.13"
 sea-orm = { version = "2.0", default-features = false, features = ["sqlx-mysql", "runtime-tokio-rustls", "macros", "with-json", "with-chrono"] }
 sea-orm-migration = { version = "2.0", default-features = false, features = ["sqlx-mysql", "runtime-tokio-rustls"] }

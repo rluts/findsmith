@@ -19,6 +19,7 @@ use crate::{
     rules::TransformationResult,
     skip::{PageFacts, SkipMatcher, SkipOptions, SkipReason},
     structural::apply_with_wiki,
+    typos::lists::{TypoPageView, apply_typos},
     wikis,
 };
 
@@ -29,7 +30,7 @@ use super::responses::{
     csrf_error, error_page, internal_error, job_error_response, job_not_found,
     project_error_response, render,
 };
-use super::summary::{EDIT_SUMMARY_ATTRIBUTION_LINK, suggested_edit_summary};
+use super::summary::{EDIT_SUMMARY_ATTRIBUTION_LINK, suggested_edit_summary_with_typos};
 
 #[derive(Serialize)]
 struct ReviewResponse<'a> {
@@ -81,6 +82,7 @@ struct ReviewPageView {
     rules: Vec<RulePreviewView>,
     proposed_text: String,
     side_by_side_diff: Vec<SideBySideLine>,
+    typos: Option<TypoPageView>,
 }
 
 pub(super) fn localize_queue_entry(mut entry: QueueEntry) -> QueueEntry {
@@ -224,7 +226,12 @@ async fn review_response(
         skipped: counters.skipped,
         unavailable: counters.unavailable,
         rule_count: config.rules.len(),
-        suggested_edit_summary: suggested_edit_summary(&config.rules),
+        suggested_edit_summary: suggested_edit_summary_with_typos(
+            &config.rules,
+            page.as_ref()
+                .and_then(|page| page.typos.as_ref())
+                .map_or("", |typos| typos.summary.as_str()),
+        ),
         edit_summary_attribution_link: EDIT_SUMMARY_ATTRIBUTION_LINK,
         generation_message: localization::from_source(&state.generation_message),
         preparse_active: state.preparse_active,
@@ -250,6 +257,7 @@ pub(super) struct PageEvaluation {
     pub(super) result: TransformationResult,
     pub(super) skip: Option<SkipReason>,
     pub(super) bot_excluded: bool,
+    pub(super) typos: Option<TypoPageView>,
 }
 
 pub(super) enum EvaluationError {
@@ -274,7 +282,7 @@ pub(super) async fn evaluate_page(
         .await
         .map_err(EvaluationError::Load)?;
     let category_prefix = category_prefix_for_wiki(database, wiki_url).await;
-    let result = apply_with_wiki(
+    let mut result = apply_with_wiki(
         &config.rules,
         &snapshot.content,
         wiki_url,
@@ -283,6 +291,18 @@ pub(super) async fn evaluate_page(
     )
     .await
     .map_err(EvaluationError::Transform)?;
+    // AWB runs RegExTypoFix after find and replace.
+    let (text, typos) = apply_typos(
+        database,
+        wiki_url,
+        user_agent,
+        access_token,
+        &config.typos,
+        std::mem::take(&mut result.text),
+        &snapshot.title,
+    )
+    .await;
+    result.text = text;
     let skip = matcher.before_rules(&PageFacts {
         namespace: snapshot.namespace,
         redirect: snapshot.redirect,
@@ -296,14 +316,21 @@ pub(super) async fn evaluate_page(
         == Ok(false);
     let skip = skip
         .or(bot_excluded.then_some(SkipReason::BotExclusion))
+        .or_else(|| matcher.after_rules(&snapshot.content, &result.text, result.total_replacements))
         .or_else(|| {
-            matcher.after_rules(&snapshot.content, &result.text, result.total_replacements)
+            // A list that failed to load is reported on the page instead of skipping it.
+            (config.typos.skip_if_none
+                && typos
+                    .as_ref()
+                    .is_some_and(|typos| typos.error.is_none() && !typos.fixed))
+            .then_some(SkipReason::NoTypoFixed)
         });
     Ok(PageEvaluation {
         snapshot,
         result,
         skip,
         bot_excluded,
+        typos,
     })
 }
 
@@ -338,6 +365,7 @@ async fn review_page_view(
         result,
         skip,
         bot_excluded,
+        typos,
     } = evaluate_page(
         database,
         wiki_url,
@@ -400,5 +428,6 @@ async fn review_page_view(
             .collect(),
         proposed_text,
         side_by_side_diff,
+        typos,
     })
 }

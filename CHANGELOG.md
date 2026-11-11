@@ -2,6 +2,19 @@
 
 All notable changes to FindSmith are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## **Unreleased**
+
+### Added
+
+- Typo fixing with the wiki's `Project:AutoWikiBrowser/Typos` list, as in AutoWikiBrowser's RegExTypoFix. It runs after the replacement rules, skips templates, links, quotations, italics, comments and references the same way, and adds AWB's "typos fixed: …" text to the suggested edit summary.
+- A **Typos** tab showing which typo rules matched the current page, and the rules from the list that could not be used.
+- Skip option "Skip pages where no typo is fixed".
+
+### Changed
+
+- Regex replacement rules and regex skip conditions now use .NET regular-expression syntax, as in AutoWikiBrowser, so AWB find-and-replace settings work unchanged. This adds lookbehind of any length, backreferences and `$1a`-style replacements. Rules written for Rust syntax may need updating: `(?P<name>…)` becomes `(?<name>…)`, `\pL` becomes `\p{L}`, `[[:alpha:]]` and `&&`/`--` class operations are not supported, and `$` also matches before a final newline. A rule that runs too long on a page now stops with an error instead of hanging.
+- Typo lists are written for .NET regular expressions. A new compatibility layer runs them in Rust with .NET behaviour, including lookbehind of any length, backreferences, `$1a`-style replacements, `$` before a final newline and character-class subtraction.
+
 ## [0.1.0-alpha.5] - 2026-11-06
 
 ### Changed
