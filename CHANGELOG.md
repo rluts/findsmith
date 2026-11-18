@@ -2,6 +2,12 @@
 
 All notable changes to FindSmith are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## **Unreleased**
+
+### Changed
+
+- The diff now shows two unchanged lines before and after each change instead of one.
+
 ## [0.1.0-alpha.5] - 2026-11-06
 
 ### Changed
