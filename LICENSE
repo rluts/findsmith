@@ -4,3 +4,7 @@ The full license text is available at:
 https://www.gnu.org/licenses/gpl-3.0.txt
 
 SPDX-License-Identifier: GPL-3.0-or-later
+
+Translations of the interface messages in the i18n/ directory are made on translatewiki.net and are licensed under the Creative Commons Attribution 3.0 Unported license (CC BY 3.0), and also under GPL-3.0-or-later. Translators are credited in the @metadata authors list of each catalog.
+
+https://creativecommons.org/licenses/by/3.0/

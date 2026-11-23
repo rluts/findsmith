@@ -10,3 +10,6 @@ rust-buildpack
 .DS_Store
 .plan
 __pycache__/
+
+# autowikibrowser source code (for development purpose, some modules is a port of AWB)
+autowikibrowser-code-*/

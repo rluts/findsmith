@@ -7,6 +7,11 @@ All notable changes to FindSmith are documented in this file. The format is base
 ### Changed
 
 - The diff now shows two unchanged lines before and after each change instead of one.
+- The edit summary field no longer accepts more text than fits in 500 characters together with the FindSmith attribution.
+
+### Fixed
+
+- The P and S review shortcuts work on non-Latin keyboard layouts.
 
 ## [0.1.0-alpha.5] - 2026-11-06
 
