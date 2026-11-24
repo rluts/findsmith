@@ -106,7 +106,7 @@ async fn render_preview_response(
         Ok(None) => {
             return error_page(
                 StatusCode::NOT_FOUND,
-                "findsmith-api-project-not-found",
+                "Project not found",
                 "findsmith-api-this-project-does-not-exist-or-you-do-not-have-access-to-it",
                 "/workspace",
             );
@@ -191,7 +191,7 @@ async fn page_preview_response(
         Ok(None) => {
             return error_page(
                 StatusCode::NOT_FOUND,
-                "findsmith-api-project-not-found",
+                "Project not found",
                 "findsmith-api-this-project-does-not-exist-or-you-do-not-have-access-to-it",
                 "/workspace",
             );

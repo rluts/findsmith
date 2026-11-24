@@ -511,15 +511,17 @@ mod tests {
 
     #[test]
     fn backend_messages_resolve_from_catalog() {
-        assert!(SOURCE_KEYS.contains_key("Project not found"));
+        assert!(SOURCE_KEYS.contains_key("Could not save rule"));
+        assert_eq!(from_source("Could not save rule"), "Could not save rule");
+        // Text outside the catalog, such as hard-coded error titles, passes through.
         assert_eq!(from_source("Project not found"), "Project not found");
         assert_eq!(
             from_source("findsmith-api-new-messages"),
             "Read your new messages on this wiki before editing."
         );
         assert_eq!(
-            SOURCE_KEYS.get("Page list not found").map(String::as_str),
-            Some("findsmith-api-review-not-found")
+            SOURCE_KEYS.get("Could not add wiki").map(String::as_str),
+            Some("findsmith-api-could-not-add-wiki")
         );
         assert_eq!(
             SOURCE_KEYS

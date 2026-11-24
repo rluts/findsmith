@@ -161,7 +161,7 @@ async fn job_action_response(
     if state.edit_policy_blocked {
         return error_page(
             StatusCode::CONFLICT,
-            "findsmith-api-edit-blocked",
+            "Edit blocked",
             "findsmith-api-this-job-encountered-a-wiki-policy-warning-start-a-new-review-after-reso",
             &back_href,
         );
@@ -187,7 +187,7 @@ async fn job_action_response(
     if state.preparse_active && !matches!(form.action.as_str(), "preparse_step" | "preparse_stop") {
         return error_page(
             StatusCode::CONFLICT,
-            "findsmith-api-pre-parse-is-running",
+            "Pre-parse is running",
             "Stop pre-parse before reviewing pages.",
             &back_href,
         );
@@ -446,7 +446,7 @@ async fn queue_action_response(
     if state.edit_in_flight || state.edit_policy_blocked {
         return error_page(
             StatusCode::CONFLICT,
-            "findsmith-api-queue-locked",
+            "Queue locked",
             "findsmith-api-this-job-is-paused-after-an-edit-attempt-start-a-new-review-after-checki",
             &back_href,
         );
@@ -462,7 +462,7 @@ async fn queue_action_response(
     if state.preparse_active {
         return error_page(
             StatusCode::CONFLICT,
-            "findsmith-api-pre-parse-is-running",
+            "Pre-parse is running",
             "findsmith-api-stop-pre-parse-before-changing-the-queue",
             &back_href,
         );
@@ -500,7 +500,7 @@ async fn queue_action_response(
                 Err(message) => {
                     return error_page(
                         StatusCode::BAD_REQUEST,
-                        "findsmith-api-cannot-append-pages",
+                        "Cannot append pages",
                         &message,
                         &back_href,
                     );
@@ -512,7 +512,7 @@ async fn queue_action_response(
                     Err(error) => {
                         return error_page(
                             StatusCode::BAD_GATEWAY,
-                            "findsmith-api-could-not-append-pages",
+                            "Could not append pages",
                             &localization::required_with_args(
                                 "findsmith-api-mediawiki-request-error",
                                 &[&error.to_string()],

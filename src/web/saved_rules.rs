@@ -120,13 +120,13 @@ async fn delete_saved_rule_response(
         Ok(true) => Json(serde_json::json!({"ok": true})).into_response(),
         Ok(false) => error_page(
             StatusCode::NOT_FOUND,
-            "findsmith-api-saved-rule-not-found",
+            "Saved rule not found",
             "findsmith-api-saved-rule-unavailable",
             "/workspace",
         ),
         Err(message) => error_page(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "findsmith-api-could-not-delete-rule",
+            "Could not delete rule",
             &message,
             "/workspace",
         ),

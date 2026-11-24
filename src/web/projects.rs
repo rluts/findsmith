@@ -408,7 +408,7 @@ async fn duplicate_project_response(
         Ok(Some(project)) => action_response(format!("/projects/{}", project.id), Some(project.id)),
         Ok(None) => error_page(
             StatusCode::NOT_FOUND,
-            "findsmith-api-project-not-found",
+            "Project not found",
             "findsmith-api-this-project-does-not-exist-or-you-do-not-have-access-to-it",
             "/workspace",
         ),
@@ -552,7 +552,7 @@ async fn project_response(
         }
         Ok(None) => error_page(
             StatusCode::NOT_FOUND,
-            "findsmith-api-project-not-found",
+            "Project not found",
             "findsmith-api-this-project-does-not-exist-or-you-do-not-have-access-to-it",
             "/workspace",
         ),
@@ -576,7 +576,7 @@ async fn update_project_response(
         if state.edit_in_flight || state.edit_policy_blocked {
             return error_page(
                 StatusCode::CONFLICT,
-                "findsmith-api-review-is-paused",
+                "Page list is locked",
                 "findsmith-api-check-the-wiki-page-and-build-a-new-list-before-changing-rules-after-an",
                 &format!("/projects/{id}"),
             );
@@ -584,7 +584,7 @@ async fn update_project_response(
         if state.preparse_active || state.status.is_building() {
             return error_page(
                 StatusCode::CONFLICT,
-                "findsmith-api-review-is-busy",
+                "Page list is busy",
                 "findsmith-api-wait-for-list-generation-or-stop-pre-parse-before-changing-the-rules",
                 &format!("/projects/{id}"),
             );
@@ -649,7 +649,7 @@ pub(super) async fn save_project(
         Err(message) => {
             return Err(Box::new(error_page(
                 StatusCode::BAD_REQUEST,
-                "findsmith-api-invalid-replacement-rules",
+                "Invalid replacement rules",
                 &message,
                 &back_href,
             )));
@@ -658,7 +658,7 @@ pub(super) async fn save_project(
     if let Err(error) = RuleEngine::compile(&rules) {
         return Err(Box::new(error_page(
             StatusCode::BAD_REQUEST,
-            "findsmith-api-invalid-replacement-rules",
+            "Invalid replacement rules",
             &error.to_string(),
             &back_href,
         )));
@@ -668,7 +668,7 @@ pub(super) async fn save_project(
         Ok(None) => {
             return Err(Box::new(error_page(
                 StatusCode::NOT_FOUND,
-                "findsmith-api-project-not-found",
+                "Project not found",
                 "findsmith-api-this-project-does-not-exist-or-you-do-not-have-access-to-it",
                 "/workspace",
             )));
@@ -700,7 +700,7 @@ pub(super) async fn save_project(
         Err(message) => {
             return Err(Box::new(error_page(
                 StatusCode::BAD_REQUEST,
-                "findsmith-api-invalid-queue-limit",
+                "Invalid queue limit",
                 &message,
                 &back_href,
             )));
@@ -712,7 +712,7 @@ pub(super) async fn save_project(
             Err(message) => {
                 return Err(Box::new(error_page(
                     StatusCode::BAD_REQUEST,
-                    "findsmith-api-invalid-namespaces",
+                    "Invalid namespaces",
                     &message,
                     &back_href,
                 )));
@@ -726,7 +726,7 @@ pub(super) async fn save_project(
     {
         return Err(Box::new(error_page(
             StatusCode::BAD_REQUEST,
-            "findsmith-api-invalid-namespaces",
+            "Invalid namespaces",
             "findsmith-api-select-namespaces-available-on-this-wiki",
             &back_href,
         )));
@@ -736,7 +736,7 @@ pub(super) async fn save_project(
         Err(message) => {
             return Err(Box::new(error_page(
                 StatusCode::BAD_REQUEST,
-                "findsmith-api-invalid-page-sources",
+                "Invalid page sources",
                 &message,
                 &back_href,
             )));
@@ -746,7 +746,7 @@ pub(super) async fn save_project(
     if let Err(message) = skip::validate(&skip) {
         return Err(Box::new(error_page(
             StatusCode::BAD_REQUEST,
-            "findsmith-api-invalid-skip-options",
+            "Invalid skip options",
             &message,
             &back_href,
         )));
@@ -767,7 +767,7 @@ pub(super) async fn save_project(
     if let Err(message) = validate_project_sources(&state) {
         return Err(Box::new(error_page(
             StatusCode::BAD_REQUEST,
-            "findsmith-api-invalid-page-sources",
+            "Invalid page sources",
             &message,
             &back_href,
         )));
@@ -781,7 +781,7 @@ pub(super) async fn save_project(
         Ok(Some(project)) => Ok((project, saved_state)),
         Ok(None) => Err(Box::new(error_page(
             StatusCode::NOT_FOUND,
-            "findsmith-api-project-not-found",
+            "Project not found",
             "findsmith-api-this-project-does-not-exist-or-you-do-not-have-access-to-it",
             "/workspace",
         ))),
@@ -809,7 +809,7 @@ async fn delete_project_response(
         Ok(true) => action_response("/workspace".to_owned(), Some(id.to_owned())),
         Ok(false) => error_page(
             StatusCode::NOT_FOUND,
-            "findsmith-api-project-not-found",
+            "Project not found",
             "findsmith-api-this-project-does-not-exist-or-you-do-not-have-access-to-it",
             "/workspace",
         ),

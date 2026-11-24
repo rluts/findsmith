@@ -33,7 +33,7 @@ pub(super) fn action_response(redirect: String, id: Option<String>) -> Response 
 pub(super) fn job_not_found(project_id: &str) -> Response {
     error_page(
         StatusCode::NOT_FOUND,
-        "findsmith-api-review-not-found",
+        "Page list not found",
         "findsmith-api-this-review-does-not-exist-or-you-do-not-have-access-to-it",
         &format!("/projects/{project_id}"),
     )
@@ -43,7 +43,7 @@ pub(super) fn job_error_response(error: JobError, back_href: &str) -> Response {
     match error {
         JobError::Conflict => error_page(
             StatusCode::CONFLICT,
-            "findsmith-api-review-changed-elsewhere",
+            "Page list changed elsewhere",
             "findsmith-api-reload-the-review-to-get-the-latest-progress-then-try-again",
             back_href,
         ),
@@ -56,19 +56,19 @@ pub(super) fn project_error_response(error: ProjectError, back_href: &str) -> Re
     match error {
         ProjectError::InvalidName => error_page(
             StatusCode::BAD_REQUEST,
-            "findsmith-api-invalid-project-name",
+            "Invalid project name",
             "findsmith-api-project-name-must-contain-between-1-and-255-characters",
             back_href,
         ),
         ProjectError::DuplicateName => error_page(
             StatusCode::CONFLICT,
-            "findsmith-api-project-name-already-exists",
+            "Project name already exists",
             "findsmith-api-choose-a-different-name-for-this-project",
             back_href,
         ),
         ProjectError::Conflict => error_page(
             StatusCode::CONFLICT,
-            "findsmith-api-project-changed-elsewhere",
+            "Project changed elsewhere",
             "findsmith-api-reload-the-project-to-get-the-latest-version-then-apply-your-changes-aga",
             back_href,
         ),
@@ -80,7 +80,7 @@ pub(super) fn project_error_response(error: ProjectError, back_href: &str) -> Re
 pub(super) fn csrf_error(back_href: &str) -> Response {
     error_page(
         StatusCode::FORBIDDEN,
-        "findsmith-api-request-could-not-be-verified",
+        "Request could not be verified",
         "findsmith-api-reload-the-page-and-try-again-no-changes-were-made",
         back_href,
     )

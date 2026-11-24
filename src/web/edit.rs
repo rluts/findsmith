@@ -41,7 +41,7 @@ pub(super) async fn save_current_page(
     if !state.can_save_current() {
         return error_page(
             StatusCode::CONFLICT,
-            "findsmith-api-cannot-save",
+            "Cannot save",
             "Select a pending or skipped page in an active or completed page list.",
             back_href,
         );
@@ -49,7 +49,7 @@ pub(super) async fn save_current_page(
     if state.edit_policy_blocked {
         return error_page(
             StatusCode::CONFLICT,
-            "findsmith-api-edit-blocked",
+            "Edit blocked",
             "findsmith-api-this-job-encountered-a-wiki-policy-warning-start-a-new-review-after-reso",
             back_href,
         );
@@ -59,7 +59,7 @@ pub(super) async fn save_current_page(
     else {
         return error_page(
             StatusCode::BAD_REQUEST,
-            "findsmith-api-cannot-save",
+            "Cannot save",
             "The proposed text, base revision, and start timestamp are required.",
             back_href,
         );
@@ -75,7 +75,7 @@ pub(super) async fn save_current_page(
     if text.len() > crate::rules::MAX_OUTPUT_BYTES {
         return error_page(
             StatusCode::BAD_REQUEST,
-            "findsmith-api-cannot-save",
+            "Cannot save",
             "The proposed wikitext is too large.",
             back_href,
         );
@@ -88,12 +88,7 @@ pub(super) async fn save_current_page(
     let summary = match complete_edit_summary(&summary_prefix) {
         Ok(summary) => summary,
         Err(message) => {
-            return error_page(
-                StatusCode::BAD_REQUEST,
-                "findsmith-api-cannot-save",
-                message,
-                back_href,
-            );
+            return error_page(StatusCode::BAD_REQUEST, "Cannot save", message, back_href);
         }
     };
     let title = state
@@ -257,7 +252,7 @@ pub(super) async fn save_current_page(
     if let Err(seconds) = policy::reserve_edit_slot(owner) {
         return error_page(
             StatusCode::TOO_MANY_REQUESTS,
-            "findsmith-api-cannot-save",
+            "Cannot save",
             &localization::required_with_args(
                 "findsmith-api-save-too-fast",
                 &[&seconds.to_string()],
@@ -521,7 +516,7 @@ pub(super) async fn verify_edit_response(
         Err(error) => {
             return error_page(
                 StatusCode::BAD_GATEWAY,
-                "findsmith-api-could-not-verify-edit",
+                "Could not check the edit",
                 &localization::required_with_args(
                     "findsmith-api-mediawiki-request-error",
                     &[error::classify(&error).label()],
@@ -558,7 +553,7 @@ pub(super) async fn verify_edit_response(
         Verification::NotSaved | Verification::Unknown if remaining_seconds > 0 => {
             return error_page(
                 StatusCode::CONFLICT,
-                "findsmith-api-edit-still-in-progress",
+                "Edit may still be saving",
                 &localization::required_with_args(
                     "findsmith-api-edit-still-in-progress-details",
                     &[&remaining_seconds.to_string()],
@@ -577,7 +572,7 @@ pub(super) async fn verify_edit_response(
         Verification::Unknown => {
             return error_page(
                 StatusCode::CONFLICT,
-                "findsmith-api-edit-outcome-unconfirmed",
+                "Edit outcome not confirmed",
                 "findsmith-api-edit-outcome-unconfirmed-details",
                 back_href,
             );

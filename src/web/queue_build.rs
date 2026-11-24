@@ -100,7 +100,7 @@ async fn start_job_response(
         Ok(None) => {
             return error_page(
                 StatusCode::NOT_FOUND,
-                "findsmith-api-project-not-found",
+                "Project not found",
                 "findsmith-api-this-project-does-not-exist-or-you-do-not-have-access-to-it",
                 "/workspace",
             );
@@ -114,7 +114,7 @@ async fn start_job_response(
     if let Err(error) = RuleEngine::compile(&state.rules) {
         return error_page(
             StatusCode::BAD_REQUEST,
-            "findsmith-api-invalid-replacement-rules",
+            "Invalid replacement rules",
             &error.to_string(),
             &back_href,
         );
@@ -122,7 +122,7 @@ async fn start_job_response(
     if let Err(message) = validate_project_sources(&state) {
         return error_page(
             StatusCode::BAD_REQUEST,
-            "findsmith-api-cannot-start-review",
+            "Cannot build page list",
             &message,
             &back_href,
         );
@@ -130,7 +130,7 @@ async fn start_job_response(
     if !state.has_sources() {
         return error_page(
             StatusCode::BAD_REQUEST,
-            "findsmith-api-cannot-start-review",
+            "Cannot build page list",
             "findsmith-api-add-at-least-one-page-source",
             &back_href,
         );
@@ -140,7 +140,7 @@ async fn start_job_response(
         Err(message) => {
             return error_page(
                 StatusCode::BAD_REQUEST,
-                "findsmith-api-cannot-start-review",
+                "Cannot build page list",
                 &message,
                 &back_href,
             );
@@ -151,7 +151,7 @@ async fn start_job_response(
             if let Some(message) = policy::job_start_blocker(&permissions) {
                 return error_page(
                     StatusCode::FORBIDDEN,
-                    "findsmith-api-cannot-start-review",
+                    "Cannot build page list",
                     message,
                     &back_href,
                 );
@@ -160,7 +160,7 @@ async fn start_job_response(
         Err(_) => {
             return error_page(
                 StatusCode::BAD_GATEWAY,
-                "findsmith-api-cannot-start-review",
+                "Cannot build page list",
                 "findsmith-api-start-rights-unverified",
                 &back_href,
             );
