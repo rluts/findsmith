@@ -525,7 +525,7 @@ mod tests {
         );
         assert_eq!(
             SOURCE_KEYS
-                .get("Edit outcome unknown until Wikimedia responds; do not retry this job if the request is interrupted.")
+                .get("The edit outcome is unknown until Wikimedia responds.")
                 .map(String::as_str),
             Some("findsmith-api-edit-outcome-unknown-reason")
         );

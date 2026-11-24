@@ -332,7 +332,7 @@
   "findsmith-api-edit-rights-missing": "Your account lacks read or edit rights on this wiki.",
   "findsmith-api-preparse-no-changes": "No changes after rules (pre-parse).",
   "findsmith-api-manual-skip": "Skipped manually.",
-  "findsmith-api-edit-outcome-unknown-reason": "Edit outcome unknown until Wikimedia responds; do not retry this job if the request is interrupted.",
+  "findsmith-api-edit-outcome-unknown-reason": "The edit outcome is unknown until Wikimedia responds.",
   "findsmith-api-groups-load": "Could not load groups for $1: $2",
   "findsmith-api-wiki-connect-error": "Could not connect to this wiki: $1",
   "findsmith-api-wiki-info-error": "Could not read wiki information: $1",
