@@ -5,7 +5,7 @@ Thank you for helping improve FindSmith. This guide covers how to set up a devel
 ## Ways to contribute
 
 - Report bugs and suggest features on [Wikimedia Phabricator](https://phabricator.wikimedia.org/tag/tool-findsmith/).
-<!-- - Translate the interface on translatewiki.net: TODO: add translatewiki link and uncomment this line after integration. See https://phabricator.wikimedia.org/T440744 -->
+- [Translate the interface on translatewiki.net](https://translatewiki.net/w/i.php?title=Special:Translate&group=findsmith)
 - Improve the code or documentation through merge requests on [Wikimedia GitLab](https://gitlab.wikimedia.org/toolforge-repos/findsmith).
 
 ## Code of conduct

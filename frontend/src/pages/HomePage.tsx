@@ -16,6 +16,7 @@ export function HomePage() {
         <h1>{t('findsmith-home-title')}</h1>
         <p className="lead">{t('findsmith-home-lead')}</p>
         {stage && <div className="notice"><strong>{t(`findsmith-home-${stage}-title`)}</strong><br />{t(`findsmith-home-${stage}-message`)}</div>}
+        <p><a href="https://translatewiki.net/w/i.php?title=Special:Translate&group=findsmith" target="_blank" rel="noreferrer">Help translate</a></p>
       </section>
       <section className="login panel">
         <h2>{t('findsmith-home-account')}</h2>
