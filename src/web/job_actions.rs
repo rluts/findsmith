@@ -19,7 +19,7 @@ use crate::{
 };
 
 use super::AppState;
-use super::edit::{save_current_page, verify_edit_response};
+use super::edit::{edit_blocked_detail, save_current_page, verify_edit_response};
 use super::project_form::split_lines;
 use super::responses::{
     action_response, csrf_error, error_page, internal_error, job_error_response, job_not_found,
@@ -162,7 +162,7 @@ async fn job_action_response(
         return error_page(
             StatusCode::CONFLICT,
             "Edit blocked",
-            "findsmith-api-this-job-encountered-a-wiki-policy-warning-start-a-new-review-after-reso",
+            edit_blocked_detail(&state),
             &back_href,
         );
     }
@@ -447,7 +447,7 @@ async fn queue_action_response(
         return error_page(
             StatusCode::CONFLICT,
             "Queue locked",
-            "findsmith-api-this-job-is-paused-after-an-edit-attempt-start-a-new-review-after-checki",
+            "The page list is locked after an edit attempt. Check whether the edit was saved, or build a new page list.",
             &back_href,
         );
     }
@@ -463,7 +463,7 @@ async fn queue_action_response(
         return error_page(
             StatusCode::CONFLICT,
             "Pre-parse is running",
-            "findsmith-api-stop-pre-parse-before-changing-the-queue",
+            "Stop pre-parse before changing the queue.",
             &back_href,
         );
     }

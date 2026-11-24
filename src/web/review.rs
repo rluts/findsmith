@@ -49,6 +49,10 @@ struct ReviewResponse<'a> {
     suggested_edit_summary: String,
     edit_summary_attribution_link: &'static str,
     generation_message: String,
+    generation_found: usize,
+    generation_duplicates: usize,
+    generation_limit_reached: bool,
+    queue_limit: usize,
     preparse_active: bool,
     preparse_cursor: usize,
     edit_in_flight: bool,
@@ -82,7 +86,7 @@ struct ReviewPageView {
     side_by_side_diff: Vec<SideBySideLine>,
 }
 
-pub(super) fn localize_queue_entry(mut entry: QueueEntry) -> QueueEntry {
+fn localize_queue_entry(mut entry: QueueEntry) -> QueueEntry {
     entry.reason = entry.reason.map(|reason| {
         localization::message(&reason).unwrap_or_else(|| localization::from_source(&reason))
     });
@@ -225,6 +229,10 @@ async fn review_response(
         suggested_edit_summary: suggested_edit_summary(&config.rules),
         edit_summary_attribution_link: EDIT_SUMMARY_ATTRIBUTION_LINK,
         generation_message: localization::from_source(&state.generation_message),
+        generation_found: state.generation_found,
+        generation_duplicates: state.generation_duplicates,
+        generation_limit_reached: state.generation_limit_reached,
+        queue_limit: state.queue_limit,
         preparse_active: state.preparse_active,
         preparse_cursor: state.preparse_cursor,
         edit_in_flight: state.edit_in_flight,

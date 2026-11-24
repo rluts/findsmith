@@ -530,12 +530,15 @@ mod tests {
             Some("findsmith-api-edit-outcome-unknown-reason")
         );
         assert_eq!(
-            message_with_args("findsmith-api-source-more", &["Alpha", "2"]).as_deref(),
-            Some("Alpha and 2 more")
+            message_with_args("findsmith-api-protection-until", &["edit", "sysop", "2027"])
+                .as_deref(),
+            Some("edit: sysop until 2027")
         );
+        // An argument that looks like a placeholder is not substituted again.
         assert_eq!(
-            message_with_args("findsmith-api-source-more", &["$2", "3"]).as_deref(),
-            Some("$2 and 3 more")
+            message_with_args("findsmith-api-protection-until", &["$2", "sysop", "2027"])
+                .as_deref(),
+            Some("$2: sysop until 2027")
         );
     }
 

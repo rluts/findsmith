@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     csrf,
     entities::project,
-    jobs::{JobConfigV1, JobRepository, JobState, QueueEntry},
+    jobs::{JobConfigV1, JobRepository, JobState},
     lists::{validate_namespaces, validate_queue_limit},
     localization,
     projects::{ProjectRepository, ProjectState, ReplacementRule},
@@ -32,7 +32,6 @@ use super::responses::{
     action_response, csrf_error, error_page, internal_error, job_error_response,
     project_error_response, render,
 };
-use super::review::localize_queue_entry;
 
 #[derive(Serialize)]
 struct WorkspaceResponse<'a> {
@@ -69,23 +68,13 @@ pub(super) struct ProjectResponse<'a> {
     pub(super) page_preview: Option<&'a PagePreviewView>,
     pub(super) page_preview_error: Option<String>,
     pub(super) latest_job_id: &'a str,
-    pub(super) latest_job_status: &'a str,
-    pub(super) latest_job_message: &'a str,
-    pub(super) latest_job_total: usize,
-    pub(super) latest_job_found: usize,
-    pub(super) latest_job_duplicates: usize,
-    pub(super) latest_job_limit_reached: bool,
-    pub(super) latest_job_building: bool,
     pub(super) latest_job_outdated: bool,
-    pub(super) latest_queue_preview: &'a [QueueEntry],
 }
 
 #[derive(Serialize)]
 pub(super) struct PageSourceView {
     pub(super) kind: &'static str,
-    pub(super) label: String,
     pub(super) value: String,
-    pub(super) summary: String,
 }
 
 #[derive(Serialize)]
@@ -460,66 +449,20 @@ async fn project_response(
                         Ok(job) => job,
                         Err(error) => return job_error_response(error, &format!("/projects/{id}")),
                     };
-                    let (
-                        latest_job_id,
-                        latest_job_status,
-                        latest_job_message,
-                        latest_job_total,
-                        latest_job_found,
-                        latest_job_duplicates,
-                        latest_job_limit_reached,
-                        latest_job_building,
-                        latest_job_outdated,
-                        latest_queue_preview,
-                    ) = match latest_job {
+                    // Autosave updates the project, not the page list: report when the
+                    // list still runs with an older configuration.
+                    let (latest_job_id, latest_job_outdated) = match latest_job {
                         Some(job) => {
-                            // Autosave updates the project, not the review: report when the
-                            // review still runs with an older configuration.
                             let outdated = serde_json::from_value::<JobConfigV1>(job.config_json)
                                 .is_ok_and(|config| {
                                     config.rules != state.rules
                                         || config.skip != state.skip
                                         || config.namespaces != state.namespaces
                                 });
-                            let job_state: JobState = match serde_json::from_value(job.state_json) {
-                                Ok(state) => state,
-                                Err(error) => return internal_error(error),
-                            };
-                            let preview = job_state
-                                .queue
-                                .iter()
-                                .take(10)
-                                .cloned()
-                                .map(localize_queue_entry)
-                                .collect();
-                            (
-                                job.id,
-                                job_state.status.label().to_owned(),
-                                job_state.generation_message,
-                                job_state.queue.len(),
-                                job_state.generation_found,
-                                job_state.generation_duplicates,
-                                job_state.generation_limit_reached,
-                                job_state.status.is_building(),
-                                outdated,
-                                preview,
-                            )
+                            (job.id, outdated)
                         }
-                        None => (
-                            String::new(),
-                            String::new(),
-                            String::new(),
-                            0,
-                            0,
-                            0,
-                            false,
-                            false,
-                            false,
-                            Vec::new(),
-                        ),
+                        None => (String::new(), false),
                     };
-                    let latest_job_status = localization::from_source(&latest_job_status);
-                    let latest_job_message = localization::from_source(&latest_job_message);
                     render_project(ProjectResponse {
                         project_id: &project.id,
                         project_name: &project.name,
@@ -536,15 +479,7 @@ async fn project_response(
                         page_preview: None,
                         page_preview_error: None,
                         latest_job_id: &latest_job_id,
-                        latest_job_status: &latest_job_status,
-                        latest_job_message: &latest_job_message,
-                        latest_job_total,
-                        latest_job_found,
-                        latest_job_duplicates,
-                        latest_job_limit_reached,
-                        latest_job_building,
                         latest_job_outdated,
-                        latest_queue_preview: &latest_queue_preview,
                     })
                 }
                 Err(error) => internal_error(error),
@@ -577,7 +512,7 @@ async fn update_project_response(
             return error_page(
                 StatusCode::CONFLICT,
                 "Page list is locked",
-                "findsmith-api-check-the-wiki-page-and-build-a-new-list-before-changing-rules-after-an",
+                "Rules cannot be changed until the last edit is checked. Check the page on the wiki, then build a new page list.",
                 &format!("/projects/{id}"),
             );
         }
@@ -585,7 +520,7 @@ async fn update_project_response(
             return error_page(
                 StatusCode::CONFLICT,
                 "Page list is busy",
-                "findsmith-api-wait-for-list-generation-or-stop-pre-parse-before-changing-the-rules",
+                "Wait for list generation or stop pre-parse before changing the rules.",
                 &format!("/projects/{id}"),
             );
         }
@@ -727,7 +662,7 @@ pub(super) async fn save_project(
         return Err(Box::new(error_page(
             StatusCode::BAD_REQUEST,
             "Invalid namespaces",
-            "findsmith-api-select-namespaces-available-on-this-wiki",
+            "Select namespaces available on this wiki.",
             &back_href,
         )));
     }

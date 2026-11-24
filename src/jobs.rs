@@ -46,17 +46,6 @@ pub enum JobStatus {
 }
 
 impl JobStatus {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Building => "findsmith-api-building-queue",
-            Self::Active => "findsmith-api-active",
-            Self::SaveFailed => "findsmith-api-save-failed",
-            Self::Cancelled => "findsmith-api-cancelled",
-            Self::Failed => "findsmith-api-failed",
-            Self::Complete => "findsmith-api-complete",
-        }
-    }
-
     pub fn is_building(&self) -> bool {
         matches!(self, Self::Building)
     }
@@ -161,9 +150,6 @@ impl JobState {
             })
             .collect();
         state.finish_build();
-        state.generation_message =
-            "findsmith-api-rules-changed-review-every-page-again-against-its-latest-revision"
-                .to_owned();
         state
     }
 
@@ -238,10 +224,8 @@ impl JobState {
     }
 
     pub fn finish_build(&mut self) {
-        self.generation_message = crate::localization::required_with_args(
-            "findsmith-api-generation-ready-count",
-            &[&self.queue.len().to_string()],
-        );
+        // The message only describes a build in progress or one that failed.
+        self.generation_message.clear();
         self.status = if self.queue.is_empty() {
             JobStatus::Complete
         } else {
@@ -283,7 +267,6 @@ impl JobState {
         self.queue.clear();
         self.position = 0;
         self.status = JobStatus::Complete;
-        self.generation_message = "findsmith-api-queue-cleared".to_owned();
     }
 
     pub fn sort_by_title(&mut self) {

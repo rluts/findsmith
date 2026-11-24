@@ -419,7 +419,7 @@ async fn build_job_queue(
         &project_id,
         &job_id,
         Vec::new(),
-        "findsmith-api-queue-ready",
+        "",
         true,
     )
     .await;

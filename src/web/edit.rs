@@ -50,7 +50,7 @@ pub(super) async fn save_current_page(
         return error_page(
             StatusCode::CONFLICT,
             "Edit blocked",
-            "findsmith-api-this-job-encountered-a-wiki-policy-warning-start-a-new-review-after-reso",
+            edit_blocked_detail(state),
             back_href,
         );
     }
@@ -324,7 +324,7 @@ pub(super) async fn save_current_page(
                 entry.reason = Some(if ambiguous {
                     "findsmith-api-save-outcome-ambiguous".to_owned()
                 } else if repeated {
-                    "findsmith-api-save-repeated-failures".to_owned()
+                    REPEATED_FAILURES.to_owned()
                 } else if kind == ApiFailureKind::Conflict {
                     "findsmith-api-save-conflict".to_owned()
                 } else if kind == ApiFailureKind::AbuseFilter {
@@ -354,6 +354,18 @@ pub(super) async fn save_current_page(
             record_late_save(repository, owner, project_id, job_id, save, back_href).await
         }
         (Err(error), _) => job_error_response(error, back_href),
+    }
+}
+
+const REPEATED_FAILURES: &str = "findsmith-api-save-repeated-failures";
+
+/// Explains why editing is blocked. Repeated failures of any kind block it
+/// too, and those are not wiki policy warnings.
+pub(super) fn edit_blocked_detail(state: &JobState) -> &'static str {
+    if state.current().and_then(|entry| entry.reason.as_deref()) == Some(REPEATED_FAILURES) {
+        REPEATED_FAILURES
+    } else {
+        "findsmith-api-this-job-encountered-a-wiki-policy-warning-start-a-new-review-after-reso"
     }
 }
 
@@ -756,6 +768,16 @@ mod tests {
             edit_result: None,
             edit_attempt: None,
         }
+    }
+
+    #[test]
+    fn blocked_editing_explains_repeated_failures_separately() {
+        let mut state = JobState::new(vec![queue_entry("A")]);
+        state.edit_policy_blocked = true;
+        state.queue[0].reason = Some("findsmith-api-save-abuse-filter".to_owned());
+        assert!(edit_blocked_detail(&state).contains("wiki-policy-warning"));
+        state.queue[0].reason = Some(REPEATED_FAILURES.to_owned());
+        assert_eq!(edit_blocked_detail(&state), REPEATED_FAILURES);
     }
 
     #[test]

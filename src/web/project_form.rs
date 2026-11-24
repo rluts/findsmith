@@ -109,28 +109,9 @@ pub(super) fn legacy_sources(sources: &[PageSource]) -> LegacySourceLists {
 pub(super) fn page_source_views(sources: &[PageSource]) -> Vec<PageSourceView> {
     sources
         .iter()
-        .map(|source| {
-            let first = source
-                .values
-                .first()
-                .map(String::as_str)
-                .unwrap_or_default();
-            let summary = if source.kind == PageSourceKind::Watchlist {
-                localization::required("findsmith-project-source-watchlist")
-            } else if source.values.len() > 1 {
-                localization::required_with_args(
-                    "findsmith-api-source-more",
-                    &[first, &(source.values.len() - 1).to_string()],
-                )
-            } else {
-                first.to_owned()
-            };
-            PageSourceView {
-                kind: source.kind.form_value(),
-                label: source_label(source.kind),
-                value: source.values.join("\n"),
-                summary,
-            }
+        .map(|source| PageSourceView {
+            kind: source.kind.form_value(),
+            value: source.values.join("\n"),
         })
         .collect()
 }

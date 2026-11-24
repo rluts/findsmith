@@ -263,15 +263,7 @@ async fn page_preview_response(
         page_preview: Some(&page_preview),
         page_preview_error: None,
         latest_job_id: "",
-        latest_job_status: "",
-        latest_job_message: "",
-        latest_job_total: 0,
-        latest_job_found: 0,
-        latest_job_duplicates: 0,
-        latest_job_limit_reached: false,
-        latest_job_building: false,
         latest_job_outdated: false,
-        latest_queue_preview: &[],
     })
 }
 
@@ -303,15 +295,7 @@ async fn render_page_preview_error(
         page_preview: None,
         page_preview_error: Some(localization::from_source(message)),
         latest_job_id: "",
-        latest_job_status: "",
-        latest_job_message: "",
-        latest_job_total: 0,
-        latest_job_found: 0,
-        latest_job_duplicates: 0,
-        latest_job_limit_reached: false,
-        latest_job_building: false,
         latest_job_outdated: false,
-        latest_queue_preview: &[],
     })
 }
 

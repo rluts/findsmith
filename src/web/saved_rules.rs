@@ -86,7 +86,7 @@ async fn save_rule_response(
     match saved_rules::save(database, owner, id, rule).await {
         Ok(saved) => Json(saved).into_response(),
         Err(message) => error_page(
-            if message == "findsmith-api-saved-rule-unavailable" {
+            if message == saved_rules::RULE_UNAVAILABLE {
                 StatusCode::NOT_FOUND
             } else {
                 StatusCode::BAD_REQUEST
@@ -121,7 +121,7 @@ async fn delete_saved_rule_response(
         Ok(false) => error_page(
             StatusCode::NOT_FOUND,
             "Saved rule not found",
-            "findsmith-api-saved-rule-unavailable",
+            saved_rules::RULE_UNAVAILABLE,
             "/workspace",
         ),
         Err(message) => error_page(
