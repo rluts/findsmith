@@ -38,7 +38,8 @@ impl JobConfigV1 {
 pub enum JobStatus {
     Building,
     Active,
-    Stopped,
+    /// Backward compatibility
+    SaveFailed,
     Cancelled,
     Failed,
     Complete,
@@ -49,7 +50,7 @@ impl JobStatus {
         match self {
             Self::Building => "findsmith-api-building-queue",
             Self::Active => "findsmith-api-active",
-            Self::Stopped => "findsmith-api-stopped",
+            Self::SaveFailed => "findsmith-api-save-failed",
             Self::Cancelled => "findsmith-api-cancelled",
             Self::Failed => "findsmith-api-failed",
             Self::Complete => "findsmith-api-complete",
@@ -59,13 +60,17 @@ impl JobStatus {
     pub fn is_building(&self) -> bool {
         matches!(self, Self::Building)
     }
+
+    /// Whether the user can move between pages and save them.
+    pub fn is_navigable(&self) -> bool {
+        matches!(self, Self::Active | Self::SaveFailed)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum QueueEntryStatus {
     Pending,
-    Reviewed,
     Saved,
     Skipped,
     Missing,
@@ -325,14 +330,12 @@ impl JobState {
     }
 
     pub fn can_save_current(&self) -> bool {
-        matches!(self.status, JobStatus::Active | JobStatus::Complete)
+        (self.status.is_navigable() || self.status == JobStatus::Complete)
             && !self.preparse_active
             && self.current().is_some_and(|entry| {
                 matches!(
                     entry.status,
-                    QueueEntryStatus::Pending
-                        | QueueEntryStatus::Reviewed
-                        | QueueEntryStatus::Skipped
+                    QueueEntryStatus::Pending | QueueEntryStatus::Skipped
                 )
             })
     }
@@ -342,11 +345,7 @@ impl JobState {
         for entry in &self.queue {
             match entry.status {
                 QueueEntryStatus::Pending => counters.pending += 1,
-                QueueEntryStatus::Reviewed => counters.reviewed += 1,
-                QueueEntryStatus::Saved => {
-                    counters.reviewed += 1;
-                    counters.saved += 1;
-                }
+                QueueEntryStatus::Saved => counters.saved += 1,
                 QueueEntryStatus::Skipped => counters.skipped += 1,
                 QueueEntryStatus::Missing | QueueEntryStatus::Invalid => counters.unavailable += 1,
             }
@@ -358,45 +357,27 @@ impl JobState {
         if self.queue.is_empty() {
             return;
         }
-        if self.status == JobStatus::Active {
+        if self.status.is_navigable() {
             self.position = self.position.saturating_sub(1);
         }
         self.status = JobStatus::Active;
-    }
-
-    pub fn resume(&mut self) -> bool {
-        if self.status != JobStatus::Stopped || self.queue.is_empty() {
-            return false;
-        }
-        self.status = JobStatus::Active;
-        true
     }
 
     pub fn advance(&mut self, status: QueueEntryStatus, reason: Option<String>) {
         let after_save = status == QueueEntryStatus::Saved;
         if let Some(entry) = self.queue.get_mut(self.position)
             && (entry.status.is_pending()
-                || (after_save
-                    && matches!(
-                        entry.status,
-                        QueueEntryStatus::Reviewed | QueueEntryStatus::Skipped
-                    )))
+                || (after_save && entry.status == QueueEntryStatus::Skipped))
         {
             entry.status = status;
             entry.reason = reason;
         }
         let next = (self.position + 1..self.queue.len())
             .chain(0..self.position)
-            .find(|&index| {
-                let entry = &self.queue[index];
-                entry.status.is_pending()
-                    || (after_save && entry.status == QueueEntryStatus::Reviewed)
-            });
+            .find(|&index| self.queue[index].status.is_pending());
         if let Some(index) = next {
             self.position = index;
-            if after_save && !self.queue.iter().any(|entry| entry.status.is_pending()) {
-                self.status = JobStatus::Complete;
-            }
+            self.status = JobStatus::Active;
         } else {
             self.status = JobStatus::Complete;
         }
@@ -410,7 +391,6 @@ fn default_queue_limit() -> usize {
 #[derive(Default)]
 pub struct JobCounters {
     pub pending: usize,
-    pub reviewed: usize,
     pub saved: usize,
     pub skipped: usize,
     pub unavailable: usize,
@@ -427,7 +407,7 @@ impl fmt::Display for JobError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Conflict => formatter
-                .write_str("This review changed in another request. Reload it and try again."),
+                .write_str("This page list changed in another request. Reload it and try again."),
             Self::Database(error) => error.fmt(formatter),
             Self::Serialization(error) => error.fmt(formatter),
         }
@@ -632,24 +612,27 @@ mod tests {
     #[test]
     fn advancing_records_result_and_completes_at_end() {
         let mut state = JobState::new(vec![entry("A"), entry("B")]);
-        state.advance(QueueEntryStatus::Reviewed, None);
+        state.advance(QueueEntryStatus::Saved, None);
         assert_eq!(state.position, 1);
-        assert_eq!(state.queue[0].status, QueueEntryStatus::Reviewed);
+        assert_eq!(state.queue[0].status, QueueEntryStatus::Saved);
         state.advance(QueueEntryStatus::Skipped, Some("User skipped".to_owned()));
         assert_eq!(state.status, JobStatus::Complete);
         assert_eq!(state.counters().skipped, 1);
     }
 
     #[test]
-    fn resume_keeps_position_and_review_decisions() {
+    fn navigating_after_a_failed_save_makes_the_job_active() {
         let mut state = JobState::new(vec![entry("A"), entry("B")]);
-        state.advance(QueueEntryStatus::Reviewed, None);
-        state.status = JobStatus::Stopped;
-        assert!(state.resume());
+        state.status = JobStatus::SaveFailed;
+        assert!(state.can_save_current());
+        state.advance(QueueEntryStatus::Skipped, None);
         assert_eq!(state.status, JobStatus::Active);
         assert_eq!(state.position, 1);
-        assert_eq!(state.queue[0].status, QueueEntryStatus::Reviewed);
-        assert!(!state.resume());
+
+        state.status = JobStatus::SaveFailed;
+        state.previous();
+        assert_eq!(state.status, JobStatus::Active);
+        assert_eq!(state.position, 0);
     }
 
     #[test]
@@ -658,7 +641,7 @@ mod tests {
         previous.queue[0].status = QueueEntryStatus::Saved;
         previous.queue[0].edit_revision_id = Some(42);
         previous.queue[0].edit_result = Some("saved".to_owned());
-        previous.queue[1].status = QueueEntryStatus::Reviewed;
+        previous.queue[1].status = QueueEntryStatus::Skipped;
         previous.status = JobStatus::Complete;
 
         let next = JobState::repeat_with_new_rules(&previous);
@@ -685,10 +668,10 @@ mod tests {
     }
 
     #[test]
-    fn reviewed_page_can_be_saved_after_review_completes() {
+    fn skipped_page_can_be_saved_after_the_list_completes() {
         let mut state = JobState::new(vec![entry("A"), entry("B")]);
-        state.advance(QueueEntryStatus::Reviewed, None);
-        state.advance(QueueEntryStatus::Reviewed, None);
+        state.advance(QueueEntryStatus::Skipped, None);
+        state.advance(QueueEntryStatus::Skipped, None);
         assert_eq!(state.status, JobStatus::Complete);
         assert!(state.select(0));
         assert!(state.can_save_current());
@@ -696,16 +679,12 @@ mod tests {
         assert_eq!(state.status, JobStatus::Complete);
         assert_eq!(state.queue[0].status, QueueEntryStatus::Saved);
         assert_eq!(state.counters().saved, 1);
-        assert_eq!(state.position, 1);
-        assert!(state.can_save_current());
-        state.advance(QueueEntryStatus::Saved, None);
-        assert_eq!(state.queue[1].status, QueueEntryStatus::Saved);
+        assert_eq!(state.position, 0);
         assert!(!state.can_save_current());
-        state.queue[1].status = QueueEntryStatus::Reviewed;
-        state.status = JobStatus::Stopped;
+        assert!(state.select(1));
+        state.status = JobStatus::Cancelled;
         assert!(!state.can_save_current());
         state.status = JobStatus::Complete;
-        state.queue[1].status = QueueEntryStatus::Skipped;
         assert!(state.can_save_current());
         state.queue[1].status = QueueEntryStatus::Missing;
         assert!(!state.can_save_current());
@@ -725,29 +704,22 @@ mod tests {
     }
 
     #[test]
-    fn saving_moves_to_next_reviewed_or_pending_page_and_wraps() {
+    fn saving_moves_to_next_pending_page_and_wraps() {
         let mut state = JobState::new(vec![
-            entry("Reviewed first"),
+            entry("Pending first"),
             entry("Skipped"),
-            entry("Pending"),
-            entry("Reviewed last"),
+            entry("Current"),
+            entry("Saved"),
         ]);
-        state.queue[0].status = QueueEntryStatus::Reviewed;
         state.queue[1].status = QueueEntryStatus::Skipped;
-        state.queue[3].status = QueueEntryStatus::Reviewed;
+        state.queue[3].status = QueueEntryStatus::Saved;
+        state.position = 2;
         state.advance(QueueEntryStatus::Saved, None);
-        assert_eq!(state.position, 2);
+        assert_eq!(state.position, 0);
         assert_eq!(state.status, JobStatus::Active);
-        state.advance(QueueEntryStatus::Saved, None);
-        assert_eq!(state.position, 3);
-        assert_eq!(state.status, JobStatus::Complete);
-        assert!(state.can_save_current());
-
-        state.queue[0].status = QueueEntryStatus::Reviewed;
         state.advance(QueueEntryStatus::Saved, None);
         assert_eq!(state.position, 0);
         assert_eq!(state.status, JobStatus::Complete);
-        assert_eq!(state.queue[3].status, QueueEntryStatus::Saved);
     }
 
     #[test]
@@ -803,12 +775,12 @@ mod tests {
     #[test]
     fn sorting_orders_all_pages_and_preserves_selection_and_decisions() {
         let mut state = JobState::new(vec![
-            entry("Reviewed"),
+            entry("Skipped"),
             entry("Zulu"),
             entry("Current"),
             entry("Alpha"),
         ]);
-        state.queue[0].status = QueueEntryStatus::Reviewed;
+        state.queue[0].status = QueueEntryStatus::Skipped;
         state.position = 2;
         state.sort_by_title();
         assert_eq!(
@@ -817,11 +789,11 @@ mod tests {
                 .iter()
                 .map(|entry| entry.title.as_str())
                 .collect::<Vec<_>>(),
-            ["Alpha", "Current", "Reviewed", "Zulu"]
+            ["Alpha", "Current", "Skipped", "Zulu"]
         );
         assert_eq!(state.position, 1);
         assert_eq!(state.current().unwrap().title, "Current");
-        assert_eq!(state.queue[2].status, QueueEntryStatus::Reviewed);
+        assert_eq!(state.queue[2].status, QueueEntryStatus::Skipped);
     }
 
     #[test]
@@ -865,11 +837,11 @@ mod tests {
         let mut state = JobState::new(vec![entry("Zulu"), entry("Alpha"), entry("Bravo")]);
         state.sort_by_title();
         assert_eq!(state.position, 2);
-        state.advance(QueueEntryStatus::Reviewed, None);
+        state.advance(QueueEntryStatus::Skipped, None);
         assert_eq!(state.current().unwrap().title, "Alpha");
-        state.advance(QueueEntryStatus::Reviewed, None);
+        state.advance(QueueEntryStatus::Skipped, None);
         assert_eq!(state.current().unwrap().title, "Bravo");
-        state.advance(QueueEntryStatus::Reviewed, None);
+        state.advance(QueueEntryStatus::Skipped, None);
         assert_eq!(state.status, JobStatus::Complete);
         assert_eq!(state.counters().pending, 0);
     }

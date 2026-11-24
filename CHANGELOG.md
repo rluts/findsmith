@@ -4,14 +4,24 @@ All notable changes to FindSmith are documented in this file. The format is base
 
 ## **Unreleased**
 
+## [0.1.0-alpha.6] - 2026-11-24
+
 ### Changed
 
 - The diff now shows two unchanged lines before and after each change instead of one.
 - The edit summary field no longer accepts more text than fits in 500 characters together with the FindSmith attribution.
+- Pages no longer have a separate "Reviewed" status. A page stays pending until it is saved or skipped.
+- After a failed save the page list shows "Save failed", and the page can be saved again, skipped, or left with Previous. **Resume review** and stopping a list are removed.
+- Interface text talks about the page list instead of a review.
+
+### Removed
+
+- The **Compare with titles** list tool.
 
 ### Fixed
 
-- The P and S review shortcuts work on non-Latin keyboard layouts.
+- The P and S shortcuts work on non-Latin keyboard layouts.
+- Automatic skipping no longer marks a page as done when it no longer matches a skip condition; the page stays pending.
 
 ## [0.1.0-alpha.5] - 2026-11-06
 
@@ -105,6 +115,7 @@ First tagged version.
 - Interface translation using the MediaWiki message format for translatewiki.net.
 - The FindSmith logo and updated styles.
 
+[0.1.0-alpha.6]: https://gitlab.wikimedia.org/toolforge-repos/findsmith/-/tags/0.1.0-alpha.6
 [0.1.0-alpha.5]: https://gitlab.wikimedia.org/toolforge-repos/findsmith/-/tags/0.1.0-alpha.5
 [0.1.0-alpha.4]: https://gitlab.wikimedia.org/toolforge-repos/findsmith/-/tags/0.1.0-alpha.4
 [0.1.0-alpha.2]: https://gitlab.wikimedia.org/toolforge-repos/findsmith/-/tags/0.1.0-alpha.2
