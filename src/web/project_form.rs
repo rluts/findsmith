@@ -279,9 +279,9 @@ pub(super) fn replacement_rules(form: &UpdateProjectForm) -> Result<Vec<Replacem
     for index in 0..count {
         let name = form.rule_name.get(index).map(String::as_str).unwrap_or("");
         if name.chars().count() > 255 {
-            return Err(localization::required_with_args(
-                "findsmith-api-rule-name-too-long",
-                &[&(index + 1).to_string()],
+            return Err(format!(
+                "Rule {} name must be at most 255 characters.",
+                index + 1
             ));
         }
         if form.rule_find[index].is_empty() && form.rule_replace[index].is_empty() {

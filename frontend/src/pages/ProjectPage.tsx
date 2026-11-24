@@ -583,7 +583,7 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
       </section>
 
       <section className="pane editor-pane">
-        <div className="tabs"><span className="active">{review ? t('findsmith-project-review') : t('findsmith-project-preview')}</span>{review && <><span className="inactive" aria-disabled="true">{t('findsmith-project-history')}</span><span className="inactive" aria-disabled="true">{t('findsmith-project-what-links-here')}</span><span className="inactive" aria-disabled="true">{t('findsmith-project-logs')}</span><span className="inactive" aria-disabled="true">{t('findsmith-project-typos')}</span></>}</div>
+        <div className="tabs"><span className="active">{review ? t('findsmith-project-current-page') : t('findsmith-project-preview')}</span>{review && <><span className="inactive" aria-disabled="true">{t('findsmith-project-history')}</span><span className="inactive" aria-disabled="true">{t('findsmith-project-what-links-here')}</span><span className="inactive" aria-disabled="true">{t('findsmith-project-logs')}</span><span className="inactive" aria-disabled="true">{t('findsmith-project-typos')}</span></>}</div>
         {review ? <>
           {review.page_error && <ErrorBox message={review.page_error} />}
           {review.status === 'complete' && <div className="notice review-finished" role="status"><p>{t('findsmith-project-review-finished', review.saved, review.skipped)}</p><button disabled={!!busy} onClick={() => submitProject(`/api/projects/${projectId}`, t('findsmith-project-busy-applying-rules'), true)}>{t('findsmith-project-apply-rules')}</button></div>}
