@@ -251,6 +251,7 @@
 	"findsmith-edit-summary-template-rename": "Suggested edit summary when renaming a template. $1 is the old template name; $2 is the new name. Example values: $1 = “OldTemplate”, $2 = “NewTemplate”.",
 	"findsmith-edit-summary-parameter-set": "Suggested edit summary when setting a template parameter. $1 is the parameter name, $2 is the template name, and $3 is the value. Example values: $1 = “date”, $2 = “Infobox”, $3 = “2026”.",
 	"findsmith-edit-summary-parameter-remove": "Suggested edit summary when removing a template parameter. $1 is the parameter name and $2 is the template name. Example values: $1 = “date”, $2 = “Infobox”.",
+	"findsmith-edit-summary-list": "Joins the descriptions of two rules in a suggested edit summary that lists several rules. $1 is the summary so far and $2 is the next rule's description; it is applied repeatedly, so $1 can already be a joined list. Example: $1 = “Autoreplacement: colour -> color”, $2 = “Added category New”.",
 	"findsmith-api-structural-invalid-title": "Error shown when a template or category rule names a title the wiki rejects. $1 is the name from the rule. Example: $1 = “Foo<”.",
 	"findsmith-api-preparse-transformation-failed": "Reason shown for a failed pre-parse transformation. $1 is the underlying error. Example values: $1 = “invalid regex”.",
 	"findsmith-api-transformation-failed": "Reason shown when applying rules to a review page fails. $1 is the underlying error. Example values: $1 = “invalid regex”.",

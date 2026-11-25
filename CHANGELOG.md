@@ -4,6 +4,12 @@ All notable changes to FindSmith are documented in this file. The format is base
 
 ## **Unreleased**
 
+### Changed
+
+- The suggested edit summary describes what the rules changed on the current page, like AWB's "Add replacements to edit summary". It lists each rule that changed the page, in order, showing each rule's first actual change (for example `colour -> color`) instead of its pattern and the number of changes when there is more than one. Rules that changed nothing, replacements that leave the text unchanged, and rules that do not fit in 500 characters are left out. A new message, `findsmith-edit-summary-list`, joins the rules.
+- The suggested edit summary starts with a `/* Section */` link when only one section of the page changed. There is no section link when the summary includes a category rule or appended or prepended text.
+- The edit summary attribution links to `[[toolforge:findsmith]]` instead of `[[User:RLuts/FS|Findsmith]]`.
+
 ## [0.1.0-alpha.6] - 2026-11-24
 
 ### Changed

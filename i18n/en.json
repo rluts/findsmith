@@ -251,6 +251,7 @@
   "findsmith-edit-summary-template-rename": "Renamed template $1 to $2",
   "findsmith-edit-summary-parameter-set": "Set parameter $1 in template $2 to $3",
   "findsmith-edit-summary-parameter-remove": "Removed parameter $1 from template $2",
+  "findsmith-edit-summary-list": "$1, $2",
   "findsmith-api-structural-invalid-title": "“$1” is not a valid template or category name on this wiki.",
   "findsmith-api-preparse-transformation-failed": "Pre-parse transformation failed: $1",
   "findsmith-api-transformation-failed": "Transformation failed: $1",

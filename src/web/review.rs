@@ -29,7 +29,7 @@ use super::responses::{
     csrf_error, error_page, internal_error, job_error_response, job_not_found,
     project_error_response, render,
 };
-use super::summary::{EDIT_SUMMARY_ATTRIBUTION_LINK, suggested_edit_summary};
+use super::summary::{EDIT_SUMMARY_ATTRIBUTION_LINK, page_edit_summary, suggested_edit_summary};
 
 #[derive(Serialize)]
 struct ReviewResponse<'a> {
@@ -84,6 +84,9 @@ struct ReviewPageView {
     rules: Vec<RulePreviewView>,
     proposed_text: String,
     side_by_side_diff: Vec<SideBySideLine>,
+    /// Sent as the response's top-level `suggested_edit_summary`.
+    #[serde(skip)]
+    suggested_edit_summary: String,
 }
 
 fn localize_queue_entry(mut entry: QueueEntry) -> QueueEntry {
@@ -226,7 +229,10 @@ async fn review_response(
         skipped: counters.skipped,
         unavailable: counters.unavailable,
         rule_count: config.rules.len(),
-        suggested_edit_summary: suggested_edit_summary(&config.rules),
+        suggested_edit_summary: page
+            .as_ref()
+            .map(|page| page.suggested_edit_summary.clone())
+            .unwrap_or_else(|| suggested_edit_summary(&config.rules)),
         edit_summary_attribution_link: EDIT_SUMMARY_ATTRIBUTION_LINK,
         generation_message: localization::from_source(&state.generation_message),
         generation_found: state.generation_found,
@@ -375,6 +381,8 @@ async fn review_page_view(
     };
     let permissions = permissions.ok();
     let side_by_side_diff = side_by_side_lines(&snapshot.content, &proposed_text);
+    let suggested_edit_summary =
+        page_edit_summary(&config.rules, &result, &snapshot.content, &proposed_text);
     Ok(ReviewPageView {
         full_url: snapshot.full_url,
         revision_id: snapshot.revision_id,
@@ -406,5 +414,6 @@ async fn review_page_view(
             .collect(),
         proposed_text,
         side_by_side_diff,
+        suggested_edit_summary,
     })
 }

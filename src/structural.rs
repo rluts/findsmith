@@ -51,12 +51,15 @@ pub async fn apply_with_wiki(
     }
     let mut text = input.to_owned();
     let mut counts = Vec::with_capacity(rules.len());
+    let mut samples = Vec::with_capacity(rules.len());
     let mut total = 0;
     for rule in rules {
         if !rule.enabled {
             counts.push(0);
+            samples.push(None);
             continue;
         }
+        let mut sample = None;
         let (next, count) = if matches!(
             rule.operation,
             RuleOperation::CategoryAdd
@@ -74,6 +77,7 @@ pub async fn apply_with_wiki(
             )
             .and_then(|engine| engine.apply_intermediate(&text))
             .map_err(|error| error.to_string())?;
+            sample = result.samples.into_iter().next().flatten();
             (result.text, result.total_replacements)
         };
         if next.len() > MAX_OUTPUT_BYTES {
@@ -85,12 +89,14 @@ pub async fn apply_with_wiki(
         }
         text = next;
         counts.push(count);
+        samples.push(sample);
     }
     let changed = counts.iter().map(|count| *count > 0).collect();
     Ok(TransformationResult {
         text,
         counts,
         changed,
+        samples,
         total_replacements: total,
     })
 }
