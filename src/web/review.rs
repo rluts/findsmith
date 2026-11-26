@@ -271,6 +271,8 @@ pub(super) enum EvaluationError {
 
 /// Loads a page and applies the skip options in a fixed order: page facts and
 /// content conditions, bot exclusions, then the rules' effect on the page.
+/// Without an enabled rule no page is skipped: every page would be skipped as
+/// unchanged while the user is still adding rules.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn evaluate_page(
     database: &DatabaseConnection,
@@ -310,7 +312,8 @@ pub(super) async fn evaluate_page(
         .or(bot_excluded.then_some(SkipReason::BotExclusion))
         .or_else(|| {
             matcher.after_rules(&snapshot.content, &result.text, result.total_replacements)
-        });
+        })
+        .filter(|_| config.rules.iter().any(|rule| rule.enabled));
     Ok(PageEvaluation {
         snapshot,
         result,

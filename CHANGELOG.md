@@ -4,6 +4,11 @@ All notable changes to FindSmith are documented in this file. The format is base
 
 ## **Unreleased**
 
+### Changed
+
+- Saves marked as bot edits need to be only 2 seconds after the account's previous save instead of 5. Other saves still wait 5 seconds.
+- Pages are not skipped automatically, and pre-parse skips no pages, while the project has no enabled rules. Before, every page was skipped as unchanged.
+
 ## [0.1.0-beta.1] - 2026-11-26
 
 ### Added

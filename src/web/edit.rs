@@ -249,7 +249,7 @@ pub(super) async fn save_current_page(
             back_href,
         );
     }
-    if let Err(seconds) = policy::reserve_edit_slot(owner) {
+    if let Err(seconds) = policy::reserve_edit_slot(owner, form.bot) {
         return error_page(
             StatusCode::TOO_MANY_REQUESTS,
             "Cannot save",
