@@ -4,6 +4,10 @@ All notable changes to FindSmith are documented in this file. The format is base
 
 ## **Unreleased**
 
+### Added
+
+- A **Use this summary for all pages** button under the edit summary uses the current summary on every page of the queue instead of each page's suggested summary. **Use suggested summaries** turns it off.
+
 ## [0.1.0-alpha.7] - 2026-11-25
 
 ### Changed

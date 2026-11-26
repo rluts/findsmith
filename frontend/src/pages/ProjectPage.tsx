@@ -95,6 +95,9 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
   const [minorEdit, setMinorEdit] = useState(false)
   const [botEdit, setBotEdit] = useState<boolean | null>(null)
   const [editSummary, setEditSummary] = useState('')
+  // A summary the user applied to every page of a job's queue; it replaces each
+  // page's suggested summary until the user returns to the suggestions.
+  const [sharedSummary, setSharedSummary] = useState<{ jobId: string; text: string } | null>(null)
   // Pages are skipped automatically only after the user starts working through
   // a job's queue, so a freshly built list stays on its first page while rules are added.
   const [autoSkipJobId, setAutoSkipJobId] = useState('')
@@ -120,7 +123,8 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
   const reviewPath = activeJobId ? `/api/projects/${projectId}/jobs/${activeJobId}` : ''
 
   useEffect(() => {
-    if (review) setEditSummary(review.suggested_edit_summary)
+    if (!review) return
+    setEditSummary(sharedSummary?.jobId === review.job_id ? sharedSummary.text : review.suggested_edit_summary)
   }, [review?.job_id, review?.position, review?.current?.title])
 
   async function loadProject() {
@@ -481,6 +485,20 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
   const matchingRendered = rendered && rendered.projectId === projectId && rendered.requestedTitle === previewTitle ? rendered : null
   const renderStale = matchingRendered && matchingRendered.requestedText !== previewText
   const shownQueue = review?.queue.map((entry, index) => ({entry, index})).filter(({entry}) => (queueStatus === 'all' || entry.status === queueStatus) && entry.title.toLocaleLowerCase().includes(queueFilter.toLocaleLowerCase())) ?? []
+  const summaryShared = !!review && sharedSummary?.jobId === review.job_id
+  function changeEditSummary(value: string) {
+    setEditSummary(value)
+    if (summaryShared && review) setSharedSummary({ jobId: review.job_id, text: value })
+  }
+  function toggleSharedSummary() {
+    if (!review) return
+    if (summaryShared) {
+      setSharedSummary(null)
+      setEditSummary(review.suggested_edit_summary)
+    } else {
+      setSharedSummary({ jobId: review.job_id, text: editSummary })
+    }
+  }
   const fullEditSummary = review ? t('findsmith-edit-summary-with-attribution', editSummary.trim(), review.edit_summary_attribution_link) : ''
   const summaryLength = Array.from(fullEditSummary).length
   const summaryMaxLength = review ? Math.max(0, 500 - Array.from(t('findsmith-edit-summary-with-attribution', '', review.edit_summary_attribution_link)).length) : undefined
@@ -550,7 +568,7 @@ export function ProjectPage({ projectId, jobId }: { projectId: string; jobId?: s
         <label>{t('findsmith-workspace-name')}<input value={project.project_name} maxLength={255} onChange={event => update({project_name: event.target.value})} /></label>
         <fieldset><legend>{t('findsmith-home-account')}</legend><p>{t('findsmith-project-groups', session ? (session.groups.length ? session.groups.join(', ') : t('findsmith-project-none-reported')) : (groupsError ? t('findsmith-project-unavailable-lower') : t('findsmith-project-loading-lower')))}</p>{session?.groups_error && <p className="error">{session.groups_error}</p>}{groupsError && <p className="error">{groupsError}</p>}</fieldset>
           {review && <>{active && (review.preparse_active ? <div className="generation"><progress value={review.preparse_cursor} max={review.total || 1} /><p>{t('findsmith-project-preparse-progress', review.preparse_cursor, review.total)}</p>{preparseError && <ErrorBox message={preparseError} />}<button className="danger" disabled={!!busy} onClick={() => reviewAction('preparse_stop')}>{t('findsmith-project-stop-pre-parse')}</button></div> : <><div className="review-buttons"><button disabled={!!busy} onClick={() => reviewAction('previous')}>{t('findsmith-project-previous')}</button><button disabled={!!busy} onClick={() => reviewAction('skip')}>{t('findsmith-project-skip')}</button>{saveButton}</div><p className="keyboard-hint">{t('findsmith-project-review-shortcuts')}</p><button disabled={!!busy} onClick={() => reviewAction('preparse_start')}>{t('findsmith-project-pre-parse-queue')}</button></>)}{(reviewNotices.length > 0 || needsPolicy) && <div className="notice review-notices" role="status" aria-live="polite">{reviewNotices.length > 0 && <ul>{reviewNotices.map(message => <li key={message}>{message}</li>)}</ul>}{needsPolicy && <label><input type="checkbox" checked={false} disabled={!!busy} onChange={acknowledgePolicy} /> {t('findsmith-project-i-will-follow-this-wiki-s-editing-policies')}</label>}</div>}{review.edit_in_flight && <div className="notice" role="status"><p>{t('findsmith-project-edit-in-flight-notice')}</p><button disabled={!!busy} onClick={() => reviewAction('verify_edit')}>{t('findsmith-project-verify-edit')}</button></div>}</>}
-          {showSaveControls && review && review.page && <fieldset className="edit-controls"><legend>{t('findsmith-project-save-to-wikimedia')}</legend><div className="edit-summary-control"><label htmlFor="edit-summary">{t('findsmith-project-edit-summary')}</label><input id="edit-summary" maxLength={summaryMaxLength} value={editSummary} onChange={event => setEditSummary(event.target.value)} /><span className="edit-summary-preview">{fullEditSummary}</span><small>{t('findsmith-project-summary-length', summaryLength)}</small></div><label><input type="checkbox" checked={minorEdit && review.page.can_minor} disabled={!review.page.can_minor} onChange={event => setMinorEdit(event.target.checked)} /> {t('findsmith-project-minor-edit')}</label><label><input type="checkbox" checked={(botEdit ?? review.page.can_bot) && review.page.can_bot} disabled={!review.page.can_bot} onChange={event => setBotEdit(event.target.checked)} /> {t('findsmith-project-bot-edit')}</label>{!active && saveButton}</fieldset>}
+          {showSaveControls && review && review.page && <fieldset className="edit-controls"><legend>{t('findsmith-project-save-to-wikimedia')}</legend><div className="edit-summary-control"><label htmlFor="edit-summary">{t('findsmith-project-edit-summary')}</label><input id="edit-summary" maxLength={summaryMaxLength} value={editSummary} onChange={event => changeEditSummary(event.target.value)} /><span className="edit-summary-preview">{fullEditSummary}</span><small>{t('findsmith-project-summary-length', summaryLength)}</small>{summaryShared && <small>{t('findsmith-project-edit-summary-shared')}</small>}<button type="button" className="edit-summary-share" onClick={toggleSharedSummary} disabled={!summaryShared && !editSummary.trim()}>{t(summaryShared ? 'findsmith-project-edit-summary-use-suggested' : 'findsmith-project-edit-summary-apply-to-all')}</button></div><label><input type="checkbox" checked={minorEdit && review.page.can_minor} disabled={!review.page.can_minor} onChange={event => setMinorEdit(event.target.checked)} /> {t('findsmith-project-minor-edit')}</label><label><input type="checkbox" checked={(botEdit ?? review.page.can_bot) && review.page.can_bot} disabled={!review.page.can_bot} onChange={event => setBotEdit(event.target.checked)} /> {t('findsmith-project-bot-edit')}</label>{!active && saveButton}</fieldset>}
         <div className="rule-list">{project.rules.map((rule, index) => <article className={`rule-card ${rule.operation?.startsWith('category_') || rule.operation?.startsWith('template_') ? 'structural-rule' : ''}`} key={index}>
           <div className="rule-head"><label><input type="checkbox" checked={rule.enabled} onChange={event => { const rules = [...project.rules]; rules[index] = {...rule, enabled: event.target.checked}; update({rules}) }} /> {rule.name || t('findsmith-project-rule-number', index + 1)} <small>· {t(rule.operation?.startsWith('category_') ? 'findsmith-project-rule-kind-category' : rule.operation?.startsWith('template_') ? 'findsmith-project-rule-kind-template' : 'findsmith-project-rule-kind-text')}</small></label><span className="row-actions"><button aria-label={t('findsmith-project-move-item-up', rule.name || t('findsmith-project-rule-number', index + 1))} disabled={index === 0} onClick={() => update({rules: move(project.rules, index, -1)})}>↑</button><button aria-label={t('findsmith-project-move-item-down', rule.name || t('findsmith-project-rule-number', index + 1))} disabled={index === project.rules.length - 1} onClick={() => update({rules: move(project.rules, index, 1)})}>↓</button><button aria-label={t('findsmith-project-remove-item', rule.name || t('findsmith-project-rule-number', index + 1))} onClick={() => update({rules: project.rules.filter((_, item) => item !== index)})}>×</button></span></div>
           <label>{t('findsmith-project-name')}<input value={rule.name} maxLength={255} placeholder={t('findsmith-project-rule-name-placeholder')} onChange={event => { const rules = [...project.rules]; rules[index] = {...rule, name: event.target.value}; update({rules}) }} /></label>
