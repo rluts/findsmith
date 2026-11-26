@@ -19,7 +19,7 @@ export function Shell({ children, title, subtitle, authenticated = true }: { chi
   return <div className="app-shell">
     <header className="titlebar"><img className="app-icon" src={logoUrl} alt="" width="22" height="22" /><strong className="app-name">FindSmith</strong>{title && <span className="window-title">{title}</span>}</header>
     <nav className="menubar" aria-label={t('findsmith-nav-main-menu')}>
-      <a href="/">{t('findsmith-nav-home')}</a>{authenticated ? <><a href="/workspace">{t('findsmith-nav-projects')}</a><a href="/add-wiki">{t('findsmith-nav-add-wiki')}</a></> : <><span className="inactive" aria-disabled="true">{t('findsmith-nav-projects')}</span><span className="inactive" aria-disabled="true">{t('findsmith-nav-add-wiki')}</span></>}<span className="inactive" aria-disabled="true">{t('findsmith-nav-help')}</span>
+      <a href="/">{t('findsmith-nav-home')}</a>{authenticated ? <><a href="/workspace">{t('findsmith-nav-projects')}</a><a href="/add-wiki">{t('findsmith-nav-add-wiki')}</a></> : <><span className="inactive" aria-disabled="true">{t('findsmith-nav-projects')}</span><span className="inactive" aria-disabled="true">{t('findsmith-nav-add-wiki')}</span></>}<a href="https://en.wikipedia.org/wiki/Wikipedia:Tools/FindSmith" target="_blank" rel="noreferrer">{t('findsmith-nav-help')}</a>
     </nav>
     {subtitle && <div className="contextbar">{subtitle}</div>}
     {children}

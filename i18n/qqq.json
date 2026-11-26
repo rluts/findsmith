@@ -9,7 +9,7 @@
 	"findsmith-nav-home": "Navigation link to the home page.",
 	"findsmith-nav-projects": "Navigation link to the signed-in user's projects.",
 	"findsmith-nav-add-wiki": "Navigation link to the screen for registering a Wikimedia wiki with the tool.",
-	"findsmith-nav-help": "Inactive navigation item for future help.",
+	"findsmith-nav-help": "Navigation link to the FindSmith help page on the English Wikipedia ([[w:en:Wikipedia:Tools/FindSmith]]).",
 	"findsmith-footer-license": "Label preceding the project's software license.",
 	"findsmith-language-label": "Label for the interface language selector.",
 	"findsmith-loading": "Generic loading status.",
