@@ -4,9 +4,15 @@ All notable changes to FindSmith are documented in this file. The format is base
 
 ## **Unreleased**
 
+## [0.1.0-beta.1] - 2026-11-26
+
 ### Added
 
 - A **Use this summary for all pages** button under the edit summary uses the current summary on every page of the queue instead of each page's suggested summary. **Use suggested summaries** turns it off.
+
+### Changed
+
+- FindSmith is now in beta. The help no longer says it is under development and not ready for production use.
 
 ## [0.1.0-alpha.7] - 2026-11-25
 
@@ -128,6 +134,7 @@ First tagged version.
 - Interface translation using the MediaWiki message format for translatewiki.net.
 - The FindSmith logo and updated styles.
 
+[0.1.0-beta.1]: https://gitlab.wikimedia.org/toolforge-repos/findsmith/-/tags/0.1.0-beta.1
 [0.1.0-alpha.7]: https://gitlab.wikimedia.org/toolforge-repos/findsmith/-/tags/0.1.0-alpha.7
 [0.1.0-alpha.6]: https://gitlab.wikimedia.org/toolforge-repos/findsmith/-/tags/0.1.0-alpha.6
 [0.1.0-alpha.5]: https://gitlab.wikimedia.org/toolforge-repos/findsmith/-/tags/0.1.0-alpha.5
