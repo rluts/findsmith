@@ -511,29 +511,34 @@ mod tests {
 
     #[test]
     fn backend_messages_resolve_from_catalog() {
-        assert!(SOURCE_KEYS.contains_key("Project not found"));
+        assert!(SOURCE_KEYS.contains_key("Could not save rule"));
+        assert_eq!(from_source("Could not save rule"), "Could not save rule");
+        // Text outside the catalog, such as hard-coded error titles, passes through.
         assert_eq!(from_source("Project not found"), "Project not found");
         assert_eq!(
             from_source("findsmith-api-new-messages"),
             "Read your new messages on this wiki before editing."
         );
         assert_eq!(
-            SOURCE_KEYS.get("Review not found").map(String::as_str),
-            Some("findsmith-api-review-not-found")
+            SOURCE_KEYS.get("Could not add wiki").map(String::as_str),
+            Some("findsmith-api-could-not-add-wiki")
         );
         assert_eq!(
             SOURCE_KEYS
-                .get("Edit outcome unknown until Wikimedia responds; do not retry this job if the request is interrupted.")
+                .get("The edit outcome is unknown until Wikimedia responds.")
                 .map(String::as_str),
             Some("findsmith-api-edit-outcome-unknown-reason")
         );
         assert_eq!(
-            message_with_args("findsmith-api-source-more", &["Alpha", "2"]).as_deref(),
-            Some("Alpha and 2 more")
+            message_with_args("findsmith-api-protection-until", &["edit", "sysop", "2027"])
+                .as_deref(),
+            Some("edit: sysop until 2027")
         );
+        // An argument that looks like a placeholder is not substituted again.
         assert_eq!(
-            message_with_args("findsmith-api-source-more", &["$2", "3"]).as_deref(),
-            Some("$2 and 3 more")
+            message_with_args("findsmith-api-protection-until", &["$2", "sysop", "2027"])
+                .as_deref(),
+            Some("$2: sysop until 2027")
         );
     }
 

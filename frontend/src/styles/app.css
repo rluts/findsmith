@@ -254,7 +254,6 @@ mark { background: #8ee086; border-radius: 2px; color: inherit; }
 .rule-counts { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
 .rule-counts span { padding: 2px 8px; border: 1px solid #b9bfc5; border-radius: 10px; background: #eceef0; font-size: 12px; }
 .rule-counts .changed { border-color: #3a9a5b; background: var(--ok-bg); color: #145c30; }
-.resume-review { width: 100%; margin: 12px 0; }
 .queue-select { grid-column: 1 / 3; display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: center; gap: 3px; width: 100%; min-width: 0; padding: 2px 0; border: 0; border-radius: 0; box-shadow: none; background: transparent; color: inherit; text-align: left; }
 .queue-select:hover, .queue-select:active { background: transparent; border: 0; box-shadow: none; color: inherit; }
 .queue-select strong { overflow-wrap: anywhere; font-weight: 600; }
@@ -271,6 +270,7 @@ mark { background: #8ee086; border-radius: 2px; color: inherit; }
 .edit-summary-control input { margin: 0; border-radius: 2px 2px 0 0; }
 .edit-summary-preview { display: block; padding: 5px 6px; border: 1px solid #b9c4bc; border-top: 0; border-radius: 0 0 2px 2px; background: #e9f0ea; overflow-wrap: anywhere; color: #2b3a2f; font-size: 12px; }
 .edit-summary-control small { display: block; margin-top: 4px; color: var(--text-muted); }
+.edit-controls .edit-summary-share { margin-top: 6px; }
 .review-notices { margin-top: 12px; }
 .review-notices ul { margin: 0; padding-inline-start: 18px; }
 .review-notices label { display: flex; gap: 5px; align-items: flex-start; margin: 8px 0 0; }

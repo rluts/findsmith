@@ -29,7 +29,7 @@ pub fn side_by_side_lines(original: &str, proposed: &str) -> Vec<SideBySideLine>
     let diff = TextDiff::from_lines(original, proposed);
     let mut rows = Vec::new();
 
-    for (group_index, group) in diff.grouped_ops(1).into_iter().enumerate() {
+    for (group_index, group) in diff.grouped_ops(2).into_iter().enumerate() {
         if group_index > 0 {
             rows.push(side_row(
                 None,
@@ -231,17 +231,20 @@ mod tests {
     }
 
     #[test]
-    fn diff_keeps_one_context_line_around_each_change() {
+    fn diff_keeps_two_context_lines_around_each_change() {
         let lines = side_by_side_lines(
-            "one\ntwo\nthree\nfour\nfive\nsix\nseven\n",
-            "one\nchanged\nthree\nfour\nfive\nchanged too\nseven\n",
+            "zero\none\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n",
+            "zero\none\nchanged\nthree\nfour\nfive\nsix\nseven\nchanged too\nnine\nten\n",
         );
         let context: Vec<_> = lines
             .iter()
             .filter(|line| line.left_kind == "context")
             .map(|line| text(&line.left_fragments))
             .collect();
-        assert_eq!(context, ["one", "three", "five", "seven"]);
+        assert_eq!(
+            context,
+            ["zero", "one", "three", "four", "six", "seven", "nine", "ten"]
+        );
         assert_eq!(
             lines
                 .iter()

@@ -11,7 +11,7 @@ rust-buildpack
 .plan
 __pycache__/
 
-# AutoWikiBrowser source code
+# AutoWikiBrowser source code (for development; some modules are ports of AWB)
 autowikibrowser-code-*/
 
 tmp/

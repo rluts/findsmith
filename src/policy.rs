@@ -11,6 +11,9 @@ use crate::{error::ApiFailureKind, mediawiki::EditPermissions};
 /// Minimum time between two saves by the same account. Every edit is reviewed by
 /// a person, but this keeps bursts of quick saves at a conservative pace.
 pub const MIN_EDIT_INTERVAL: Duration = Duration::from_secs(5);
+/// Minimum time before a save marked as a bot edit, which only accounts with the
+/// bot right can make. It is shorter but still keeps quick saves paced.
+pub const MIN_BOT_EDIT_INTERVAL: Duration = Duration::from_secs(2);
 /// Consecutive failed saves after which a job stops until a new review starts.
 pub const MAX_CONSECUTIVE_EDIT_FAILURES: u32 = 3;
 
@@ -64,13 +67,24 @@ fn last_edits() -> &'static Mutex<HashMap<String, Instant>> {
     LAST_EDITS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn edit_interval(bot: bool) -> Duration {
+    if bot {
+        MIN_BOT_EDIT_INTERVAL
+    } else {
+        MIN_EDIT_INTERVAL
+    }
+}
+
 /// Reserves the next edit slot for an account, or returns the whole seconds to wait.
-pub fn reserve_edit_slot(owner: &str) -> Result<(), u64> {
+/// A bot edit waits [`MIN_BOT_EDIT_INTERVAL`] after the account's previous save,
+/// any other edit [`MIN_EDIT_INTERVAL`].
+pub fn reserve_edit_slot(owner: &str, bot: bool) -> Result<(), u64> {
     reserve_edit_slot_at(
         &mut last_edits()
             .lock()
             .unwrap_or_else(|error| error.into_inner()),
         owner,
+        bot,
         Instant::now(),
     )
 }
@@ -78,12 +92,14 @@ pub fn reserve_edit_slot(owner: &str) -> Result<(), u64> {
 fn reserve_edit_slot_at(
     last_edits: &mut HashMap<String, Instant>,
     owner: &str,
+    bot: bool,
     now: Instant,
 ) -> Result<(), u64> {
+    let interval = edit_interval(bot);
     if let Some(previous) = last_edits.get(owner) {
         let elapsed = now.saturating_duration_since(*previous);
-        if elapsed < MIN_EDIT_INTERVAL {
-            let remaining = MIN_EDIT_INTERVAL - elapsed;
+        if elapsed < interval {
+            let remaining = interval - elapsed;
             return Err(remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0));
         }
     }
@@ -211,15 +227,33 @@ mod tests {
     fn saves_are_paced_per_account() {
         let mut edits = HashMap::new();
         let start = Instant::now();
-        assert_eq!(reserve_edit_slot_at(&mut edits, "1", start), Ok(()));
+        assert_eq!(reserve_edit_slot_at(&mut edits, "1", false, start), Ok(()));
         assert_eq!(
-            reserve_edit_slot_at(&mut edits, "1", start + Duration::from_millis(1500)),
+            reserve_edit_slot_at(&mut edits, "1", false, start + Duration::from_millis(1500)),
             Err(4)
         );
-        assert_eq!(reserve_edit_slot_at(&mut edits, "2", start), Ok(()));
+        assert_eq!(reserve_edit_slot_at(&mut edits, "2", false, start), Ok(()));
         assert_eq!(
-            reserve_edit_slot_at(&mut edits, "1", start + MIN_EDIT_INTERVAL),
+            reserve_edit_slot_at(&mut edits, "1", false, start + MIN_EDIT_INTERVAL),
             Ok(())
+        );
+    }
+
+    #[test]
+    fn bot_edits_use_the_shorter_interval() {
+        let mut edits = HashMap::new();
+        let start = Instant::now();
+        assert_eq!(reserve_edit_slot_at(&mut edits, "1", true, start), Ok(()));
+        assert_eq!(
+            reserve_edit_slot_at(&mut edits, "1", true, start + Duration::from_millis(500)),
+            Err(2)
+        );
+        let next = start + MIN_BOT_EDIT_INTERVAL;
+        assert_eq!(reserve_edit_slot_at(&mut edits, "1", true, next), Ok(()));
+        // A save without the bot flag still waits the full interval.
+        assert_eq!(
+            reserve_edit_slot_at(&mut edits, "1", false, next + MIN_BOT_EDIT_INTERVAL),
+            Err(3)
         );
     }
 

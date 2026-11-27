@@ -14,6 +14,46 @@ All notable changes to FindSmith are documented in this file. The format is base
 
 - Regex replacement rules and regex skip conditions now use .NET regular-expression syntax, as in AutoWikiBrowser, so AWB find-and-replace settings work unchanged. This adds lookbehind of any length, backreferences and `$1a`-style replacements. Rules written for Rust syntax may need updating: `(?P<name>…)` becomes `(?<name>…)`, `\pL` becomes `\p{L}`, `[[:alpha:]]` and `&&`/`--` class operations are not supported, and `$` also matches before a final newline. A rule that runs too long on a page now stops with an error instead of hanging.
 - Typo lists are written for .NET regular expressions. A new compatibility layer runs them in Rust with .NET behaviour, including lookbehind of any length, backreferences, `$1a`-style replacements, `$` before a final newline and character-class subtraction.
+- Saves marked as bot edits need to be only 2 seconds after the account's previous save instead of 5. Other saves still wait 5 seconds.
+- Pages are not skipped automatically, and pre-parse skips no pages, while the project has no enabled rules. Before, every page was skipped as unchanged.
+
+## [0.1.0-beta.1] - 2026-11-26
+
+### Added
+
+- A **Use this summary for all pages** button under the edit summary uses the current summary on every page of the queue instead of each page's suggested summary. **Use suggested summaries** turns it off.
+
+### Changed
+
+- FindSmith is now in beta. The help no longer says it is under development and not ready for production use.
+
+## [0.1.0-alpha.7] - 2026-11-25
+
+### Changed
+
+- The suggested edit summary describes what the rules changed on the current page, like AWB's "Add replacements to edit summary". It lists each rule that changed the page, in order, showing each rule's first actual change (for example `colour -> color`) instead of its pattern and the number of changes when there is more than one. Rules that changed nothing, replacements that leave the text unchanged, and rules that do not fit in 500 characters are left out. A new message, `findsmith-edit-summary-list`, joins the rules.
+- The suggested edit summary starts with a `/* Section */` link when only one section of the page changed. There is no section link when the summary includes a category rule or appended or prepended text.
+- The edit summary attribution links to `[[toolforge:findsmith]]` instead of `[[User:RLuts/FS|Findsmith]]`.
+- Localisation updates from translatewiki.net
+
+## [0.1.0-alpha.6] - 2026-11-24
+
+### Changed
+
+- The diff now shows two unchanged lines before and after each change instead of one.
+- The edit summary field no longer accepts more text than fits in 500 characters together with the FindSmith attribution.
+- Pages no longer have a separate "Reviewed" status. A page stays pending until it is saved or skipped.
+- After a failed save the page list shows "Save failed", and the page can be saved again, skipped, or left with Previous. **Resume review** and stopping a list are removed.
+- Interface text talks about the page list instead of a review.
+
+### Removed
+
+- The **Compare with titles** list tool.
+
+### Fixed
+
+- The P and S shortcuts work on non-Latin keyboard layouts.
+- Automatic skipping no longer marks a page as done when it no longer matches a skip condition; the page stays pending.
 
 ## [0.1.0-alpha.5] - 2026-11-06
 
@@ -107,6 +147,9 @@ First tagged version.
 - Interface translation using the MediaWiki message format for translatewiki.net.
 - The FindSmith logo and updated styles.
 
+[0.1.0-beta.1]: https://gitlab.wikimedia.org/toolforge-repos/findsmith/-/tags/0.1.0-beta.1
+[0.1.0-alpha.7]: https://gitlab.wikimedia.org/toolforge-repos/findsmith/-/tags/0.1.0-alpha.7
+[0.1.0-alpha.6]: https://gitlab.wikimedia.org/toolforge-repos/findsmith/-/tags/0.1.0-alpha.6
 [0.1.0-alpha.5]: https://gitlab.wikimedia.org/toolforge-repos/findsmith/-/tags/0.1.0-alpha.5
 [0.1.0-alpha.4]: https://gitlab.wikimedia.org/toolforge-repos/findsmith/-/tags/0.1.0-alpha.4
 [0.1.0-alpha.2]: https://gitlab.wikimedia.org/toolforge-repos/findsmith/-/tags/0.1.0-alpha.2

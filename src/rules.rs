@@ -140,7 +140,18 @@ pub struct TransformationResult {
     pub text: String,
     pub counts: Vec<usize>,
     pub changed: Vec<bool>,
+    /// For each replace rule, the first match it actually changed, if any.
+    pub samples: Vec<Option<ReplacementSample>>,
     pub total_replacements: usize,
+}
+
+/// The first match a replace rule changed, for the edit summary. Matches
+/// whose replacement equals the matched text are not counted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplacementSample {
+    pub before: String,
+    pub after: String,
+    pub edits: usize,
 }
 
 impl RuleEngine {
@@ -183,15 +194,18 @@ impl RuleEngine {
         let mut text = input.to_owned();
         let mut counts = Vec::with_capacity(self.rules.len());
         let mut changed = Vec::with_capacity(self.rules.len());
+        let mut samples = Vec::with_capacity(self.rules.len());
         let mut total_replacements = 0;
 
         for (index, rule) in self.rules.iter().enumerate() {
             if !rule.enabled {
                 counts.push(0);
                 changed.push(false);
+                samples.push(None);
                 continue;
             }
             let remaining = MAX_TOTAL_REPLACEMENTS - total_replacements;
+            let mut sample = None;
             let (next, count) = match rule.operation {
                 RuleOperation::Append => (
                     format!("{text}{}", rule.replace),
@@ -217,57 +231,73 @@ impl RuleEngine {
                         )
                     }
                 }
-                RuleOperation::CategoryRemove => replace_bounded(
-                    rule.matcher.as_ref().expect("category matcher").regex(),
-                    &text,
-                    "",
-                    true,
-                    remaining,
-                    &[],
-                )?,
+                RuleOperation::CategoryRemove => {
+                    let (next, count, _) = replace_bounded(
+                        rule.matcher.as_ref().expect("category matcher").regex(),
+                        &text,
+                        "",
+                        true,
+                        remaining,
+                        &[],
+                    )?;
+                    (next, count)
+                }
                 RuleOperation::CategoryReplace => {
                     let replacement = format!(
                         "[[Category:{}${{sort}}]]${{newline}}",
                         rule.replace.replace('$', "$$")
                     );
-                    replace_bounded(
+                    let (next, count, _) = replace_bounded(
                         rule.matcher.as_ref().expect("category matcher").regex(),
                         &text,
                         &replacement,
                         true,
                         remaining,
                         &[],
-                    )?
+                    )?;
+                    (next, count)
                 }
-                RuleOperation::Replace => match rule.matcher.as_ref().expect("replacement matcher")
-                {
-                    Matcher::Plain(regex) => replace_bounded(
-                        regex,
-                        &text,
-                        &rule.replace,
-                        rule.replace_all,
-                        remaining,
-                        &masked_ranges(&text, &rule.mask),
-                    )?,
-                    Matcher::DotNet(regex, replacement) => {
-                        let masked = masked_ranges(&text, &rule.mask);
-                        regex
-                            .replace_where(
+                RuleOperation::Replace => {
+                    let masked = masked_ranges(&text, &rule.mask);
+                    let (next, count, first) =
+                        match rule.matcher.as_ref().expect("replacement matcher") {
+                            Matcher::Plain(regex) => replace_bounded(
+                                regex,
                                 &text,
-                                replacement,
+                                &rule.replace,
                                 rule.replace_all,
                                 remaining,
-                                |start, end| !overlaps(&masked, start, end),
-                            )
-                            .map_err(|error| match error {
-                                ReplaceError::TooManyReplacements => RuleError::TooManyReplacements,
-                                ReplaceError::Match(error) => RuleError::RegexFailed {
-                                    index,
-                                    message: error.to_string(),
-                                },
-                            })?
-                    }
-                },
+                                &masked,
+                            )?,
+                            Matcher::DotNet(regex, replacement) => {
+                                let (next, count, first) = regex
+                                    .replace_where(
+                                        &text,
+                                        replacement,
+                                        rule.replace_all,
+                                        remaining,
+                                        |start, end| !overlaps(&masked, start, end),
+                                    )
+                                    .map_err(|error| match error {
+                                        ReplaceError::TooManyReplacements => {
+                                            RuleError::TooManyReplacements
+                                        }
+                                        ReplaceError::Match(error) => RuleError::RegexFailed {
+                                            index,
+                                            message: error.to_string(),
+                                        },
+                                    })?;
+                                let first = first.map(|change| ReplacementSample {
+                                    before: change.before,
+                                    after: change.after,
+                                    edits: change.changes,
+                                });
+                                (next, count, first)
+                            }
+                        };
+                    sample = first;
+                    (next, count)
+                }
                 RuleOperation::TemplateRename
                 | RuleOperation::TemplateParameterSet
                 | RuleOperation::TemplateParameterRemove => {
@@ -283,6 +313,7 @@ impl RuleEngine {
             text = next;
             counts.push(count);
             changed.push(count > 0);
+            samples.push(sample);
             total_replacements += count;
         }
 
@@ -290,6 +321,7 @@ impl RuleEngine {
             text,
             counts,
             changed,
+            samples,
             total_replacements,
         })
     }
@@ -312,10 +344,11 @@ fn replace_bounded(
     replace_all: bool,
     remaining_replacements: usize,
     masked: &[std::ops::Range<usize>],
-) -> Result<(String, usize), RuleError> {
+) -> Result<(String, usize, Option<ReplacementSample>), RuleError> {
     let mut output = String::with_capacity(text.len().min(MAX_OUTPUT_BYTES));
     let mut last_end = 0;
     let mut count = 0;
+    let mut sample: Option<ReplacementSample> = None;
 
     for captures in regex.captures_iter(text) {
         if count == remaining_replacements {
@@ -328,7 +361,21 @@ fn replace_bounded(
             continue;
         }
         output.push_str(&text[last_end..matched.start()]);
+        let expanded_start = output.len();
         captures.expand(replacement, &mut output);
+        let expanded = &output[expanded_start..];
+        if expanded != matched.as_str() {
+            match &mut sample {
+                Some(sample) => sample.edits += 1,
+                None => {
+                    sample = Some(ReplacementSample {
+                        before: matched.as_str().to_owned(),
+                        after: expanded.to_owned(),
+                        edits: 1,
+                    });
+                }
+            }
+        }
         if output.len() > MAX_OUTPUT_BYTES {
             return Err(RuleError::OutputTooLarge);
         }
@@ -340,13 +387,13 @@ fn replace_bounded(
     }
 
     if count == 0 {
-        return Ok((text.to_owned(), 0));
+        return Ok((text.to_owned(), 0, None));
     }
     output.push_str(&text[last_end..]);
     if output.len() > MAX_OUTPUT_BYTES {
         return Err(RuleError::OutputTooLarge);
     }
-    Ok((output, count))
+    Ok((output, count, sample))
 }
 
 fn compile_rule(
@@ -583,6 +630,31 @@ mod tests {
     fn plain_replacement_treats_dollar_as_literal() {
         let engine = RuleEngine::compile(&[plain("price", "$5")]).unwrap();
         assert_eq!(engine.apply("price").unwrap().text, "$5");
+    }
+
+    #[test]
+    fn samples_record_first_real_change_and_its_count() {
+        let rules = [ReplacementRule {
+            find: "(a+)".to_owned(),
+            replace: "aa".to_owned(),
+            regex: true,
+            ..Default::default()
+        }];
+        let result = RuleEngine::compile(&rules)
+            .unwrap()
+            .apply("aa a aaa")
+            .unwrap();
+        assert_eq!(result.counts, [3]);
+        assert_eq!(
+            result.samples,
+            [Some(ReplacementSample {
+                before: "a".to_owned(),
+                after: "aa".to_owned(),
+                edits: 2,
+            })]
+        );
+        let unchanged = RuleEngine::compile(&rules).unwrap().apply("aa").unwrap();
+        assert_eq!(unchanged.samples, [None]);
     }
 
     #[test]

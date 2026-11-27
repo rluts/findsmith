@@ -30,7 +30,7 @@ use super::responses::{
     csrf_error, error_page, internal_error, job_error_response, job_not_found,
     project_error_response, render,
 };
-use super::summary::{EDIT_SUMMARY_ATTRIBUTION_LINK, suggested_edit_summary_with_typos};
+use super::summary::{EDIT_SUMMARY_ATTRIBUTION_LINK, page_edit_summary, suggested_edit_summary};
 
 #[derive(Serialize)]
 struct ReviewResponse<'a> {
@@ -43,7 +43,6 @@ struct ReviewResponse<'a> {
     position: usize,
     total: usize,
     pending: usize,
-    reviewed: usize,
     saved: usize,
     skipped: usize,
     unavailable: usize,
@@ -51,6 +50,10 @@ struct ReviewResponse<'a> {
     suggested_edit_summary: String,
     edit_summary_attribution_link: &'static str,
     generation_message: String,
+    generation_found: usize,
+    generation_duplicates: usize,
+    generation_limit_reached: bool,
+    queue_limit: usize,
     preparse_active: bool,
     preparse_cursor: usize,
     edit_in_flight: bool,
@@ -83,9 +86,12 @@ struct ReviewPageView {
     proposed_text: String,
     side_by_side_diff: Vec<SideBySideLine>,
     typos: Option<TypoPageView>,
+    /// Sent as the response's top-level `suggested_edit_summary`.
+    #[serde(skip)]
+    suggested_edit_summary: String,
 }
 
-pub(super) fn localize_queue_entry(mut entry: QueueEntry) -> QueueEntry {
+fn localize_queue_entry(mut entry: QueueEntry) -> QueueEntry {
     entry.reason = entry.reason.map(|reason| {
         localization::message(&reason).unwrap_or_else(|| localization::from_source(&reason))
     });
@@ -221,19 +227,20 @@ async fn review_response(
         position: state.position.saturating_add(1).min(state.queue.len()),
         total: state.queue.len(),
         pending: counters.pending,
-        reviewed: counters.reviewed,
         saved: counters.saved,
         skipped: counters.skipped,
         unavailable: counters.unavailable,
         rule_count: config.rules.len(),
-        suggested_edit_summary: suggested_edit_summary_with_typos(
-            &config.rules,
-            page.as_ref()
-                .and_then(|page| page.typos.as_ref())
-                .map_or("", |typos| typos.summary.as_str()),
-        ),
+        suggested_edit_summary: page
+            .as_ref()
+            .map(|page| page.suggested_edit_summary.clone())
+            .unwrap_or_else(|| suggested_edit_summary(&config.rules)),
         edit_summary_attribution_link: EDIT_SUMMARY_ATTRIBUTION_LINK,
         generation_message: localization::from_source(&state.generation_message),
+        generation_found: state.generation_found,
+        generation_duplicates: state.generation_duplicates,
+        generation_limit_reached: state.generation_limit_reached,
+        queue_limit: state.queue_limit,
         preparse_active: state.preparse_active,
         preparse_cursor: state.preparse_cursor,
         edit_in_flight: state.edit_in_flight,
@@ -267,6 +274,8 @@ pub(super) enum EvaluationError {
 
 /// Loads a page and applies the skip options in a fixed order: page facts and
 /// content conditions, bot exclusions, then the rules' effect on the page.
+/// Without an enabled rule or typo fixing no page is skipped: every page would
+/// be skipped as unchanged while the user is still adding rules.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn evaluate_page(
     database: &DatabaseConnection,
@@ -324,7 +333,8 @@ pub(super) async fn evaluate_page(
                     .as_ref()
                     .is_some_and(|typos| typos.error.is_none() && !typos.fixed))
             .then_some(SkipReason::NoTypoFixed)
-        });
+        })
+        .filter(|_| config.rules.iter().any(|rule| rule.enabled) || config.typos.enabled);
     Ok(PageEvaluation {
         snapshot,
         result,
@@ -397,6 +407,13 @@ async fn review_page_view(
     };
     let permissions = permissions.ok();
     let side_by_side_diff = side_by_side_lines(&snapshot.content, &proposed_text);
+    let suggested_edit_summary = page_edit_summary(
+        &config.rules,
+        &result,
+        typos.as_ref().map_or("", |typos| typos.summary.as_str()),
+        &snapshot.content,
+        &proposed_text,
+    );
     Ok(ReviewPageView {
         full_url: snapshot.full_url,
         revision_id: snapshot.revision_id,
@@ -429,5 +446,6 @@ async fn review_page_view(
         proposed_text,
         side_by_side_diff,
         typos,
+        suggested_edit_summary,
     })
 }

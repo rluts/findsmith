@@ -236,7 +236,8 @@ impl From<MatchError> for ReplaceError {
 impl DotNetRegex {
     /// Replaces matches for which `keep(start, end)` is true: all of them, or only
     /// the first kept one. Fails once more than `max_replacements` would be made.
-    /// Returns the new text and the number of replacements.
+    /// Returns the new text, the number of replacements, and the first replacement
+    /// that changed the text with the number of such replacements.
     pub fn replace_where(
         &self,
         text: &str,
@@ -244,13 +245,14 @@ impl DotNetRegex {
         replace_all: bool,
         max_replacements: usize,
         mut keep: impl FnMut(usize, usize) -> bool,
-    ) -> Result<(String, usize), ReplaceError> {
+    ) -> Result<(String, usize, Option<FirstChange>), ReplaceError> {
         if !self.may_match(text) {
-            return Ok((text.to_owned(), 0));
+            return Ok((text.to_owned(), 0, None));
         }
         let mut output = String::with_capacity(text.len());
         let mut last_end = 0;
         let mut count = 0;
+        let mut first_change: Option<FirstChange> = None;
         for captures in self.regex.captures_iter(text) {
             let captures = captures.map_err(MatchError::from)?;
             let whole = captures.get(0).expect("group 0 always participates");
@@ -261,7 +263,21 @@ impl DotNetRegex {
                 return Err(ReplaceError::TooManyReplacements);
             }
             output.push_str(&text[last_end..whole.start()]);
+            let expanded_start = output.len();
             replacement.expand_into(&captures, &self.groups, text, &mut output);
+            let expanded = &output[expanded_start..];
+            if expanded != whole.as_str() {
+                match &mut first_change {
+                    Some(change) => change.changes += 1,
+                    None => {
+                        first_change = Some(FirstChange {
+                            before: whole.as_str().to_owned(),
+                            after: expanded.to_owned(),
+                            changes: 1,
+                        });
+                    }
+                }
+            }
             last_end = whole.end();
             count += 1;
             if !replace_all {
@@ -269,11 +285,20 @@ impl DotNetRegex {
             }
         }
         if count == 0 {
-            return Ok((text.to_owned(), 0));
+            return Ok((text.to_owned(), 0, None));
         }
         output.push_str(&text[last_end..]);
-        Ok((output, count))
+        Ok((output, count, first_change))
     }
+}
+
+/// The first replacement that changed the text, and how many replacements
+/// changed it. Replacements equal to the matched text are not counted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FirstChange {
+    pub before: String,
+    pub after: String,
+    pub changes: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

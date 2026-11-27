@@ -5,7 +5,7 @@ Thank you for helping improve FindSmith. This guide covers how to set up a devel
 ## Ways to contribute
 
 - Report bugs and suggest features on [Wikimedia Phabricator](https://phabricator.wikimedia.org/tag/tool-findsmith/).
-<!-- - Translate the interface on translatewiki.net: TODO: add translatewiki link and uncomment this line after integration. See https://phabricator.wikimedia.org/T440744 -->
+- [Translate the interface on translatewiki.net](https://translatewiki.net/w/i.php?title=Special:Translate&group=findsmith)
 - Improve the code or documentation through merge requests on [Wikimedia GitLab](https://gitlab.wikimedia.org/toolforge-repos/findsmith).
 
 ## Code of conduct
@@ -129,6 +129,7 @@ npm run build
 - Match the style of the surrounding code; `cargo fmt` is authoritative for Rust.
 - Add unit tests for new logic, especially rules, queue state, skip rules, and policy checks.
 - Keep changes focused; unrelated refactoring belongs in a separate merge request.
+- Always commit the updated `Cargo.lock` and `package-lock.json` along with any change that affects them, such as adding, removing, or upgrading a dependency or changing the version.
 - Database changes need a new migration in `src/migration/`; never edit a migration that has already been released.
 - New fields in stored project or job state must have serde defaults so existing records still load.
 
@@ -137,6 +138,14 @@ npm run build
 - Add every user-facing string to `i18n/en.json` and document it in `i18n/qqq.json` with its context and an example for each parameter.
 - Use complete sentences with `$1`-style parameters instead of joining translated fragments; use `{{PLURAL:$1|…}}` for counts.
 - Do not edit translated catalogs by hand; they are imported from translatewiki.net.
+
+#### What to translate
+
+Translators on translatewiki.net are volunteers, so keep the number of messages small: add a message only when users will actually see it.
+
+- Make translatable every message, label, and text that users see in normal use, including edit summaries that FindSmith writes to the wiki.
+- Keep in English, hardcoded, text that users do not see in normal use and that appears only because of a bug. Examples: validation errors for a request the interface does not let users send, such as a value the form does not let them enter, and console log messages.
+- For errors that are very rare or very technical, such as a wiki being down or a failed connection to Wikidata, either keep the text hardcoded in English or show a shared, general message with the technical details as a parameter, for example `findsmith-api-wiki-connect-error` ("Could not connect to this wiki: $1"). Do not add a separate message for each such case.
 
 See the "Interface language" section of `README.md` for details.
 
@@ -160,8 +169,17 @@ FindSmith edits Wikimedia wikis on behalf of its users. Changes must preserve th
 
 Versions follow [Semantic Versioning](https://semver.org/). Pre-releases use the `-alpha.N`, `-beta.N`, and `-rc.N` suffixes; keep the version in `Cargo.toml`, `package.json`, and `frontend/package.json` in sync, and commit the updated `Cargo.lock` and `package-lock.json`.
 
+Tag every release commit with its version, without a `v` prefix (for example `0.1.0-alpha.5`), and push the tag together with the commit:
+
+```sh
+git tag 0.1.0-alpha.5
+git push origin main 0.1.0-alpha.5
+```
+
 Automatic deployment is not ready yet.
 
 ## License
 
 FindSmith is licensed under the GNU General Public License, version 3 or later (`GPL-3.0-or-later`). By contributing, you agree that your contributions are licensed under the same terms.
+
+Translations of the interface messages in `i18n/` are made on translatewiki.net and are licensed under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/), and also under `GPL-3.0-or-later`. Translators are credited in the `@metadata` authors list of each catalog.

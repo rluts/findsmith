@@ -19,7 +19,7 @@ use crate::{
 };
 
 use super::AppState;
-use super::edit::{save_current_page, verify_edit_response};
+use super::edit::{edit_blocked_detail, save_current_page, verify_edit_response};
 use super::project_form::split_lines;
 use super::responses::{
     action_response, csrf_error, error_page, internal_error, job_error_response, job_not_found,
@@ -154,15 +154,15 @@ async fn job_action_response(
         return error_page(
             StatusCode::CONFLICT,
             "Edit outcome unknown",
-            "An edit request may have reached Wikimedia. Start a new review after checking the page; this job cannot retry it.",
+            "An edit request may have reached Wikimedia. Check the edit before continuing; this page list cannot retry it.",
             &back_href,
         );
     }
-    if state.edit_policy_blocked && form.action != "stop" {
+    if state.edit_policy_blocked {
         return error_page(
             StatusCode::CONFLICT,
-            "findsmith-api-edit-blocked",
-            "findsmith-api-this-job-encountered-a-wiki-policy-warning-start-a-new-review-after-reso",
+            "Edit blocked",
+            edit_blocked_detail(&state),
             &back_href,
         );
     }
@@ -184,39 +184,35 @@ async fn job_action_response(
         )
         .await;
     }
-    if state.preparse_active
-        && !matches!(
-            form.action.as_str(),
-            "preparse_step" | "preparse_stop" | "stop"
-        )
-    {
+    if state.preparse_active && !matches!(form.action.as_str(), "preparse_step" | "preparse_stop") {
         return error_page(
             StatusCode::CONFLICT,
-            "findsmith-api-pre-parse-is-running",
+            "Pre-parse is running",
             "Stop pre-parse before reviewing pages.",
             &back_href,
         );
     }
-    if matches!(form.action.as_str(), "next" | "skip" | "previous")
-        && state.status != JobStatus::Active
+    if matches!(form.action.as_str(), "auto_skip" | "skip" | "previous")
+        && !state.status.is_navigable()
     {
         return error_page(
             StatusCode::CONFLICT,
-            "Review stopped",
-            "Resume the review before navigating its pages.",
+            "Page list is not active",
+            "Build a page list or wait for it to finish before navigating its pages.",
             &back_href,
         );
     }
     match form.action.as_str() {
         "preparse_start" => {
-            if state.status != JobStatus::Active {
+            if !state.status.is_navigable() {
                 return error_page(
                     StatusCode::CONFLICT,
                     "Cannot pre-parse",
-                    "Start or resume a review first.",
+                    "Build a page list first.",
                     &back_href,
                 );
             }
+            state.status = JobStatus::Active;
             state.preparse_cursor = 0;
             state.preparse_active = true;
         }
@@ -326,32 +322,25 @@ async fn job_action_response(
         }
         "previous" => state.previous(),
         "acknowledge_policy" => state.policy_acknowledged = true,
-        "resume" => {
-            if !state.resume() {
+        "cancel" => {
+            if !state.status.is_building() {
                 return error_page(
                     StatusCode::CONFLICT,
-                    "Cannot resume review",
-                    "Only a stopped review with a saved queue can be resumed.",
+                    "Nothing to cancel",
+                    "The page list has already been built.",
                     &back_href,
                 );
             }
-        }
-        "stop" => {
-            state.preparse_active = false;
-            state.status = if state.status == JobStatus::Building {
-                JobStatus::Cancelled
-            } else {
-                JobStatus::Stopped
-            };
-            if state.status == JobStatus::Cancelled {
-                state.generation_message = "findsmith-api-queue-generation-cancelled".to_owned();
-            }
+            state.status = JobStatus::Cancelled;
+            state.generation_message = "findsmith-api-queue-generation-cancelled".to_owned();
         }
         "skip" => state.advance(
             QueueEntryStatus::Skipped,
             Some("findsmith-api-manual-skip".to_owned()),
         ),
-        "next" => {
+        // Rechecks a pending page the client expects to be skipped automatically.
+        // A page that no longer matches a skip condition stays pending.
+        "auto_skip" => {
             if let Some(entry) = state.current().filter(|entry| entry.status.is_pending()) {
                 let title = entry.title.clone();
                 let evaluation =
@@ -378,12 +367,11 @@ async fn job_action_response(
                             entry.revision_timestamp = Some(evaluation.snapshot.revision_timestamp);
                             entry.replacement_count = Some(evaluation.result.total_replacements);
                         }
-                        match evaluation.skip {
-                            Some(reason) => state.advance(
+                        if let Some(reason) = evaluation.skip {
+                            state.advance(
                                 QueueEntryStatus::Skipped,
                                 Some(reason.message_key().to_owned()),
-                            ),
-                            None => state.advance(QueueEntryStatus::Reviewed, None),
+                            );
                         }
                     }
                     Err(EvaluationError::Load(PageLoadError::Missing)) => state.advance(
@@ -411,15 +399,13 @@ async fn job_action_response(
                         ),
                     ),
                 }
-            } else {
-                state.advance(QueueEntryStatus::Reviewed, None);
             }
         }
         _ => {
             return error_page(
                 StatusCode::BAD_REQUEST,
                 "Invalid review action",
-                "Choose Previous, Skip, Stop, Resume, Next, or Pre-parse.",
+                "Choose Previous, Skip, Cancel, or Pre-parse.",
                 &back_href,
             );
         }
@@ -460,8 +446,8 @@ async fn queue_action_response(
     if state.edit_in_flight || state.edit_policy_blocked {
         return error_page(
             StatusCode::CONFLICT,
-            "findsmith-api-queue-locked",
-            "findsmith-api-this-job-is-paused-after-an-edit-attempt-start-a-new-review-after-checki",
+            "Queue locked",
+            "The page list is locked after an edit attempt. Check whether the edit was saved, or build a new page list.",
             &back_href,
         );
     }
@@ -476,8 +462,8 @@ async fn queue_action_response(
     if state.preparse_active {
         return error_page(
             StatusCode::CONFLICT,
-            "findsmith-api-pre-parse-is-running",
-            "findsmith-api-stop-pre-parse-before-changing-the-queue",
+            "Pre-parse is running",
+            "Stop pre-parse before changing the queue.",
             &back_href,
         );
     }
@@ -514,7 +500,7 @@ async fn queue_action_response(
                 Err(message) => {
                     return error_page(
                         StatusCode::BAD_REQUEST,
-                        "findsmith-api-cannot-append-pages",
+                        "Cannot append pages",
                         &message,
                         &back_href,
                     );
@@ -526,7 +512,7 @@ async fn queue_action_response(
                     Err(error) => {
                         return error_page(
                             StatusCode::BAD_GATEWAY,
-                            "findsmith-api-could-not-append-pages",
+                            "Could not append pages",
                             &localization::required_with_args(
                                 "findsmith-api-mediawiki-request-error",
                                 &[&error.to_string()],
@@ -540,7 +526,7 @@ async fn queue_action_response(
                 && matches!(
                     state.status,
                     JobStatus::Complete
-                        | JobStatus::Stopped
+                        | JobStatus::SaveFailed
                         | JobStatus::Cancelled
                         | JobStatus::Failed
                 )

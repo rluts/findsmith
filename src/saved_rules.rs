@@ -14,10 +14,15 @@ pub struct SavedRuleView {
     pub rule: ReplacementRule,
 }
 
+/// The rule was deleted, for example in another tab, or belongs to another account.
+pub const RULE_UNAVAILABLE: &str =
+    "This saved rule does not exist or you do not have access to it.";
+
 pub fn validate(rule: &ReplacementRule) -> Result<(), String> {
     let name = rule.name.trim();
+    // The form requires a name and limits it with maxLength, so this only guards the API.
     if name.is_empty() || name.chars().count() > 255 {
-        return Err("findsmith-api-rule-name-must-contain-between-1-and-255-characters".to_owned());
+        return Err("Rule name must contain between 1 and 255 characters.".to_owned());
     }
     RuleEngine::compile(std::slice::from_ref(rule)).map_err(|error| error.to_string())?;
     Ok(())
@@ -61,7 +66,7 @@ pub async fn save(
             .one(database)
             .await
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| "findsmith-api-saved-rule-unavailable".to_owned())?;
+            .ok_or_else(|| RULE_UNAVAILABLE.to_owned())?;
         let mut active: saved_rule::ActiveModel = row.into();
         active.name = Set(rule.name.clone());
         active.rule_json = Set(value);

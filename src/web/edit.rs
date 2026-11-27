@@ -41,16 +41,16 @@ pub(super) async fn save_current_page(
     if !state.can_save_current() {
         return error_page(
             StatusCode::CONFLICT,
-            "findsmith-api-cannot-save",
-            "Select a pending, reviewed, or skipped page in an active or completed review.",
+            "Cannot save",
+            "Select a pending or skipped page in an active or completed page list.",
             back_href,
         );
     }
     if state.edit_policy_blocked {
         return error_page(
             StatusCode::CONFLICT,
-            "findsmith-api-edit-blocked",
-            "findsmith-api-this-job-encountered-a-wiki-policy-warning-start-a-new-review-after-reso",
+            "Edit blocked",
+            edit_blocked_detail(state),
             back_href,
         );
     }
@@ -59,8 +59,8 @@ pub(super) async fn save_current_page(
     else {
         return error_page(
             StatusCode::BAD_REQUEST,
-            "findsmith-api-cannot-save",
-            "The reviewed text, base revision, and start timestamp are required.",
+            "Cannot save",
+            "The proposed text, base revision, and start timestamp are required.",
             back_href,
         );
     };
@@ -75,7 +75,7 @@ pub(super) async fn save_current_page(
     if text.len() > crate::rules::MAX_OUTPUT_BYTES {
         return error_page(
             StatusCode::BAD_REQUEST,
-            "findsmith-api-cannot-save",
+            "Cannot save",
             "The proposed wikitext is too large.",
             back_href,
         );
@@ -88,12 +88,7 @@ pub(super) async fn save_current_page(
     let summary = match complete_edit_summary(&summary_prefix) {
         Ok(summary) => summary,
         Err(message) => {
-            return error_page(
-                StatusCode::BAD_REQUEST,
-                "findsmith-api-cannot-save",
-                message,
-                back_href,
-            );
+            return error_page(StatusCode::BAD_REQUEST, "Cannot save", message, back_href);
         }
     };
     let title = state
@@ -102,7 +97,7 @@ pub(super) async fn save_current_page(
         .unwrap_or_default();
     let access = wikis::access_unregistered(wiki_url, user_agent, username).await;
     if !access.is_some_and(|access| access.allowed == Some(true)) {
-        return pause_edit(
+        return fail_save(
             repository,
             owner,
             project_id,
@@ -118,7 +113,7 @@ pub(super) async fn save_current_page(
     let permissions = match edit_permissions(wiki_url, user_agent, access_token).await {
         Ok(permissions) => permissions,
         Err(error) => {
-            return pause_edit(
+            return fail_save(
                 repository,
                 owner,
                 project_id,
@@ -139,7 +134,7 @@ pub(super) async fn save_current_page(
             policy::AccountBlocker::NewMessages => "findsmith-api-save-new-messages",
             policy::AccountBlocker::MissingRights => "findsmith-api-save-rights-missing",
         };
-        return pause_edit(
+        return fail_save(
             repository,
             owner,
             project_id,
@@ -153,7 +148,7 @@ pub(super) async fn save_current_page(
         .await;
     }
     if (form.minor && !permissions.can_minor) || (form.bot && !permissions.can_bot) {
-        return pause_edit(
+        return fail_save(
             repository,
             owner,
             project_id,
@@ -169,7 +164,7 @@ pub(super) async fn save_current_page(
     let snapshot = match load_page(wiki_url, user_agent, access_token, &title).await {
         Ok(snapshot) => snapshot,
         Err(error) => {
-            return pause_edit(
+            return fail_save(
                 repository,
                 owner,
                 project_id,
@@ -187,7 +182,7 @@ pub(super) async fn save_current_page(
         }
     };
     if snapshot.revision_id != base_revid || snapshot.title != title {
-        return pause_edit(
+        return fail_save(
             repository,
             owner,
             project_id,
@@ -201,7 +196,7 @@ pub(super) async fn save_current_page(
         .await;
     }
     if !snapshot.editable {
-        return pause_edit(
+        return fail_save(
             repository,
             owner,
             project_id,
@@ -218,7 +213,7 @@ pub(super) async fn save_current_page(
         Ok(true) => {}
         Ok(false) => {
             state.edit_policy_blocked = true;
-            return pause_edit(
+            return fail_save(
                 repository,
                 owner,
                 project_id,
@@ -232,7 +227,7 @@ pub(super) async fn save_current_page(
             .await;
         }
         Err(_) => {
-            return pause_edit(
+            return fail_save(
                 repository,
                 owner,
                 project_id,
@@ -254,10 +249,10 @@ pub(super) async fn save_current_page(
             back_href,
         );
     }
-    if let Err(seconds) = policy::reserve_edit_slot(owner) {
+    if let Err(seconds) = policy::reserve_edit_slot(owner, form.bot) {
         return error_page(
             StatusCode::TOO_MANY_REQUESTS,
-            "findsmith-api-cannot-save",
+            "Cannot save",
             &localization::required_with_args(
                 "findsmith-api-save-too-fast",
                 &[&seconds.to_string()],
@@ -267,7 +262,6 @@ pub(super) async fn save_current_page(
     }
     state.policy_acknowledged = true;
     state.edit_in_flight = true;
-    state.status = JobStatus::Stopped;
     let saved_index = state.position;
     let attempt = EditAttempt {
         content_sha1: stored_content_sha1(text),
@@ -316,6 +310,7 @@ pub(super) async fn save_current_page(
         }
         Err(error) => {
             let kind = error::classify(&error);
+            state.status = JobStatus::SaveFailed;
             // Transport failures and unrecognized responses can happen after MediaWiki committed the edit.
             let ambiguous = ApiFailureKind::is_ambiguous(&error);
             state.edit_in_flight = ambiguous;
@@ -329,7 +324,7 @@ pub(super) async fn save_current_page(
                 entry.reason = Some(if ambiguous {
                     "findsmith-api-save-outcome-ambiguous".to_owned()
                 } else if repeated {
-                    "findsmith-api-save-repeated-failures".to_owned()
+                    REPEATED_FAILURES.to_owned()
                 } else if kind == ApiFailureKind::Conflict {
                     "findsmith-api-save-conflict".to_owned()
                 } else if kind == ApiFailureKind::AbuseFilter {
@@ -359,6 +354,18 @@ pub(super) async fn save_current_page(
             record_late_save(repository, owner, project_id, job_id, save, back_href).await
         }
         (Err(error), _) => job_error_response(error, back_href),
+    }
+}
+
+const REPEATED_FAILURES: &str = "findsmith-api-save-repeated-failures";
+
+/// Explains why editing is blocked. Repeated failures of any kind block it
+/// too, and those are not wiki policy warnings.
+pub(super) fn edit_blocked_detail(state: &JobState) -> &'static str {
+    if state.current().and_then(|entry| entry.reason.as_deref()) == Some(REPEATED_FAILURES) {
+        REPEATED_FAILURES
+    } else {
+        "findsmith-api-this-job-encountered-a-wiki-policy-warning-start-a-new-review-after-reso"
     }
 }
 
@@ -416,8 +423,7 @@ fn apply_late_save(state: &mut JobState, save: &LateSave<'_>) -> LateSaveOutcome
         state.edit_in_flight = false;
     }
     state.consecutive_edit_failures = 0;
-    if save.index == state.position && state.status == JobStatus::Stopped {
-        state.status = JobStatus::Active;
+    if save.index == state.position && state.status == JobStatus::SaveFailed {
         state.advance(QueueEntryStatus::Saved, None);
     } else if let Some(entry) = state.queue.get_mut(save.index) {
         entry.status = QueueEntryStatus::Saved;
@@ -458,7 +464,7 @@ async fn record_late_save(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn pause_edit(
+async fn fail_save(
     repository: &JobRepository<'_>,
     owner: &str,
     project_id: &str,
@@ -469,7 +475,7 @@ async fn pause_edit(
     message: &str,
     back_href: &str,
 ) -> Response {
-    state.status = JobStatus::Stopped;
+    state.status = JobStatus::SaveFailed;
     if let Some(entry) = state.queue.get_mut(state.position) {
         entry.edit_result = Some(kind.to_owned());
         entry.reason = Some(message.to_owned());
@@ -503,7 +509,7 @@ pub(super) async fn verify_edit_response(
         return error_page(
             StatusCode::CONFLICT,
             "No edit to check",
-            "This review has no save whose outcome is unknown.",
+            "This page list has no save whose outcome is unknown.",
             back_href,
         );
     };
@@ -522,7 +528,7 @@ pub(super) async fn verify_edit_response(
         Err(error) => {
             return error_page(
                 StatusCode::BAD_GATEWAY,
-                "findsmith-api-could-not-verify-edit",
+                "Could not check the edit",
                 &localization::required_with_args(
                     "findsmith-api-mediawiki-request-error",
                     &[error::classify(&error).label()],
@@ -559,7 +565,7 @@ pub(super) async fn verify_edit_response(
         Verification::NotSaved | Verification::Unknown if remaining_seconds > 0 => {
             return error_page(
                 StatusCode::CONFLICT,
-                "findsmith-api-edit-still-in-progress",
+                "Edit may still be saving",
                 &localization::required_with_args(
                     "findsmith-api-edit-still-in-progress-details",
                     &[&remaining_seconds.to_string()],
@@ -569,7 +575,7 @@ pub(super) async fn verify_edit_response(
         }
         Verification::NotSaved => {
             state.edit_in_flight = false;
-            state.status = JobStatus::Stopped;
+            state.status = JobStatus::SaveFailed;
             if let Some(entry) = state.queue.get_mut(state.position) {
                 entry.edit_result = Some("not_saved".to_owned());
                 entry.reason = Some("findsmith-api-edit-verified-not-saved".to_owned());
@@ -578,7 +584,7 @@ pub(super) async fn verify_edit_response(
         Verification::Unknown => {
             return error_page(
                 StatusCode::CONFLICT,
-                "findsmith-api-edit-outcome-unconfirmed",
+                "Edit outcome not confirmed",
                 "findsmith-api-edit-outcome-unconfirmed-details",
                 back_href,
             );
@@ -765,6 +771,16 @@ mod tests {
     }
 
     #[test]
+    fn blocked_editing_explains_repeated_failures_separately() {
+        let mut state = JobState::new(vec![queue_entry("A")]);
+        state.edit_policy_blocked = true;
+        state.queue[0].reason = Some("findsmith-api-save-abuse-filter".to_owned());
+        assert!(edit_blocked_detail(&state).contains("wiki-policy-warning"));
+        state.queue[0].reason = Some(REPEATED_FAILURES.to_owned());
+        assert_eq!(edit_blocked_detail(&state), REPEATED_FAILURES);
+    }
+
+    #[test]
     fn late_save_is_recorded_on_a_state_changed_by_verification() {
         let attempt = EditAttempt {
             content_sha1: "abc".to_owned(),
@@ -779,7 +795,7 @@ mod tests {
             },
             queue_entry("B"),
         ]);
-        state.status = JobStatus::Stopped;
+        state.status = JobStatus::SaveFailed;
         let save = LateSave {
             index: 0,
             base_revision: 10,

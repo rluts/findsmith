@@ -675,7 +675,7 @@ mod tests {
         }
         let article = format!(
             "{}\n\nIt is a apple. They acheived teh goal in the the end, recieving praise.\n",
-            include_str!("../../help.txt").repeat(4)
+            include_str!("../../README.md").repeat(4)
         );
         let started = std::time::Instant::now();
         let result = typos.fix(&article, "Sample").expect("typo fixing");
