@@ -7,7 +7,8 @@ import { navigate, setNavigationGuard } from '../lib/router'
 import { useI18n } from '../lib/i18n'
 import type { ActionResult, Project, RenderedPreview as RenderedPreviewData, Review, Rule, RuleMask, SavedRule, Session, SkipOptions, Source } from '../types/api'
 
-const sourceKinds = ['manual', 'category', 'backlinks', 'transclusions', 'search', 'watchlist', 'contributions', 'links_on_page', 'categories_on_page', 'redirects_to_page']
+// 'watchlist' is hidden until the OAuth consumer has the "View your watchlist" grant.
+const sourceKinds = ['manual', 'category', 'backlinks', 'transclusions', 'search', /* 'watchlist', */ 'contributions', 'links_on_page', 'categories_on_page', 'redirects_to_page']
 const blankMask = (): RuleMask => ({comments: false, tags: false, references: false, links: false, headings: false, templates: false, link_targets: false})
 const maskOptions: Array<keyof RuleMask> = ['comments', 'tags', 'references', 'links', 'headings', 'templates', 'link_targets']
 const blankRule = (): Rule => ({ name: '', enabled: true, operation: 'replace', parameter: '', mask: blankMask(), find: '', replace: '', regex: false, case_sensitive: true, replace_all: true, multiline: false, dot_matches_new_line: false })
